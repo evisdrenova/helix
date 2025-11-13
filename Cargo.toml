@@ -1,18 +1,18 @@
 [package]
-name = "ghit"
+name = "helix"
 version = "0.1.1"
 edition = "2021"
-description = "AI-powered Git commit message generator and workflow automation"
+description = "A CLI for agentic development"
 authors = ["Evis Drenova"]
 license = "MIT"
-repository = "https://github.com/evisdrenova/ghit"
-homepage = "https://github.com/evisdrenova/ghit"
+repository = "https://github.com/evisdrenova/helix"
+homepage = "https://github.com/evisdrenova/helix"
 readme = "README.md"
 keywords = ["git", "ai", "cli","llm","openai"]
 categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
-name = "ghit"
+name = "helix"
 path = "src/main.rs"
 
 [dependencies]

@@ -42,7 +42,7 @@ async fn main() -> Result<()> {
     // Load configuration
     let config = Config::load().map_err(|e| {
         eprintln!("❌ Failed to load config: {}", e);
-        eprintln!("Please create a .ghit.toml file in your home directory with:");
+        eprintln!("Please create a .helix.toml file in your home directory with:");
         eprintln!("model = \"gpt-4.1\"");
         eprintln!("api_key = \"your-openai-api-key\"");
         eprintln!("message_level = \"normal\"  # quiet, normal, or verbose");

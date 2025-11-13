@@ -19,13 +19,13 @@ for target in "${targets[@]}"; do
     
     # Package
     if [[ $target == *"windows"* ]]; then
-        cp target/$target/release/ghit.exe releases/ghit-$target.exe
-        (cd releases && zip ghit-$target.zip ghit-$target.exe)
-        rm releases/ghit-$target.exe
+        cp target/$target/release/helix.exe releases/helix-$target.exe
+        (cd releases && zip helix-$target.zip helix-$target.exe)
+        rm releases/helix-$target.exe
     else
-        cp target/$target/release/ghit releases/ghit-$target
-        (cd releases && tar -czf ghit-$target.tar.gz ghit-$target)
-        rm releases/ghit-$target
+        cp target/$target/release/helix releases/helix-$target
+        (cd releases && tar -czf helix-$target.tar.gz helix-$target)
+        rm releases/helix-$target
     fi
     
     echo "✓ Built $target"

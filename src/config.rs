@@ -20,12 +20,12 @@ pub struct Config {
 impl Config {
     pub fn load() -> Result<Self> {
         let mut path: PathBuf = dirs::home_dir().context("could not find home directory")?;
-        path.push(".ghit.toml");
+        path.push(".helix.toml");
 
         let s = fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", path.display()))?;
 
-        let cfg: Config = toml::from_str(&s).context("failed to parse .ghit.toml")?;
+        let cfg: Config = toml::from_str(&s).context("failed to parse .helix.toml")?;
 
         Ok(cfg)
     }

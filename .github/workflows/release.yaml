@@ -39,11 +39,11 @@ jobs:
         shell: bash
         run: |
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            mv target/${{ matrix.target }}/release/ghit.exe ghit-${{ matrix.name }}.exe
-            echo "ASSET=ghit-${{ matrix.name }}.exe" >> $GITHUB_ENV
+            mv target/${{ matrix.target }}/release/helix.exe helix-${{ matrix.name }}.exe
+            echo "ASSET=helix-${{ matrix.name }}.exe" >> $GITHUB_ENV
           else
-            mv target/${{ matrix.target }}/release/ghit ghit-${{ matrix.name }}
-            echo "ASSET=ghit-${{ matrix.name }}" >> $GITHUB_ENV
+            mv target/${{ matrix.target }}/release/helix helix-${{ matrix.name }}
+            echo "ASSET=helix-${{ matrix.name }}" >> $GITHUB_ENV
           fi
 
       - name: Upload to Release

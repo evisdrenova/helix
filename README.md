@@ -1,8 +1,8 @@
-# ghit
+# helix
 
 https://github.com/user-attachments/assets/6c9f3129-bcfa-4357-a3e7-14422dc163df
 
-**ghit** is a CLI that uses AI to automatically generate meaningful Git commit messages and streamline your dev workflow.
+**helix** is a CLI that uses AI to automatically generate meaningful Git commit messages and streamline your dev workflow.
 
 ## Features
 
@@ -19,36 +19,36 @@ https://github.com/user-attachments/assets/6c9f3129-bcfa-4357-a3e7-14422dc163df
 
 #### Option 1: Install from Releases (Recommended)
 
-Download the latest binary for your platform from the [releases page](https://github.com/evisdrenova/ghit/releases):
+Download the latest binary for your platform from the [releases page](https://github.com/evisdrenova/helix/releases):
 
 **macOS/Linux:**
 
 ```bash
-curl -L https://github.com/evisdrenova/ghit/releases/latest/download/ghit-$(uname -s)-$(uname -m).tar.gz | tar -xz
-sudo mv ghit /usr/local/bin/
+curl -L https://github.com/evisdrenova/helix/releases/latest/download/helix-$(uname -s)-$(uname -m).tar.gz | tar -xz
+sudo mv helix /usr/local/bin/
 ```
 
 **Windows:**
-Download `ghit-windows.zip` from releases and add to your PATH.
+Download `helix-windows.zip` from releases and add to your PATH.
 
 #### Option 2: Install from Source
 
 ```bash
-git clone https://github.com/evisdrenova/ghit.git
-cd ghit
+git clone https://github.com/evisdrenova/helix.git
+cd helix
 cargo build --release
-sudo cp target/release/ghit /usr/local/bin/
+sudo cp target/release/helix /usr/local/bin/
 ```
 
 #### Option 3: Install with Cargo
 
 ```bash
-cargo install ghit
+cargo install helix
 ```
 
 ### Configuration
 
-Create a `.ghit.toml` file in your home directory (`~/.ghit.toml` or `C:\Users\YourName\.ghit.toml`):
+Create a `.helix.toml` file in your home directory (`~/.helix.toml` or `C:\Users\YourName\.helix.toml`):
 
 ```toml
 model = "gpt-4.1"  # any openai model
@@ -64,40 +64,40 @@ message_level = "normal"  # quiet, normal, or verbose
 
 ```bash
 # Auto-stage all changes, generate message, commit, and push
-ghit --auto
+helix --auto
 
 # Or simply (default behavior)
-ghit
+helix
 ```
 
 **Generate message only:**
 
 ```bash
 # Generate commit message for staged changes (doesn't commit)
-ghit --generate
+helix --generate
 ```
 
 **Stage and generate:**
 
 ```bash
 # Add specific files and generate message (doesn't commit)
-ghit --stage-and-generate src/main.rs src/lib.rs
+helix --stage-and-generate src/main.rs src/lib.rs
 
 # Add all changes and generate message
-ghit --stage-and-generate
+helix --stage-and-generate
 ```
 
 ### Working with Specific Files
 
 ```bash
 # Auto-commit only specific files
-ghit --auto src/main.rs README.md
+helix --auto src/main.rs README.md
 
 # Push to a specific branch
-ghit --auto --branch feature-branch
+helix --auto --branch feature-branch
 
 # Stage specific files and generate message
-ghit --stage-and-generate src/components/ tests/
+helix --stage-and-generate src/components/ tests/
 ```
 
 ## Configuration Options
@@ -110,7 +110,7 @@ ghit --stage-and-generate src/components/ tests/
 
 ### Message Verbosity Levels
 
-Configure in `~/.ghit.toml`:
+Configure in `~/.helix.toml`:
 
 - **`quiet`**: One-line commit message only
 - **`normal`**: Subject line + short description (default)
@@ -119,9 +119,9 @@ Configure in `~/.ghit.toml`:
 ## Example Workflow
 
 1. **Make your changes** to any files in your repository
-2. **Run ghit:**
+2. **Run helix:**
    ```bash
-   ghit --auto
+   helix --auto
    ```
 3. **Review the generated message:**
 
@@ -142,7 +142,7 @@ Configure in `~/.ghit.toml`:
 
 ## What Makes Good Commit Messages?
 
-ghit analyzes your code changes and generates commit messages that follow best practices:
+helix analyzes your code changes and generates commit messages that follow best practices:
 
 - **Clear subject lines** that summarize the change
 - **Conventional commit format** (feat:, fix:, docs:, etc.)
@@ -175,7 +175,7 @@ feat: implement dark mode toggle
 ## Command Line Options
 
 ```
-ghit [OPTIONS] [FILES...]
+helix [OPTIONS] [FILES...]
 
 OPTIONS:
     -a, --auto                 Add files, generate message, commit, and push automatically
@@ -185,12 +185,12 @@ OPTIONS:
     -h, --help                 Print help message
 
 EXAMPLES:
-    ghit                       # Auto-commit all changes (default)
-    ghit --auto               # Same as above
-    ghit --branch main        # Push to specific branch
-    ghit src/main.rs          # Auto-commit specific file
-    ghit --generate           # Just generate message for staged changes
-    ghit -s src/ tests/       # Stage files and generate message
+    helix                       # Auto-commit all changes (default)
+    helix --auto               # Same as above
+    helix --branch main        # Push to specific branch
+    helix src/main.rs          # Auto-commit specific file
+    helix --generate           # Just generate message for staged changes
+    helix -s src/ tests/       # Stage files and generate message
 ```
 
 ## Troubleshooting
@@ -202,7 +202,7 @@ EXAMPLES:
 
 **"Failed to load config"**
 
-- Ensure `.ghit.toml` exists in your home directory (`~/.ghit.toml`)
+- Ensure `.helix.toml` exists in your home directory (`~/.helix.toml`)
 - Verify your OpenAI API key is correct and has credits
 
 **"OpenAI API error"**
@@ -223,7 +223,7 @@ Contributions are welcome! Here's how to get started:
 1. Fork the repository
 2. Create a feature branch: `git checkout -b feature-name`
 3. Make your changes and test them
-4. Use ghit to commit your changes!
+4. Use helix to commit your changes!
 5. Push and create a pull request
 
 ## License
@@ -232,7 +232,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Support
 
-If you find ghit useful, please consider:
+If you find helix useful, please consider:
 
 - Starring the repository
 - Reporting bugs or requesting features
