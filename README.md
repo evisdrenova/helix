@@ -40,12 +40,6 @@ cargo build --release
 sudo cp target/release/helix /usr/local/bin/
 ```
 
-#### Option 3: Install with Cargo
-
-```bash
-cargo install helix
-```
-
 ### Configuration
 
 Create a `.helix.toml` file in your home directory (`~/.helix.toml` or `C:\Users\YourName\.helix.toml`):
@@ -225,6 +219,20 @@ Contributions are welcome! Here's how to get started:
 3. Make your changes and test them
 4. Use helix to commit your changes!
 5. Push and create a pull request
+
+## Release
+
+1. Bump version in `cargo.toml`
+2. Run:
+
+```bash
+git add Cargo.toml
+git commit -m "Bump version to v{version}"
+
+git tag -a v{version} -m "Release v{version}"
+git push origin main
+git push origin vv{version}
+```
 
 ## License
 
