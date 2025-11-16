@@ -168,7 +168,7 @@ impl CommitLoader {
 
     pub fn current_branch_name(&self) -> Result<String> {
         let head = self.repo.head()?;
-        if let Some(name) = head.shorthand() {
+        if let Some(name) = head.name() {
             Ok(name.to_string())
         } else {
             Ok("HEAD".to_string())

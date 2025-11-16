@@ -26,7 +26,7 @@ pub fn draw(f: &mut Frame, app: &App) {
 
 fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     let repo_text = format!(" {} ", app.repo_name);
-    let branch_text = format!(" ◉ {}  ", app.current_branch_name);
+    let branch_text = format!(" ◉ {} →  {}", app.current_branch_name, app.);
     let commit_count = format!("  {} commits loaded ", app.commits.len());
 
     let last_commit_text = if let Some(commit) = app.commits.first() {
