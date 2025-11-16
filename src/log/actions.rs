@@ -8,4 +8,7 @@ pub enum Action {
     GoToTop,
     GoToBottom,
     CheckoutCommit,
+    EnterSearchMode,
+    EnterVimMode,
+    ExitSearchMode,
 }

@@ -21,7 +21,7 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     draw_header(f, chunks[0], app);
     draw_main_content(f, chunks[1], app);
-    draw_footer(f, chunks[2]);
+    draw_footer(f, chunks[2], app);
 }
 
 fn draw_header(f: &mut Frame, area: Rect, app: &App) {
@@ -102,16 +102,20 @@ fn draw_main_content(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
-    let inner_height = area.height.saturating_sub(2) as usize; // Subtract border
+    let inner_height = area.height.saturating_sub(2) as usize;
 
-    // Calculate visible range
-    let visible_start = app.scroll_offset;
-    let visible_end = (visible_start + inner_height).min(app.commits.len());
+    let visible_commits = app.visible_commits();
 
-    let items: Vec<ListItem> = (visible_start..visible_end)
-        .map(|actual_idx| {
-            let commit = &app.commits[actual_idx];
-            let is_selected = actual_idx == app.selected_index;
+    // Calculate visible range based on filtered commits
+    let visible_start = app
+        .scroll_offset
+        .min(visible_commits.len().saturating_sub(1));
+    let visible_end = (visible_start + inner_height).min(visible_commits.len());
+
+    let items: Vec<ListItem> = visible_commits[visible_start..visible_end]
+        .iter()
+        .map(|(actual_idx, commit)| {
+            let is_selected = *actual_idx == app.selected_index;
             create_timeline_item(commit, is_selected)
         })
         .collect();
@@ -343,44 +347,65 @@ fn format_commit_details(commit: &Commit) -> Text<'static> {
     Text::from(lines)
 }
 
-fn draw_footer(f: &mut Frame, area: Rect) {
-    let help_text = Line::from(vec![
-        Span::styled(
-            " j/k",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" navigate  "),
-        Span::styled(
-            "g/G",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" top/bottom  "),
-        Span::styled(
-            "c",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" checkout  "),
-        Span::styled(
-            "s",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" type to search  "),
-        Span::styled(
-            "q",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" quit "),
-    ]);
+fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
+    let help_text = if app.search_mode {
+        Line::from(vec![
+            Span::styled(" Search: ", Style::default().fg(Color::Cyan)),
+            Span::styled(&app.search_query, Style::default().fg(Color::Yellow)),
+            Span::styled("_", Style::default().fg(Color::Yellow)),
+            Span::raw("  "),
+            Span::styled("Esc", Style::default().fg(Color::DarkGray)),
+            Span::raw(" to cancel"),
+        ])
+    } else if app.vim_mode {
+        Line::from(vec![
+            Span::styled(
+                " VIM MODE ",
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" (not implemented yet)"),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled(
+                " j/k",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" navigate  "),
+            Span::styled(
+                "g/G",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" top/bottom  "),
+            Span::styled(
+                "c",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" checkout  "),
+            Span::styled(
+                "s",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" type to search  "),
+            Span::styled(
+                "q",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" quit "),
+        ])
+    };
 
     let footer = Paragraph::new(help_text).style(Style::default().bg(Color::DarkGray));
 

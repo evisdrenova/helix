@@ -42,9 +42,59 @@ pub struct App {
     pub behind: usize,
     /// Visible height for timeline (calculated from terminal size)
     pub visible_height: usize,
+    pub search_mode: bool,
+    pub vim_mode: bool,
+    pub search_query: String,
+    pub filtered_indices: Vec<usize>,
 }
 
 impl App {
+    pub fn update_search(&mut self) {
+        if self.search_query.is_empty() {
+            self.filtered_indices.clear();
+            return;
+        }
+
+        let query = self.search_query.to_lowercase();
+        self.filtered_indices = self
+            .commits
+            .iter()
+            .enumerate()
+            .filter(|(_, commit)| {
+                commit.summary.to_lowercase().contains(&query)
+                    || commit.author_name.to_lowercase().contains(&query)
+                    || commit.message.to_lowercase().contains(&query)
+                    || commit
+                        .file_changes
+                        .iter()
+                        .any(|f| f.path.to_lowercase().contains(&query))
+            })
+            .map(|(idx, _)| idx)
+            .collect();
+
+        // Reset selection to first match
+        if !self.filtered_indices.is_empty() {
+            self.selected_index = self.filtered_indices[0];
+            self.scroll_offset = 0;
+        }
+    }
+
+    pub fn visible_commits(&self) -> Vec<(usize, &Commit)> {
+        if self.filtered_indices.is_empty() && !self.search_query.is_empty() {
+            // Search active but no matches
+            Vec::new()
+        } else if !self.filtered_indices.is_empty() {
+            // Show filtered results
+            self.filtered_indices
+                .iter()
+                .map(|&idx| (idx, &self.commits[idx]))
+                .collect()
+        } else {
+            // Show all commits
+            self.commits.iter().enumerate().collect()
+        }
+    }
+
     pub fn update_visible_height(&mut self, terminal_height: u16) {
         let main_content_height = terminal_height.saturating_sub(4);
         let inner_height = main_content_height.saturating_sub(2);
@@ -80,6 +130,10 @@ impl App {
             ahead,
             behind,
             visible_height: 20,
+            search_mode: false,
+            vim_mode: false,
+            search_query: String::new(),
+            filtered_indices: Vec::new(),
         })
     }
 
@@ -89,57 +143,103 @@ impl App {
 
     /// Handle user actions
     pub fn handle_action(&mut self, action: Action) -> Result<()> {
+        // Get the list we're navigating (filtered or all)
+        let visible = self.visible_commits();
+        let visible_count = visible.len();
+
+        if visible_count == 0 {
+            return Ok(()); // No commits to navigate
+        }
+
         match action {
             Action::Quit => {
                 self.should_quit = true;
             }
             Action::MoveUp => {
-                if self.selected_index > 0 {
-                    self.selected_index -= 1;
-                    self.adjust_scroll();
-                }
-            }
-            Action::MoveDown => {
-                if self.selected_index < self.commits.len().saturating_sub(1) {
-                    self.selected_index += 1;
-                    self.adjust_scroll();
-
-                    // Load more commits if we're near the end
-                    if self.selected_index >= self.commits.len().saturating_sub(10) {
-                        self.load_more_commits()?;
+                // Find current position in visible list
+                if let Some(pos) = visible
+                    .iter()
+                    .position(|(idx, _)| *idx == self.selected_index)
+                {
+                    if pos > 0 {
+                        self.selected_index = visible[pos - 1].0;
+                        self.adjust_scroll();
                     }
                 }
             }
+            Action::MoveDown => {
+                // Find current position in visible list
+                if let Some(pos) = visible
+                    .iter()
+                    .position(|(idx, _)| *idx == self.selected_index)
+                {
+                    if pos < visible_count - 1 {
+                        self.selected_index = visible[pos + 1].0;
+                        self.adjust_scroll();
+                    }
+                } else if !visible.is_empty() {
+                    // Selection not in visible list, jump to first
+                    self.selected_index = visible[0].0;
+                    self.scroll_offset = 0;
+                }
+
+                // Load more commits if we're near the end (only when not filtering)
+                if self.filtered_indices.is_empty()
+                    && self.selected_index >= self.commits.len().saturating_sub(10)
+                {
+                    self.load_more_commits()?;
+                }
+            }
             Action::PageUp => {
-                let page_size = 10;
-                self.selected_index = self.selected_index.saturating_sub(page_size);
-                self.adjust_scroll();
+                if let Some(pos) = visible
+                    .iter()
+                    .position(|(idx, _)| *idx == self.selected_index)
+                {
+                    let new_pos = pos.saturating_sub(10);
+                    self.selected_index = visible[new_pos].0;
+                    self.adjust_scroll();
+                }
             }
             Action::PageDown => {
-                let page_size = 10;
-                self.selected_index =
-                    (self.selected_index + page_size).min(self.commits.len().saturating_sub(1));
-                self.adjust_scroll();
+                if let Some(pos) = visible
+                    .iter()
+                    .position(|(idx, _)| *idx == self.selected_index)
+                {
+                    let new_pos = (pos + 10).min(visible_count - 1);
+                    self.selected_index = visible[new_pos].0;
+                    self.adjust_scroll();
+                }
 
-                if self.selected_index >= self.commits.len().saturating_sub(10) {
+                // Load more if needed (only when not filtering)
+                if self.filtered_indices.is_empty()
+                    && self.selected_index >= self.commits.len().saturating_sub(10)
+                {
                     self.load_more_commits()?;
                 }
             }
             Action::CheckoutCommit => {
-                //todo: implment this
+                //todo: implement this
             }
             Action::GoToTop => {
-                self.selected_index = 0;
-                self.scroll_offset = 0;
+                if !visible.is_empty() {
+                    self.selected_index = visible[0].0;
+                    self.scroll_offset = 0;
+                }
             }
             Action::GoToBottom => {
-                self.selected_index = self.commits.len().saturating_sub(1);
-                self.adjust_scroll();
+                if !visible.is_empty() {
+                    self.selected_index = visible[visible_count - 1].0;
+                    self.adjust_scroll();
+                }
+            }
+            Action::EnterSearchMode | Action::EnterVimMode | Action::ExitSearchMode => {
+                // These are handled in event_loop, not here
             }
         }
 
         Ok(())
     }
+
     fn adjust_scroll(&mut self) {
         // Ensure visible_height is at least 1
         let visible_height = self.visible_height.max(1);
@@ -204,10 +304,41 @@ impl App {
 
             if event::poll(std::time::Duration::from_millis(100))? {
                 if let Event::Key(key) = event::read()? {
+                    // Handle search mode input separately
+                    if self.search_mode {
+                        match key.code {
+                            KeyCode::Esc => {
+                                self.search_mode = false;
+                                self.search_query.clear();
+                                self.filtered_indices.clear();
+                            }
+                            KeyCode::Char(c) => {
+                                self.search_query.push(c);
+                                self.update_search();
+                            }
+                            KeyCode::Backspace => {
+                                self.search_query.pop();
+                                self.update_search();
+                            }
+                            KeyCode::Enter => {
+                                self.search_mode = false;
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
                     let action = match key.code {
                         KeyCode::Char('q') | KeyCode::Esc => Some(Action::Quit),
                         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             Some(Action::Quit)
+                        }
+                        KeyCode::Char('s') => {
+                            self.search_mode = true;
+                            continue;
+                        }
+                        KeyCode::Char('v') => {
+                            self.vim_mode = true;
+                            continue;
                         }
                         KeyCode::Char('j') | KeyCode::Down => Some(Action::MoveDown),
                         KeyCode::Char('k') | KeyCode::Up => Some(Action::MoveUp),
@@ -225,7 +356,6 @@ impl App {
                         KeyCode::End => Some(Action::GoToBottom),
                         _ => None,
                     };
-
                     if let Some(action) = action {
                         self.handle_action(action)?;
                     }
