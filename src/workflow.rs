@@ -74,7 +74,7 @@ impl Workflow {
         // Use provided branch or get current branch
         let target_branch = match branch {
             Some(b) => b,
-            None => Git::get_current_branch_name()
+            None => Git::get_get_current_branch_name()
                 .context("Failed to get current branch. Specify a branch with --branch")?,
         };
 

@@ -21,7 +21,7 @@ pub struct App {
     /// Scroll offset for the timeline pane
     pub scroll_offset: usize,
     /// Current branch name
-    pub current_branch_name: String,
+    pub get_current_branch_name: String,
     /// Whether to quit the application
     pub should_quit: bool,
     /// Split ratio (0.0 to 1.0) - how much space the timeline takes
@@ -53,12 +53,12 @@ impl App {
 
     pub fn new(repo_path: &Path) -> Result<Self> {
         let loader = CommitLoader::open_repo_at_path(repo_path)?;
-        let current_branch_name = loader.current_branch_name()?;
+        let get_current_branch_name = loader.get_current_branch_name()?;
 
         let initial_limit = 50;
         let commits = loader.load_commits(initial_limit)?;
         let total_loaded = commits.len();
-        let repo_name = loader.repo_name();
+        let repo_name = loader.get_repo_name();
 
         let (remote_branch, ahead, behind) = loader
             .remote_tracking_info()
@@ -69,7 +69,7 @@ impl App {
             commits,
             selected_index: 0,
             scroll_offset: 0,
-            current_branch_name,
+            get_current_branch_name,
             should_quit: false,
             split_ratio: 0.35, // 35% for timeline, 65% for details
             loader,

@@ -169,8 +169,7 @@ impl CommitLoader {
         Ok(commits)
     }
 
-    /// Get current branch name
-    pub fn current_branch_name(&self) -> Result<String> {
+    pub fn get_current_branch_name(&self) -> Result<String> {
         let head = self.repo.head()?;
         if let Some(name) = head.shorthand() {
             Ok(name.to_string())
@@ -179,8 +178,7 @@ impl CommitLoader {
         }
     }
 
-    /// Get repository name from path
-    pub fn repo_name(&self) -> String {
+    pub fn get_repo_name(&self) -> String {
         self.repo
             .workdir()
             .and_then(|path| path.file_name())

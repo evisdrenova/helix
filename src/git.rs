@@ -171,7 +171,7 @@ impl Git {
     }
 
     /// Get the current branch name
-    pub fn get_current_branch_name() -> Result<String> {
+    pub fn get_get_current_branch_name() -> Result<String> {
         let output = Command::new("git")
             .args(["branch", "--show-current"])
             .output()

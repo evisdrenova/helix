@@ -30,7 +30,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
 
     // Build branch text with remote tracking
     let branch_text = if let Some(ref remote) = app.remote_branch {
-        let mut text = format!(" ◉ {} → {} ", app.current_branch_name, remote);
+        let mut text = format!(" ◉ {} → {} ", app.get_current_branch_name, remote);
 
         // Add ahead/behind indicators
         if app.ahead > 0 {
@@ -42,7 +42,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         text
     } else {
         // No remote tracking
-        format!(" ◉ {} ", app.current_branch_name)
+        format!(" ◉ {} ", app.get_current_branch_name)
     };
 
     let commit_count = format!(" {} commits ", app.commits.len());
@@ -157,17 +157,21 @@ fn create_timeline_item(commit: &Commit, is_selected: bool) -> ListItem {
         Span::styled(time_str, Style::default().fg(Color::White)),
     ]);
 
-    // Second line: author name and stats
-    let stats = commit.stats_summary();
     let line2 = Line::from(vec![
         Span::raw("   "),
         Span::styled(&commit.author_name, Style::default().fg(author_color)),
         Span::raw(" · "),
-        Span::styled(stats, Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            format!("+{} ", commit.insertions),
+            Style::default().fg(Color::Green),
+        ),
+        Span::styled(
+            format!("-{} ", commit.insertions),
+            Style::default().fg(Color::Red),
+        ),
     ]);
 
-    // Third line: commit summary (truncated)
-    let max_len = 45; // Will adjust based on pane width in production
+    let max_len = 45;
     let summary = if commit.summary.len() > max_len {
         format!("{}...", &commit.summary[..max_len])
     } else {
