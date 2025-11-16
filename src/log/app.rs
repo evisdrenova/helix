@@ -40,9 +40,17 @@ pub struct App {
     pub ahead: usize,
     /// Commits behind remote
     pub behind: usize,
+    /// Visible height for timeline (calculated from terminal size)
+    pub visible_height: usize,
 }
 
 impl App {
+    pub fn update_visible_height(&mut self, terminal_height: u16) {
+        let main_content_height = terminal_height.saturating_sub(4);
+        let inner_height = main_content_height.saturating_sub(2);
+        self.visible_height = (inner_height / 4).max(1) as usize;
+    }
+
     pub fn new(repo_path: &Path) -> Result<Self> {
         let loader = CommitLoader::open_repo_at_path(repo_path)?;
         let current_branch_name = loader.current_branch_name()?;
@@ -71,6 +79,7 @@ impl App {
             remote_branch,
             ahead,
             behind,
+            visible_height: 20,
         })
     }
 
@@ -131,16 +140,22 @@ impl App {
 
         Ok(())
     }
-
-    /// Adjust scroll offset to keep selected item visible
     fn adjust_scroll(&mut self) {
-        let visible_height = 20; // This will be calculated from terminal height in real impl
+        // Ensure visible_height is at least 1
+        let visible_height = self.visible_height.max(1);
 
+        // If selected is above visible area, scroll up
         if self.selected_index < self.scroll_offset {
             self.scroll_offset = self.selected_index;
-        } else if self.selected_index >= self.scroll_offset + visible_height {
-            self.scroll_offset = self.selected_index - visible_height + 1;
         }
+        // If selected is below visible area, scroll down
+        else if self.selected_index >= self.scroll_offset + visible_height {
+            self.scroll_offset = self.selected_index.saturating_sub(visible_height - 1);
+        }
+
+        // Ensure scroll doesn't go past the end
+        let max_scroll = self.commits.len().saturating_sub(visible_height);
+        self.scroll_offset = self.scroll_offset.min(max_scroll);
     }
 
     /// Load more commits (lazy loading)
@@ -180,6 +195,9 @@ impl App {
 
     fn event_loop(&mut self, terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
         loop {
+            let terminal_height = terminal.size()?.height;
+            self.update_visible_height(terminal_height);
+
             terminal.draw(|f| {
                 ui::draw(f, self);
             })?;

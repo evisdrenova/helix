@@ -1,8 +1,9 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local};
-use git2::{Commit as GitCommit, Repository};
+use git2::{Commit as GitCommit, Oid, Repository};
 use std::path::Path;
 
+/// A simplified commit structure optimized for display
 #[derive(Debug, Clone)]
 pub struct Commit {
     pub hash: String,
@@ -11,7 +12,7 @@ pub struct Commit {
     pub author_email: String,
     pub timestamp: DateTime<Local>,
     pub message: String,
-    pub summary: String, // first line of message
+    pub summary: String, // First line of message
     pub files_changed: usize,
     pub insertions: usize,
     pub deletions: usize,
@@ -19,6 +20,7 @@ pub struct Commit {
 }
 
 impl Commit {
+    /// Create a Commit from a git2::Commit
     pub fn from_git_commit(commit: &GitCommit, repo: &Repository) -> Result<Self> {
         let hash = commit.id().to_string();
         let short_hash = commit.id().to_string()[..7].to_string();
@@ -133,6 +135,7 @@ pub struct CommitLoader {
 }
 
 impl CommitLoader {
+    /// Open a repository at the given path
     pub fn open_repo_at_path(path: &Path) -> Result<Self> {
         let repo = Repository::discover(path).context("Failed to open git repository")?;
         Ok(Self { repo })
@@ -166,6 +169,7 @@ impl CommitLoader {
         Ok(commits)
     }
 
+    /// Get current branch name
     pub fn current_branch_name(&self) -> Result<String> {
         let head = self.repo.head()?;
         if let Some(name) = head.shorthand() {
@@ -175,13 +179,26 @@ impl CommitLoader {
         }
     }
 
+    /// Get repository name from path
+    pub fn repo_name(&self) -> String {
+        self.repo
+            .workdir()
+            .and_then(|path| path.file_name())
+            .and_then(|name| name.to_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "repository".to_string())
+    }
+
+    /// Get remote tracking branch info (name, ahead, behind)
     pub fn remote_tracking_info(&self) -> Option<(String, usize, usize)> {
         let head = self.repo.head().ok()?;
         let local_branch = head.name()?;
 
+        // Get the upstream branch
         let upstream_name = self.repo.branch_upstream_name(local_branch).ok()?;
         let upstream_name_str = upstream_name.as_str()?;
 
+        // Get the local and upstream commits
         let local_oid = head.target()?;
         let upstream_ref = self.repo.find_reference(upstream_name_str).ok()?;
         let upstream_oid = upstream_ref.target()?;
@@ -196,14 +213,5 @@ impl CommitLoader {
             .to_string();
 
         Some((remote_branch, ahead, behind))
-    }
-
-    pub fn repo_name(&self) -> String {
-        self.repo
-            .workdir()
-            .and_then(|path| path.file_name())
-            .and_then(|name| name.to_str())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "repository".to_string())
     }
 }

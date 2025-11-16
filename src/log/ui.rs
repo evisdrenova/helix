@@ -25,9 +25,14 @@ pub fn draw(f: &mut Frame, app: &App) {
 }
 
 fn draw_header(f: &mut Frame, area: Rect, app: &App) {
+    // Build header content: repo-name | branch → remote ↑↓ | commits | last commit
     let repo_text = format!(" {} ", app.repo_name);
+
+    // Build branch text with remote tracking
     let branch_text = if let Some(ref remote) = app.remote_branch {
         let mut text = format!(" ◉ {} → {} ", app.current_branch_name, remote);
+
+        // Add ahead/behind indicators
         if app.ahead > 0 {
             text.push_str(&format!("↑{} ", app.ahead));
         }
@@ -36,11 +41,13 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         }
         text
     } else {
+        // No remote tracking
         format!(" ◉ {} ", app.current_branch_name)
     };
 
     let commit_count = format!(" {} commits ", app.commits.len());
 
+    // Get time of most recent commit (first in list)
     let last_commit_text = if let Some(commit) = app.commits.first() {
         format!(" Last: {} ", commit.relative_time())
     } else {
@@ -67,14 +74,11 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         Span::styled(last_commit_text, Style::default().fg(Color::DarkGray)),
     ]))
     .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" helix ")
-            .title_style(
-                Style::default()
-                    .fg(Color::Blue)
-                    .add_modifier(Modifier::BOLD),
-            ),
+        Block::default().borders(Borders::ALL).title_style(
+            Style::default()
+                .fg(Color::Blue)
+                .add_modifier(Modifier::BOLD),
+        ),
     );
 
     f.render_widget(header, area);
@@ -104,14 +108,11 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     let visible_start = app.scroll_offset;
     let visible_end = (visible_start + inner_height).min(app.commits.len());
 
-    // Create list items
-    let items: Vec<ListItem> = app.commits[visible_start..visible_end]
-        .iter()
-        .enumerate()
-        .map(|(idx, commit)| {
-            let actual_idx = visible_start + idx;
+    // Create list items - IMPORTANT: track the actual index in the full commit list
+    let items: Vec<ListItem> = (visible_start..visible_end)
+        .map(|actual_idx| {
+            let commit = &app.commits[actual_idx];
             let is_selected = actual_idx == app.selected_index;
-
             create_timeline_item(commit, is_selected)
         })
         .collect();
@@ -365,14 +366,14 @@ fn draw_footer(f: &mut Frame, area: Rect) {
         ),
         Span::raw(" top/bottom  "),
         Span::styled(
-            " c ",
+            "h/l",
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw("checkout commit"),
+        Span::raw(" adjust split  "),
         Span::styled(
-            " q ",
+            "q",
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
