@@ -25,14 +25,11 @@ pub fn draw(f: &mut Frame, app: &App) {
 }
 
 fn draw_header(f: &mut Frame, area: Rect, app: &App) {
-    // Build header content: repo-name | branch → remote ↑↓ | commits | last commit
     let repo_text = format!(" {} ", app.repo_name);
 
-    // Build branch text with remote tracking
     let branch_text = if let Some(ref remote) = app.remote_branch {
         let mut text = format!(" ◉ {} → {} ", app.get_current_branch_name, remote);
 
-        // Add ahead/behind indicators
         if app.ahead > 0 {
             text.push_str(&format!("↑{} ", app.ahead));
         }

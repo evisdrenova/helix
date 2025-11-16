@@ -308,6 +308,7 @@ impl App {
                     if self.search_mode {
                         match key.code {
                             KeyCode::Esc => {
+                                // Exit search mode AND clear filter
                                 self.search_mode = false;
                                 self.search_query.clear();
                                 self.filtered_indices.clear();
@@ -321,6 +322,7 @@ impl App {
                                 self.update_search();
                             }
                             KeyCode::Enter => {
+                                // Exit search mode but KEEP filter active
                                 self.search_mode = false;
                             }
                             _ => {}
@@ -334,6 +336,12 @@ impl App {
                         }
                         KeyCode::Char('s') => {
                             self.search_mode = true;
+                            continue;
+                        }
+                        KeyCode::Char('/') => {
+                            // Clear filter and show all commits
+                            self.search_query.clear();
+                            self.filtered_indices.clear();
                             continue;
                         }
                         KeyCode::Char('v') => {
