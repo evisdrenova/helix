@@ -1,10 +1,6 @@
-// src/log/ui.rs
-//
-// UI rendering with ratatui
-
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style, Stylize},
+    style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
     Frame,
@@ -13,7 +9,6 @@ use ratatui::{
 use super::app::App;
 use super::commits::Commit;
 
-/// Main draw function
 pub fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -24,17 +19,11 @@ pub fn draw(f: &mut Frame, app: &App) {
         ])
         .split(f.area());
 
-    // Draw header
     draw_header(f, chunks[0], app);
-
-    // Draw main content (split panes)
     draw_main_content(f, chunks[1], app);
-
-    // Draw footer
     draw_footer(f, chunks[2]);
 }
 
-/// Draw the header with branch info
 fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     let branch_text = format!(" ◉ {}  ", app.current_branch);
     let commit_count = format!("  {} commits loaded ", app.commits.len());
@@ -62,9 +51,8 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(header, area);
 }
 
-/// Draw the main content with split panes
 fn draw_main_content(f: &mut Frame, area: Rect, app: &App) {
-    // Calculate split ratio
+    // calculate split ratio
     let timeline_width = (area.width as f32 * app.split_ratio) as u16;
     let details_width = area.width.saturating_sub(timeline_width);
 
@@ -76,14 +64,10 @@ fn draw_main_content(f: &mut Frame, area: Rect, app: &App) {
         ])
         .split(area);
 
-    // Draw timeline (left pane)
     draw_timeline(f, chunks[0], app);
-
-    // Draw details (right pane)
     draw_details(f, chunks[1], app);
 }
 
-/// Draw the timeline pane (commit list)
 fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     let inner_height = area.height.saturating_sub(2) as usize; // Subtract border
 
@@ -113,7 +97,6 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(list, area);
 }
 
-/// Create a single timeline item
 fn create_timeline_item(commit: &Commit, is_selected: bool) -> ListItem {
     let current_user_email = std::env::var("USER").unwrap_or_default();
     let is_current_user = commit.author_email.contains(&current_user_email)
@@ -186,7 +169,6 @@ fn create_timeline_item(commit: &Commit, is_selected: bool) -> ListItem {
     ListItem::new(Text::from(lines)).style(style)
 }
 
-/// Draw the details pane
 fn draw_details(f: &mut Frame, area: Rect, app: &App) {
     if let Some(commit) = app.selected_commit() {
         let details_text = format_commit_details(commit);
@@ -210,7 +192,6 @@ fn draw_details(f: &mut Frame, area: Rect, app: &App) {
     }
 }
 
-/// Format commit details for display
 fn format_commit_details(commit: &Commit) -> Text<'static> {
     let mut lines = vec![];
 
@@ -338,7 +319,6 @@ fn format_commit_details(commit: &Commit) -> Text<'static> {
     Text::from(lines)
 }
 
-/// Draw the footer with help text
 fn draw_footer(f: &mut Frame, area: Rect) {
     let help_text = Line::from(vec![
         Span::styled(
@@ -349,13 +329,6 @@ fn draw_footer(f: &mut Frame, area: Rect) {
         ),
         Span::raw(" navigate  "),
         Span::styled(
-            "h/l",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" adjust split  "),
-        Span::styled(
             "g/G",
             Style::default()
                 .fg(Color::Cyan)
@@ -363,7 +336,14 @@ fn draw_footer(f: &mut Frame, area: Rect) {
         ),
         Span::raw(" top/bottom  "),
         Span::styled(
-            "q",
+            " c ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("checkout commit"),
+        Span::styled(
+            " q ",
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),

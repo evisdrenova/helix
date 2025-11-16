@@ -1,13 +1,8 @@
-// src/log/commits.rs
-//
-// Git commit data structures and repository operations
-
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local};
-use git2::{Commit as GitCommit, Oid, Repository};
+use git2::{Commit as GitCommit, Repository};
 use std::path::Path;
 
-/// A simplified commit structure optimized for display
 #[derive(Debug, Clone)]
 pub struct Commit {
     pub hash: String,
@@ -16,7 +11,7 @@ pub struct Commit {
     pub author_email: String,
     pub timestamp: DateTime<Local>,
     pub message: String,
-    pub summary: String, // First line of message
+    pub summary: String, // first line of message
     pub files_changed: usize,
     pub insertions: usize,
     pub deletions: usize,

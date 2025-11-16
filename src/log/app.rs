@@ -1,7 +1,3 @@
-// src/log/app.rs
-//
-// Application state and main event loop
-
 use anyhow::Result;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
@@ -47,7 +43,6 @@ pub struct App {
 }
 
 impl App {
-    /// Create a new App instance
     pub fn new(repo_path: &Path) -> Result<Self> {
         let loader = CommitLoader::open(repo_path)?;
         let current_branch = loader.current_branch()?;

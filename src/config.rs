@@ -13,13 +13,15 @@ pub enum MessageLevel {
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {
     pub model: String,
-    pub api_key: String,
+    pub api_base: String,
+    pub api_key: Option<String>,
+
     pub message_level: MessageLevel,
 }
 
 impl Config {
     pub fn load() -> Result<Self> {
-        let mut path: PathBuf = dirs::home_dir().context("could not find home directory")?;
+        let mut path: PathBuf = dirs::home_dir().context("Could not find home directory")?;
         path.push(".helix.toml");
 
         let s = fs::read_to_string(&path)

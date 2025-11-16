@@ -114,7 +114,7 @@ async fn main() -> Result<()> {
             } else if args.stage_and_generate {
                 workflow.stage_and_generate(args.files).await?;
             } else {
-                // default behavior if not flags provided
+                // default behavior if no flags provided
                 workflow
                     .auto_commit_and_push(args.files, args.branch)
                     .await?;
@@ -128,10 +128,8 @@ async fn main() -> Result<()> {
 fn load_config() -> Result<Config> {
     Config::load().map_err(|e| {
         eprintln!("❌ Failed to load config: {}", e);
-        eprintln!("Please create a .helix.toml file in your home directory with:");
-        eprintln!("model = \"gpt-4.1\"");
-        eprintln!("api_key = \"your-openai-api-key\"");
-        eprintln!("message_level = \"normal\"  # quiet, normal, or verbose");
+        eprintln!("Please create a .helix.toml file in your home directory");
+        eprintln!("If this is your first time downloading helix, run: `helix init`");
         e
     })
 }

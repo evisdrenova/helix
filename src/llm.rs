@@ -1,5 +1,5 @@
 use crate::config::{Config, MessageLevel};
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
@@ -49,12 +49,17 @@ impl LLM {
             style, diff
         );
 
-        let response = self.call_openai_api(&prompt).await?;
+        let response = self
+            .call_llm_api(
+                "You are a helpful assistant that writes clear, concise Git commit messages following conventional commit format.",
+                &prompt,
+            )
+            .await?;
 
         self.parse_commit_message(&response)
     }
 
-    async fn call_openai_api(&self, prompt: &str) -> Result<String> {
+    async fn call_llm_api(&self, system_prompt: &str, user_prompt: &str) -> Result<String> {
         let client = reqwest::Client::new();
 
         let request = ChatRequest {
@@ -62,44 +67,57 @@ impl LLM {
             messages: vec![
                 ChatMessage {
                     role: "system".to_string(),
-                    content: "You are a helpful assistant that writes clear, concise Git commit messages following conventional commit format.".to_string(),
+                    content: system_prompt.to_string(),
                 },
                 ChatMessage {
                     role: "user".to_string(),
-                    content: prompt.to_string(),
+                    content: user_prompt.to_string(),
                 },
             ],
             max_tokens: 200,
             temperature: 0.3,
         };
 
-        let response = client
-            .post("https://api.openai.com/v1/chat/completions")
-            .header("Authorization", format!("Bearer {}", self.config.api_key))
+        let api_url = format!(
+            "{}/v1/chat/completions",
+            self.config.api_base.trim_end_matches('/')
+        );
+
+        let mut req = client
+            .post(&api_url)
             .header("Content-Type", "application/json")
-            .json(&request)
+            .json(&request);
+
+        // Add Authorization header only if we have a key
+        if let Some(ref key) = self.config.api_key {
+            if !key.is_empty() {
+                req = req.header("Authorization", format!("Bearer {}", key));
+            }
+        }
+
+        let response = req
             .send()
             .await
-            .context("Failed to send request to OpenAI")?;
+            .with_context(|| format!("Failed to send request to LLM at {}", api_url))?;
 
         if !response.status().is_success() {
             let error_text = response
                 .text()
                 .await
                 .unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(anyhow::anyhow!("OpenAI API error: {}", error_text));
+            return Err(anyhow!("LLM API error ({}", error_text));
         }
 
         let chat_response: ChatResponse = response
             .json()
             .await
-            .context("Failed to parse OpenAI response")?;
+            .context("Failed to parse LLM response")?;
 
         chat_response
             .choices
             .first()
             .map(|choice| choice.message.content.clone())
-            .context("No response from OpenAI")
+            .context("No response from LLM")
     }
 
     fn parse_commit_message(&self, response: &str) -> Result<(String, Option<String>)> {
