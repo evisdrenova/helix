@@ -168,11 +168,34 @@ impl CommitLoader {
 
     pub fn current_branch_name(&self) -> Result<String> {
         let head = self.repo.head()?;
-        if let Some(name) = head.name() {
+        if let Some(name) = head.shorthand() {
             Ok(name.to_string())
         } else {
             Ok("HEAD".to_string())
         }
+    }
+
+    pub fn remote_tracking_info(&self) -> Option<(String, usize, usize)> {
+        let head = self.repo.head().ok()?;
+        let local_branch = head.name()?;
+
+        let upstream_name = self.repo.branch_upstream_name(local_branch).ok()?;
+        let upstream_name_str = upstream_name.as_str()?;
+
+        let local_oid = head.target()?;
+        let upstream_ref = self.repo.find_reference(upstream_name_str).ok()?;
+        let upstream_oid = upstream_ref.target()?;
+
+        // Calculate ahead/behind
+        let (ahead, behind) = self.repo.graph_ahead_behind(local_oid, upstream_oid).ok()?;
+
+        // Extract just the branch name (e.g., "origin/main" from "refs/remotes/origin/main")
+        let remote_branch = upstream_name_str
+            .strip_prefix("refs/remotes/")
+            .unwrap_or(upstream_name_str)
+            .to_string();
+
+        Some((remote_branch, ahead, behind))
     }
 
     pub fn repo_name(&self) -> String {

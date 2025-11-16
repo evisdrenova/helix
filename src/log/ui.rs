@@ -13,9 +13,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // Header
-            Constraint::Min(0),    // Main content
-            Constraint::Length(1), // Footer
+            Constraint::Length(3),
+            Constraint::Min(0),
+            Constraint::Length(1),
         ])
         .split(f.area());
 
@@ -26,11 +26,23 @@ pub fn draw(f: &mut Frame, app: &App) {
 
 fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     let repo_text = format!(" {} ", app.repo_name);
-    let branch_text = format!(" ◉ {} →  {}", app.current_branch_name, app.);
-    let commit_count = format!("  {} commits loaded ", app.commits.len());
+    let branch_text = if let Some(ref remote) = app.remote_branch {
+        let mut text = format!(" ◉ {} → {} ", app.current_branch_name, remote);
+        if app.ahead > 0 {
+            text.push_str(&format!("↑{} ", app.ahead));
+        }
+        if app.behind > 0 {
+            text.push_str(&format!("↓{} ", app.behind));
+        }
+        text
+    } else {
+        format!(" ◉ {} ", app.current_branch_name)
+    };
+
+    let commit_count = format!(" {} commits ", app.commits.len());
 
     let last_commit_text = if let Some(commit) = app.commits.first() {
-        format!(" Last Commit: {} ", commit.relative_time())
+        format!(" Last: {} ", commit.relative_time())
     } else {
         " No commits ".to_string()
     };
@@ -55,11 +67,14 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         Span::styled(last_commit_text, Style::default().fg(Color::DarkGray)),
     ]))
     .block(
-        Block::default().borders(Borders::ALL).title_style(
-            Style::default()
-                .fg(Color::Blue)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" helix ")
+            .title_style(
+                Style::default()
+                    .fg(Color::Blue)
+                    .add_modifier(Modifier::BOLD),
+            ),
     );
 
     f.render_widget(header, area);

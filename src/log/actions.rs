@@ -3,10 +3,8 @@ pub enum Action {
     Quit,
     MoveUp,
     MoveDown,
-    // page up (10 commits)
-    PageUp,
-    // page down (10 commits)
-    PageDown,
+    PageUp,   // page up (10 commits)
+    PageDown, // page down (10 commits)
     GoToTop,
     GoToBottom,
     CheckoutCommit,

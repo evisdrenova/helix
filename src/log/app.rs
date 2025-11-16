@@ -34,6 +34,12 @@ pub struct App {
     pub initial_limit: usize,
     /// Repo Name
     pub repo_name: String,
+    /// Remote tracking branch (e.g., "origin/main")
+    pub remote_branch: Option<String>,
+    /// Commits ahead of remote
+    pub ahead: usize,
+    /// Commits behind remote
+    pub behind: usize,
 }
 
 impl App {
@@ -46,6 +52,11 @@ impl App {
         let total_loaded = commits.len();
         let repo_name = loader.repo_name();
 
+        let (remote_branch, ahead, behind) = loader
+            .remote_tracking_info()
+            .map(|(branch, ahead, behind)| (Some(branch), ahead, behind))
+            .unwrap_or((None, 0, 0));
+
         Ok(Self {
             commits,
             selected_index: 0,
@@ -57,6 +68,9 @@ impl App {
             total_loaded,
             initial_limit,
             repo_name,
+            remote_branch,
+            ahead,
+            behind,
         })
     }
 
