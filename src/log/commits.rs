@@ -19,7 +19,6 @@ pub struct Commit {
 }
 
 impl Commit {
-    /// Create a Commit from a git2::Commit
     pub fn from_git_commit(commit: &GitCommit, repo: &Repository) -> Result<Self> {
         let hash = commit.id().to_string();
         let short_hash = commit.id().to_string()[..7].to_string();
@@ -134,8 +133,7 @@ pub struct CommitLoader {
 }
 
 impl CommitLoader {
-    /// Open a repository at the given path
-    pub fn open(path: &Path) -> Result<Self> {
+    pub fn open_repo_at_path(path: &Path) -> Result<Self> {
         let repo = Repository::discover(path).context("Failed to open git repository")?;
         Ok(Self { repo })
     }
@@ -168,13 +166,21 @@ impl CommitLoader {
         Ok(commits)
     }
 
-    /// Get current branch name
-    pub fn current_branch(&self) -> Result<String> {
+    pub fn current_branch_name(&self) -> Result<String> {
         let head = self.repo.head()?;
         if let Some(name) = head.shorthand() {
             Ok(name.to_string())
         } else {
             Ok("HEAD".to_string())
         }
+    }
+
+    pub fn repo_name(&self) -> String {
+        self.repo
+            .workdir()
+            .and_then(|path| path.file_name())
+            .and_then(|name| name.to_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "repository".to_string())
     }
 }

@@ -16,56 +16,51 @@ use super::ui;
 pub struct App {
     /// All loaded commits
     pub commits: Vec<Commit>,
-
     /// Currently selected commit index
     pub selected_index: usize,
-
     /// Scroll offset for the timeline pane
     pub scroll_offset: usize,
-
     /// Current branch name
-    pub current_branch: String,
-
+    pub current_branch_name: String,
     /// Whether to quit the application
     pub should_quit: bool,
-
     /// Split ratio (0.0 to 1.0) - how much space the timeline takes
     pub split_ratio: f32,
-
     /// Commit loader for fetching more commits
     pub loader: CommitLoader,
-
     /// Total commits loaded
     pub total_loaded: usize,
-
     /// Maximum commits to load initially
     pub initial_limit: usize,
+    /// Repo Name
+    pub repo_name: String,
 }
 
 impl App {
     pub fn new(repo_path: &Path) -> Result<Self> {
-        let loader = CommitLoader::open(repo_path)?;
-        let current_branch = loader.current_branch()?;
+        let loader = CommitLoader::open_repo_at_path(repo_path)?;
+        let current_branch_name = loader.current_branch_name()?;
 
         let initial_limit = 50;
         let commits = loader.load_commits(initial_limit)?;
         let total_loaded = commits.len();
+        let repo_name = loader.repo_name();
 
         Ok(Self {
             commits,
             selected_index: 0,
             scroll_offset: 0,
-            current_branch,
+            current_branch_name,
             should_quit: false,
             split_ratio: 0.35, // 35% for timeline, 65% for details
             loader,
             total_loaded,
             initial_limit,
+            repo_name,
         })
     }
 
-    /// Get the currently selected commit
-    pub fn selected_commit(&self) -> Option<&Commit> {
+    pub fn get_selected_commit(&self) -> Option<&Commit> {
         self.commits.get(self.selected_index)
     }
 
@@ -107,6 +102,9 @@ impl App {
                     self.load_more_commits()?;
                 }
             }
+            Action::CheckoutCommit => {
+                //todo: implment this
+            }
             Action::GoToTop => {
                 self.selected_index = 0;
                 self.scroll_offset = 0;
@@ -114,12 +112,6 @@ impl App {
             Action::GoToBottom => {
                 self.selected_index = self.commits.len().saturating_sub(1);
                 self.adjust_scroll();
-            }
-            Action::AdjustSplitLeft => {
-                self.split_ratio = (self.split_ratio - 0.05).max(0.2);
-            }
-            Action::AdjustSplitRight => {
-                self.split_ratio = (self.split_ratio + 0.05).min(0.6);
             }
         }
 
@@ -152,19 +144,15 @@ impl App {
         Ok(())
     }
 
-    /// Main event loop
     pub fn run(&mut self) -> Result<()> {
-        // Setup terminal
         enable_raw_mode()?;
         let mut stdout = io::stdout();
         execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
 
-        // Main loop
         let result = self.event_loop(&mut terminal);
 
-        // Restore terminal
         disable_raw_mode()?;
         execute!(
             terminal.backend_mut(),
@@ -176,15 +164,12 @@ impl App {
         result
     }
 
-    /// Event loop
     fn event_loop(&mut self, terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
         loop {
-            // Draw UI
             terminal.draw(|f| {
                 ui::draw(f, self);
             })?;
 
-            // Handle events
             if event::poll(std::time::Duration::from_millis(100))? {
                 if let Event::Key(key) = event::read()? {
                     let action = match key.code {
@@ -202,8 +187,6 @@ impl App {
                         }
                         KeyCode::Char('g') => Some(Action::GoToTop),
                         KeyCode::Char('G') => Some(Action::GoToBottom),
-                        KeyCode::Char('h') | KeyCode::Left => Some(Action::AdjustSplitLeft),
-                        KeyCode::Char('l') | KeyCode::Right => Some(Action::AdjustSplitRight),
                         KeyCode::PageDown => Some(Action::PageDown),
                         KeyCode::PageUp => Some(Action::PageUp),
                         KeyCode::Home => Some(Action::GoToTop),

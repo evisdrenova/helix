@@ -25,27 +25,41 @@ pub fn draw(f: &mut Frame, app: &App) {
 }
 
 fn draw_header(f: &mut Frame, area: Rect, app: &App) {
-    let branch_text = format!(" ◉ {}  ", app.current_branch);
+    let repo_text = format!(" {} ", app.repo_name);
+    let branch_text = format!(" ◉ {}  ", app.current_branch_name);
     let commit_count = format!("  {} commits loaded ", app.commits.len());
 
+    let last_commit_text = if let Some(commit) = app.commits.first() {
+        format!(" Last Commit: {} ", commit.relative_time())
+    } else {
+        " No commits ".to_string()
+    };
+
     let header = Paragraph::new(Line::from(vec![
+        Span::styled(
+            repo_text,
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
         Span::styled(
             branch_text,
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(commit_count, Style::default().fg(Color::DarkGray)),
+        Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
+        Span::styled(commit_count, Style::default().fg(Color::White)),
+        Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
+        Span::styled(last_commit_text, Style::default().fg(Color::DarkGray)),
     ]))
     .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" helix log ")
-            .title_style(
-                Style::default()
-                    .fg(Color::Magenta)
-                    .add_modifier(Modifier::BOLD),
-            ),
+        Block::default().borders(Borders::ALL).title_style(
+            Style::default()
+                .fg(Color::Blue)
+                .add_modifier(Modifier::BOLD),
+        ),
     );
 
     f.render_widget(header, area);
@@ -157,7 +171,7 @@ fn create_timeline_item(commit: &Commit, is_selected: bool) -> ListItem {
     // Empty line for spacing
     let line4 = Line::from(vec![Span::raw("")]);
 
-    let mut lines = vec![line1, line2, line3, line4];
+    let lines = vec![line1, line2, line3, line4];
 
     // Apply selection style
     let style = if is_selected {
@@ -170,7 +184,7 @@ fn create_timeline_item(commit: &Commit, is_selected: bool) -> ListItem {
 }
 
 fn draw_details(f: &mut Frame, area: Rect, app: &App) {
-    if let Some(commit) = app.selected_commit() {
+    if let Some(commit) = app.get_selected_commit() {
         let details_text = format_commit_details(commit);
 
         let paragraph = Paragraph::new(details_text)
