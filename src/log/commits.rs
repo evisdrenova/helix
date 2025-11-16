@@ -1,9 +1,8 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local};
-use git2::{Commit as GitCommit, Oid, Repository};
-use std::path::Path;
+use git2::{Commit as GitCommit, Repository};
+use std::{collections::HashMap, path::Path};
 
-/// A simplified commit structure optimized for display
 #[derive(Debug, Clone)]
 pub struct Commit {
     pub hash: String,
@@ -13,10 +12,17 @@ pub struct Commit {
     pub timestamp: DateTime<Local>,
     pub message: String,
     pub summary: String, // First line of message
-    pub files_changed: usize,
+    pub file_changes: Vec<FileChanges>,
+    pub is_merge: bool,
     pub insertions: usize,
     pub deletions: usize,
-    pub is_merge: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct FileChanges {
+    pub path: String,
+    pub insertions: usize,
+    pub deletions: usize,
 }
 
 impl Commit {
@@ -39,7 +45,21 @@ impl Commit {
         let is_merge = commit.parent_count() > 1;
 
         // Calculate diff stats
-        let (files_changed, insertions, deletions) = calculate_diff_stats(commit, repo)?;
+        let file_stats = calculate_diff_stats(commit, repo)?;
+
+        // convert file stats hash map to vector
+        let file_changes: Vec<FileChanges> = file_stats
+            .into_iter()
+            .map(|(p, (insertions, deletions))| FileChanges {
+                path: p,
+                insertions: insertions,
+                deletions: deletions,
+            })
+            .collect();
+
+        // cache these in the struct since UI re-renders constantly, no need to recalculate them
+        let total_insertions: usize = file_changes.iter().map(|f| f.insertions).sum();
+        let total_deletions: usize = file_changes.iter().map(|f| f.deletions).sum();
 
         Ok(Commit {
             hash,
@@ -49,10 +69,10 @@ impl Commit {
             timestamp,
             message,
             summary,
-            files_changed,
-            insertions,
-            deletions,
+            file_changes,
             is_merge,
+            insertions: total_insertions,
+            deletions: total_deletions,
         })
     }
 
@@ -99,21 +119,13 @@ impl Commit {
             self.timestamp.format("%b %d, %l:%M %p").to_string()
         }
     }
-
-    /// Get a short stats summary (e.g., "3 files · +247 -18")
-    pub fn stats_summary(&self) -> String {
-        format!(
-            "{} file{} · +{} -{}",
-            self.files_changed,
-            if self.files_changed == 1 { "" } else { "s" },
-            self.insertions,
-            self.deletions
-        )
-    }
 }
 
 /// Calculate diff statistics for a commit
-fn calculate_diff_stats(commit: &GitCommit, repo: &Repository) -> Result<(usize, usize, usize)> {
+fn calculate_diff_stats(
+    commit: &GitCommit,
+    repo: &Repository,
+) -> Result<HashMap<String, (usize, usize)>> {
     let tree = commit.tree().context("Failed to get commit tree")?;
 
     let parent_tree = if commit.parent_count() > 0 {
@@ -124,18 +136,30 @@ fn calculate_diff_stats(commit: &GitCommit, repo: &Repository) -> Result<(usize,
 
     let diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)?;
 
-    let stats = diff.stats()?;
+    let mut file_stats: HashMap<String, (usize, usize)> = HashMap::new();
+    // use a map here since the deltas aren't ordered
+    // this might be slow generally, will need to watch
+    diff.print(git2::DiffFormat::Patch, |delta, _hunk, line| {
+        if let Some(path) = delta.new_file().path().and_then(|p| p.to_str()) {
+            let entry = file_stats.entry(path.to_string()).or_insert((0, 0));
 
-    Ok((stats.files_changed(), stats.insertions(), stats.deletions()))
+            match line.origin() {
+                '+' => entry.0 += 1,
+                '-' => entry.1 += 1,
+                _ => {}
+            }
+        }
+        true
+    })?;
+
+    Ok(file_stats)
 }
 
-/// Repository wrapper for loading commits
 pub struct CommitLoader {
     repo: Repository,
 }
 
 impl CommitLoader {
-    /// Open a repository at the given path
     pub fn open_repo_at_path(path: &Path) -> Result<Self> {
         let repo = Repository::discover(path).context("Failed to open git repository")?;
         Ok(Self { repo })

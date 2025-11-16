@@ -108,7 +108,6 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     let visible_start = app.scroll_offset;
     let visible_end = (visible_start + inner_height).min(app.commits.len());
 
-    // Create list items - IMPORTANT: track the actual index in the full commit list
     let items: Vec<ListItem> = (visible_start..visible_end)
         .map(|actual_idx| {
             let commit = &app.commits[actual_idx];
@@ -135,7 +134,6 @@ fn create_timeline_item(commit: &Commit, is_selected: bool) -> ListItem {
             .to_lowercase()
             .contains(&current_user_email.to_lowercase());
 
-    // Time and author
     let time_str = commit.formatted_time();
     let author_indicator = if is_current_user { "●" } else { "○" };
     let author_color = if is_current_user {
@@ -144,7 +142,6 @@ fn create_timeline_item(commit: &Commit, is_selected: bool) -> ListItem {
         Color::Gray
     };
 
-    // First line: time, author, stats
     let line1 = Line::from(vec![
         Span::raw(" "),
         Span::styled(
@@ -166,7 +163,7 @@ fn create_timeline_item(commit: &Commit, is_selected: bool) -> ListItem {
             Style::default().fg(Color::Green),
         ),
         Span::styled(
-            format!("-{} ", commit.insertions),
+            format!("-{} ", commit.deletions),
             Style::default().fg(Color::Red),
         ),
     ]);
@@ -187,13 +184,9 @@ fn create_timeline_item(commit: &Commit, is_selected: bool) -> ListItem {
     };
 
     let line3 = Line::from(vec![Span::raw("   "), Span::styled(summary, summary_style)]);
-
-    // Empty line for spacing
     let line4 = Line::from(vec![Span::raw("")]);
-
     let lines = vec![line1, line2, line3, line4];
 
-    // Apply selection style
     let style = if is_selected {
         Style::default().bg(Color::DarkGray)
     } else {
@@ -229,7 +222,6 @@ fn draw_details(f: &mut Frame, area: Rect, app: &App) {
 fn format_commit_details(commit: &Commit) -> Text<'static> {
     let mut lines = vec![];
 
-    // Commit title (summary)
     lines.push(Line::from(vec![
         Span::raw(" "),
         Span::styled(
@@ -241,7 +233,6 @@ fn format_commit_details(commit: &Commit) -> Text<'static> {
     ]));
     lines.push(Line::from(""));
 
-    // Full message (if different from summary)
     let message_body = commit
         .message
         .strip_prefix(&commit.summary)
@@ -258,7 +249,6 @@ fn format_commit_details(commit: &Commit) -> Text<'static> {
         lines.push(Line::from(""));
     }
 
-    // Metadata section
     lines.push(Line::from(vec![
         Span::raw(" "),
         Span::styled(
@@ -303,7 +293,6 @@ fn format_commit_details(commit: &Commit) -> Text<'static> {
 
     lines.push(Line::from(""));
 
-    // Stats section
     lines.push(Line::from(vec![
         Span::raw(" "),
         Span::styled(
@@ -314,29 +303,30 @@ fn format_commit_details(commit: &Commit) -> Text<'static> {
         ),
     ]));
 
-    lines.push(Line::from(vec![
-        Span::raw("   "),
-        Span::styled(
-            format!("{} files changed", commit.files_changed),
-            Style::default().fg(Color::White),
-        ),
-    ]));
+    let max_path_len = commit
+        .file_changes
+        .iter()
+        .map(|f| f.path.len())
+        .max()
+        .unwrap_or(0);
 
-    if commit.insertions > 0 {
+    for file_change in &commit.file_changes {
+        let padding = " ".repeat(max_path_len - file_change.path.len());
+
         lines.push(Line::from(vec![
             Span::raw("   "),
             Span::styled(
-                format!("+{} insertions", commit.insertions),
+                format!("{}{}", file_change.path, padding),
+                Style::default().fg(Color::White),
+            ),
+            Span::raw("  "),
+            Span::styled(
+                format!("{:>3}", file_change.insertions),
                 Style::default().fg(Color::Green),
             ),
-        ]));
-    }
-
-    if commit.deletions > 0 {
-        lines.push(Line::from(vec![
-            Span::raw("   "),
+            Span::raw("  "),
             Span::styled(
-                format!("-{} deletions", commit.deletions),
+                format!("-{}", file_change.deletions),
                 Style::default().fg(Color::Red),
             ),
         ]));
@@ -370,12 +360,19 @@ fn draw_footer(f: &mut Frame, area: Rect) {
         ),
         Span::raw(" top/bottom  "),
         Span::styled(
-            "h/l",
+            "c",
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw(" adjust split  "),
+        Span::raw(" checkout  "),
+        Span::styled(
+            "s",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" type to search  "),
         Span::styled(
             "q",
             Style::default()

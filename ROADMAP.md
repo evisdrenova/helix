@@ -2,6 +2,5 @@ roadmap
 
 - log
   - implement checkout commit from log
-  - update time in commit item to include the date
-  - update diff changes in scrollable item to be color coded
-  -
+  - show diffs in detail view maybe in accordion or something on hover, easily jump to new files
+  - vi text input at the bottom to search for stuff
