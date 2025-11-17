@@ -165,6 +165,48 @@ impl CommitLoader {
         Ok(Self { repo })
     }
 
+    pub fn checkout_commit(&self, commit_hash: &str, create_branch: Option<&str>) -> Result<()> {
+        // Find the commit
+        let oid = git2::Oid::from_str(commit_hash).context("Invalid commit hash")?;
+        let commit = self.repo.find_commit(oid).context("Commit not found")?;
+
+        // If a branch name is provided, create it
+        if let Some(branch_name) = create_branch {
+            // Create a new branch at this commit
+            self.repo
+                .branch(branch_name, &commit, false)
+                .context("Failed to create branch")?;
+
+            // Checkout the new branch
+            let reference = format!("refs/heads/{}", branch_name);
+            self.repo
+                .set_head(&reference)
+                .context("Failed to set HEAD to new branch")?;
+        } else {
+            // Detached HEAD checkout
+            self.repo
+                .set_head_detached(oid)
+                .context("Failed to detach HEAD")?;
+        }
+
+        // Checkout the tree
+        let obj = self
+            .repo
+            .find_object(oid, Some(git2::ObjectType::Commit))
+            .context("Failed to find commit object")?;
+
+        self.repo
+            .checkout_tree(
+                &obj,
+                Some(
+                    git2::build::CheckoutBuilder::new().force(), // Use force to overwrite working directory
+                ),
+            )
+            .context("Failed to checkout tree")?;
+
+        Ok(())
+    }
+
     /// Load the most recent N commits
     pub fn load_commits(&self, limit: usize) -> Result<Vec<Commit>> {
         let mut revwalk = self.repo.revwalk()?;

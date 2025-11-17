@@ -46,6 +46,9 @@ pub struct App {
     pub vim_mode: bool,
     pub search_query: String,
     pub filtered_indices: Vec<usize>,
+    pub branch_name_input: String,
+    pub branch_name_mode: bool,
+    pub pending_checkout_hash: Option<String>,
 }
 
 impl App {
@@ -134,6 +137,9 @@ impl App {
             vim_mode: false,
             search_query: String::new(),
             filtered_indices: Vec::new(),
+            branch_name_input: String::new(),
+            branch_name_mode: false,
+            pending_checkout_hash: None,
         })
     }
 
@@ -218,7 +224,21 @@ impl App {
                 }
             }
             Action::CheckoutCommit => {
-                //todo: implement this
+                if let Some(commit) = self.get_selected_commit() {
+                    let branch_name = format!("checkout-{}", &commit.short_hash);
+
+                    match self
+                        .loader
+                        .checkout_commit(&commit.hash, Some(&branch_name))
+                    {
+                        Ok(_) => {
+                            self.should_quit = true;
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to checkout commit: {}", e);
+                        }
+                    }
+                }
             }
             Action::GoToTop => {
                 if !visible.is_empty() {
@@ -232,8 +252,8 @@ impl App {
                     self.adjust_scroll();
                 }
             }
-            Action::EnterSearchMode | Action::EnterVimMode | Action::ExitSearchMode => {
-                // These are handled in event_loop, not here
+            Action::EnterSearchMode | Action::ExitSearchMode => {
+                // handled in event_loop
             }
         }
 
@@ -304,42 +324,89 @@ impl App {
 
             if event::poll(std::time::Duration::from_millis(100))? {
                 if let Event::Key(key) = event::read()? {
-                    // Handle search mode input separately
+                    // Handle branch name input mode
+                    if self.branch_name_mode {
+                        match key.code {
+                            KeyCode::Esc => {
+                                self.branch_name_mode = false;
+                                self.branch_name_input.clear();
+                                self.pending_checkout_hash = None;
+                            }
+                            KeyCode::Char(c) => {
+                                self.branch_name_input.push(c);
+                            }
+                            KeyCode::Backspace => {
+                                self.branch_name_input.pop();
+                            }
+                            KeyCode::Enter => {
+                                if !self.branch_name_input.is_empty() {
+                                    if let Some(ref hash) = self.pending_checkout_hash {
+                                        match self
+                                            .loader
+                                            .checkout_commit(hash, Some(&self.branch_name_input))
+                                        {
+                                            Ok(_) => {
+                                                self.should_quit = true;
+                                            }
+                                            Err(e) => {
+                                                eprintln!("Failed to checkout commit: {}", e);
+                                                self.branch_name_mode = false;
+                                                self.branch_name_input.clear();
+                                                self.pending_checkout_hash = None;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
+
+                    // Handle search mode input
                     if self.search_mode {
                         match key.code {
                             KeyCode::Esc => {
-                                // Exit search mode AND clear filter
                                 self.search_mode = false;
                                 self.search_query.clear();
                                 self.filtered_indices.clear();
                             }
                             KeyCode::Char(c) => {
                                 self.search_query.push(c);
-                                self.update_search();
+                                self.update_search()
                             }
                             KeyCode::Backspace => {
                                 self.search_query.pop();
                                 self.update_search();
                             }
                             KeyCode::Enter => {
-                                // Exit search mode but KEEP filter active
                                 self.search_mode = false;
                             }
                             _ => {}
                         }
                         continue;
                     }
+
                     let action = match key.code {
                         KeyCode::Char('q') | KeyCode::Esc => Some(Action::Quit),
                         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             Some(Action::Quit)
+                        }
+                        KeyCode::Char('c') => {
+                            if let Some(commit) = self.get_selected_commit() {
+                                let hash = commit.hash.clone();
+                                let short_hash = commit.short_hash.clone();
+                                self.branch_name_mode = true;
+                                self.pending_checkout_hash = Some(hash);
+                                self.branch_name_input = format!("checkout-{}", short_hash);
+                            }
+                            continue;
                         }
                         KeyCode::Char('s') => {
                             self.search_mode = true;
                             continue;
                         }
                         KeyCode::Char('/') => {
-                            // Clear filter and show all commits
                             self.search_query.clear();
                             self.filtered_indices.clear();
                             continue;

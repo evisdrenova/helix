@@ -384,7 +384,18 @@ fn format_commit_details(commit: &Commit) -> Text<'static> {
 }
 
 fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
-    let help_text = if app.search_mode {
+    let help_text = if app.branch_name_mode {
+        Line::from(vec![
+            Span::styled(" Branch name: ", Style::default().fg(Color::Cyan)),
+            Span::styled(&app.branch_name_input, Style::default().fg(Color::Yellow)),
+            Span::styled("_", Style::default().fg(Color::Yellow)),
+            Span::raw("  "),
+            Span::styled("Enter", Style::default().fg(Color::Green)),
+            Span::raw(" to checkout  "),
+            Span::styled("Esc", Style::default().fg(Color::DarkGray)),
+            Span::raw(" to cancel"),
+        ])
+    } else if app.search_mode {
         Line::from(vec![
             Span::styled(" Search: ", Style::default().fg(Color::Cyan)),
             Span::styled(&app.search_query, Style::default().fg(Color::Yellow)),
