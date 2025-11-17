@@ -103,10 +103,49 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
 
     let visible_commits = app.visible_commits();
 
-    // Calculate visible range based on filtered commits
-    let visible_start = app
-        .scroll_offset
-        .min(visible_commits.len().saturating_sub(1));
+    if visible_commits.is_empty() {
+        let empty: Vec<ListItem<'_>> = Vec::new();
+        let list = List::new(empty).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Timeline ")
+                .title_style(Style::default().fg(Color::Blue)),
+        );
+        f.render_widget(list, area);
+        return;
+    }
+
+    // Find the position of selected_index in the filtered list
+    let selected_pos = visible_commits
+        .iter()
+        .position(|(idx, _)| *idx == app.selected_index)
+        .unwrap_or(0);
+
+    let scroll_offset = if app.search_query.is_empty() {
+        let mut offset = app
+            .scroll_offset
+            .min(visible_commits.len().saturating_sub(1));
+
+        // Adjust offset if selected item is outside the visible window
+        if selected_pos < offset {
+            // Selected item is above the visible area
+            offset = selected_pos;
+        } else if selected_pos >= offset + inner_height {
+            // Selected item is below the visible area
+            offset = selected_pos.saturating_sub(inner_height - 1);
+        }
+
+        offset
+    } else {
+        // Filtering active: center on selected item
+        if selected_pos < inner_height / 2 {
+            0
+        } else {
+            selected_pos.saturating_sub(inner_height / 2)
+        }
+    };
+
+    let visible_start = scroll_offset;
     let visible_end = (visible_start + inner_height).min(visible_commits.len());
 
     let items: Vec<ListItem> = visible_commits[visible_start..visible_end]
