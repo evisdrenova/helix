@@ -11,7 +11,7 @@ pub struct Commit {
     pub author_email: String,
     pub timestamp: DateTime<Local>,
     pub message: String,
-    pub summary: String, // First line of message
+    pub summary: String,
     pub file_changes: Vec<FileChanges>,
     pub is_merge: bool,
     pub insertions: usize,
@@ -27,7 +27,7 @@ pub struct FileChanges {
 
 impl Commit {
     /// Create a Commit from a git2::Commit
-    pub fn from_git_commit(commit: &GitCommit, repo: &Repository) -> Result<Self> {
+    pub fn create_commit(commit: &GitCommit, repo: &Repository) -> Result<Self> {
         let hash = commit.id().to_string();
         let short_hash = commit.id().to_string()[..7].to_string();
 
@@ -223,7 +223,7 @@ impl CommitLoader {
             let oid = oid_result?;
             let git_commit = self.repo.find_commit(oid)?;
 
-            match Commit::from_git_commit(&git_commit, &self.repo) {
+            match Commit::create_commit(&git_commit, &self.repo) {
                 Ok(commit) => commits.push(commit),
                 Err(e) => {
                     eprintln!("Warning: Failed to process commit {}: {}", oid, e);

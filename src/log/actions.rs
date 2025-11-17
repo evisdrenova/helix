@@ -3,12 +3,11 @@ pub enum Action {
     Quit,
     MoveUp,
     MoveDown,
-    PageUp,   // page up (10 commits)
-    PageDown, // page down (10 commits)
+    PageUp,
+    PageDown,
     GoToTop,
     GoToBottom,
     CheckoutCommit,
     EnterSearchMode,
-    // EnterVimMode,
     ExitSearchMode,
 }

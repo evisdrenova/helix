@@ -38,13 +38,10 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         }
         text
     } else {
-        // No remote tracking
         format!(" ◉ {} ", app.get_current_branch_name)
     };
 
     let commit_count = format!(" {} commits ", app.commits.len());
-
-    // Get time of most recent commit (first in list)
     let last_commit_text = if let Some(commit) = app.commits.first() {
         format!(" Last: {} ", commit.relative_time())
     } else {
