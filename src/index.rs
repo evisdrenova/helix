@@ -1,16 +1,55 @@
-use anyhow::Result;
-use memmap2::Mmap;
-use std::fs::File;
+use anyhow::{bail, Result};
+use memmap2::{Mmap, MmapOptions};
 use std::path::Path;
+use std::{fs::File, io};
 
 use crate::Oid;
 
-// Git index structs
+pub struct ReadOnlyMmap {
+    _file: File,
+    map: Mmap,
+}
+
+/*  - this creates a safer boundary around the unsafe mmap
+    - the _file field ensures that the file is not dropped while the mapping is active
+    - checks that it's a file and we're not trying to mmap() a directory or empty file
+    - mapping borrows implicitly from the structs lifetime, can't accidently outlive it
+    - should have no real peformance hit, it's just an extra field in the struct
+*/
+impl ReadOnlyMmap {
+    pub fn open(path: &Path) -> io::Result<Self> {
+        let file = File::open(path)?;
+        let meta = file.metadata()?;
+        if !meta.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "not a regular file",
+            ));
+        }
+
+        // check to make sure file isn't empty
+        let len = meta.len();
+        if len == 0 {
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "empty file"));
+        }
+
+        let map = unsafe { MmapOptions::new().len(len as usize).map(&file)? };
+
+        Ok(Self { _file: file, map })
+    }
+
+    #[inline]
+    pub fn bytes(&self) -> &[u8] {
+        &self.map
+    }
+}
+
 pub struct Index {
-    mmap: Mmap,
+    mmap: ReadOnlyMmap,
     entry_count: u32,
 }
 
+// index entries are usually files
 pub struct IndexEntry<'a> {
     pub path: &'a str,
     pub oid: Oid,
@@ -21,89 +60,111 @@ pub struct IndexEntry<'a> {
 pub struct IndexEntryIter<'a> {
     index: &'a Index,
     offset: usize,
-    count: u32,
+    seen: u32,
 }
 
-
-
-
 impl Index {
-    pub fn open(path: &Path) -> Result<Self> {
-        let file = File::open(path.join(".git/index"))?;
-        let mmap = unsafe { Mmap::map(&file)? };
+    // open a git index file from a repository root
+    pub fn open(repo_root: &Path) -> Result<Self> {
+        let mmap = ReadOnlyMmap::open(&repo_root.join(".git/index"))?;
+        let buf = mmap.bytes();
 
-        // Parse the header
-        // Git index format: 4-byte signature "DIRC", 4-byte version, 4-byte entry count
-        let entry_count = u32::from_be_bytes([mmap[8], mmap[9], mmap[10], mmap[11]]);
+        if buf.len() < 12 {
+            bail!("index file too small");
+        }
+
+        if &buf[0..4] != b"DIRC" {
+            bail!("invalid index signature");
+        }
+
+        // doc: https://git-scm.com/docs/index-format
+        let version = u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]);
+        if version != 2 {
+            bail!("unsupported index version: {}", version);
+        }
+
+        let entry_count = u32::from_be_bytes([buf[8], buf[9], buf[10], buf[11]]);
 
         Ok(Self { mmap, entry_count })
     }
 
+    // iterator over all index entries
     pub fn entries(&self) -> impl Iterator<Item = IndexEntry> + '_ {
         IndexEntryIter {
             index: self,
-            offset: 12, // Skip 12-byte header
-            count: 0,
+            offset: 12, // skip 12-byte header
+            seen: 0,
         }
     }
 }
 
-
-
-
-
-// doc: https://git-scm.com/docs/index-format
 impl<'a> Iterator for IndexEntryIter<'a> {
     type Item = IndexEntry<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.count >= self.index.entry_count {
+        if self.seen >= self.index.entry_count {
             return None;
         }
 
-        let data = &self.index.mmap[self.offset..];
+        let buf = self.index.mmap.bytes();
+        const FIXED_HEADER_SIZE: usize = 62; // fixed part of each entry
 
-        // Git index entry format (version 2):
-        // 32-bit ctime seconds, 32-bit ctime nanoseconds
-        // 32-bit mtime seconds, 32-bit mtime nanoseconds
-        // 32-bit dev, 32-bit ino, 32-bit mode, 32-bit uid, 32-bit gid
-        // 32-bit file size
-        // 20-byte SHA-1 hash
-        // 16-bit flags
-        // variable-length path name (null-terminated)
-        // padding to align to 8-byte boundary
+        // ensure we have enough data for the fixed header
+        if self.offset + FIXED_HEADER_SIZE > buf.len() {
+            self.seen = self.index.entry_count; // reached the end, stop iterating
+            return None;
+        }
 
-        // Parse mtime (skip ctime, get mtime at offset 8)
-        let mtime = u32::from_be_bytes([data[8], data[9], data[10], data[11]]) as u64;
+        // starts at 12 after the header
+        let base = self.offset;
 
-        // Parse file size (at offset 40)
-        let size = u32::from_be_bytes([data[40], data[41], data[42], data[43]]) as u64;
+        // mtime (offset 8-15: seconds + nanoseconds)
+        let mtime_secs = u32::from_be_bytes(buf[base + 8..base + 12].try_into().ok()?);
+        let mtime_nsecs = u32::from_be_bytes(buf[base + 12..base + 16].try_into().ok()?);
+        let mtime = ((mtime_secs as u64) << 32) | (mtime_nsecs as u64);
 
-        // Parse SHA-1 hash (at offset 44, 20 bytes)
-        let mut oid_bytes = [0u8; 20];
-        oid_bytes.copy_from_slice(&data[44..64]);
-        let oid = Oid(oid_bytes);
+        // file size (offset 36-39)
+        let size = u32::from_be_bytes(buf[base + 36..base + 40].try_into().ok()?) as u64;
 
-        // Parse flags (at offset 64, 2 bytes)
-        let flags = u16::from_be_bytes([data[64], data[65]]);
-        let name_length = (flags & 0x0FFF) as usize;
+        // SHA-1 hash (offset 40-59, 20 bytes)
+        let oid_start = base + 40;
+        let oid_end = oid_start + 20;
+        if oid_end > buf.len() {
+            self.seen = self.index.entry_count;
+            return None;
+        }
+        let oid = Oid::from_bytes(&buf[oid_start..oid_end]);
 
-        // Parse path name (at offset 66)
-        let path_start = 66;
-        let path_end = if name_length < 0x0FFF {
-            path_start + name_length
+        // flags (offset 60-61)
+        let flags = u16::from_be_bytes(buf[base + 60..base + 62].try_into().ok()?);
+        let name_hint = (flags & 0x0FFF) as usize;
+
+        // path (starts at offset 62, NUL-terminated)
+        let name_start = base + FIXED_HEADER_SIZE;
+        if name_start >= buf.len() {
+            self.seen = self.index.entry_count;
+            return None;
+        }
+
+        // find NUL terminator
+        let remaining = buf.len() - name_start;
+        let max_scan = if name_hint > 0 && name_hint < 0x0FFF {
+            (name_hint + 1).min(remaining)
         } else {
-            // If name_length == 0x0FFF, the name is null-terminated
-            path_start + data[path_start..].iter().position(|&b| b == 0).unwrap_or(0)
+            remaining.min(1 << 20) // safety limit: 1MB max path
         };
 
-        let path = std::str::from_utf8(&data[path_start..path_end]).ok()?;
+        // scan for NUL byte
+        let nul_offset = (0..max_scan).find(|&i| buf[name_start + i] == 0)?;
 
-        // Calculate next entry offset (entries are padded to 8-byte boundary)
-        let entry_size = 62 + path.len() + 1; // 62 bytes fixed + path + null terminator
-        let padding = (8 - (entry_size % 8)) % 8;
-        self.offset += entry_size + padding;
-        self.count += 1;
+        let path_bytes = &buf[name_start..name_start + nul_offset];
+        let path = std::str::from_utf8(path_bytes).ok()?;
+
+        // calculate next entry offset with 8-byte alignment padding
+        let entry_len = FIXED_HEADER_SIZE + nul_offset + 1; // +1 for NUL
+        let padding = (8 - (entry_len % 8)) % 8;
+        self.offset += entry_len + padding;
+        self.seen += 1;
 
         Some(IndexEntry {
             path,
