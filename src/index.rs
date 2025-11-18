@@ -28,12 +28,11 @@ impl ReadOnlyMmap {
         }
 
         // check to make sure file isn't empty
-        let len = meta.len();
-        if len == 0 {
+        if meta.len() == 0 {
             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "empty file"));
         }
 
-        let map = unsafe { MmapOptions::new().len(len as usize).map(&file)? };
+        let map = unsafe { MmapOptions::new().len(meta.len() as usize).map(&file)? };
 
         Ok(Self { _file: file, map })
     }
@@ -98,6 +97,7 @@ impl Index {
     }
 }
 
+// todo: probably optimize this, it's pretty restrictive in the way that it checks the bounds
 impl<'a> Iterator for IndexEntryIter<'a> {
     type Item = IndexEntry<'a>;
 

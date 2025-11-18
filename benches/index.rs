@@ -350,7 +350,6 @@ struct RepoConfig {
     name: &'static str,
     url: &'static str,
     category: &'static str,
-    expected_files: usize,
 }
 
 const REAL_REPOS: &[RepoConfig] = &[
@@ -358,25 +357,21 @@ const REAL_REPOS: &[RepoConfig] = &[
         name: "ripgrep",
         url: "https://github.com/BurntSushi/ripgrep.git",
         category: "small",
-        expected_files: 500,
     },
     RepoConfig {
         name: "fd",
         url: "https://github.com/sharkdp/fd.git",
         category: "small",
-        expected_files: 300,
     },
     RepoConfig {
         name: "rust-analyzer",
         url: "https://github.com/rust-lang/rust-analyzer.git",
         category: "medium",
-        expected_files: 5000,
     },
     RepoConfig {
         name: "tokio",
         url: "https://github.com/tokio-rs/tokio.git",
         category: "medium",
-        expected_files: 3000,
     },
 ];
 
@@ -392,7 +387,7 @@ struct BenchResult {
     git_median: f64,
     git_std_dev: f64,
 }
-
+// from the perspective of helix, big number is good, small number is bad
 impl BenchResult {
     fn speedup_mean(&self) -> f64 {
         self.git_mean / self.helix_mean
@@ -599,7 +594,6 @@ fn bench_index_read_by_repo(c: &mut Criterion) {
 
     group.finish();
 
-    // Now collect detailed stats
     eprintln!("\n========================================");
     eprintln!("Collecting detailed statistics...");
     eprintln!("========================================\n");
@@ -633,7 +627,6 @@ fn bench_index_read_by_repo(c: &mut Criterion) {
         });
     }
 
-    // Print summary table
     print_summary_table(&results);
 }
 
