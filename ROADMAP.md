@@ -20,18 +20,17 @@
   - a really easy way to see which commit broke main using AI
 - merge conflicts
   - "take theirs but keep my error handling" - natural language merge
-- natural language commands 
+- natural language commands
   - git "show me all commits that touched authentication in the last month"
   - git "create a branch from production, cherry-pick the auth fixes"
 - automatic branch clean up
   - detect merged branches, clean up
   - git compress - intelligently squash WIP commits while preserving meaningful history
-performance
-  - everything is incremental 
+    performance
+  - everything is incremental
   - CACHE
-monorepo support
+    monorepo support
   - sparse worktrees by default for agents
   - path scoped variables - agent only sees erelvant code
-
 
 The VCS needs to become a coordination layer, not just a storage layer.

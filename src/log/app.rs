@@ -52,6 +52,45 @@ pub struct App {
 }
 
 impl App {
+    pub fn new(repo_path: &Path) -> Result<Self> {
+        let loader = CommitLoader::open_repo_at_path(repo_path)?;
+        let get_current_branch_name = loader.get_current_branch_name()?;
+
+        let initial_limit = 50;
+        let commits = loader.load_commits(initial_limit)?;
+        let total_loaded = commits.len();
+        let repo_name = loader.get_repo_name();
+
+        let (remote_branch, ahead, behind) = loader
+            .remote_tracking_info()
+            .map(|(branch, ahead, behind)| (Some(branch), ahead, behind))
+            .unwrap_or((None, 0, 0));
+
+        Ok(Self {
+            commits,
+            selected_index: 0,
+            scroll_offset: 0,
+            get_current_branch_name,
+            should_quit: false,
+            split_ratio: 0.35, // 35% for timeline, 65% for details
+            loader,
+            total_loaded,
+            initial_limit,
+            repo_name,
+            remote_branch,
+            ahead,
+            behind,
+            visible_height: 20,
+            search_mode: false,
+            vim_mode: false,
+            search_query: String::new(),
+            filtered_indices: Vec::new(),
+            branch_name_input: String::new(),
+            branch_name_mode: false,
+            pending_checkout_hash: None,
+        })
+    }
+
     pub fn update_search(&mut self) {
         if self.search_query.is_empty() {
             self.filtered_indices.clear();
@@ -104,58 +143,26 @@ impl App {
         self.visible_height = (inner_height / 4).max(1) as usize;
     }
 
-    pub fn new(repo_path: &Path) -> Result<Self> {
-        let loader = CommitLoader::open_repo_at_path(repo_path)?;
-        let get_current_branch_name = loader.get_current_branch_name()?;
-
-        let initial_limit = 50;
-        let commits = loader.load_commits(initial_limit)?;
-        let total_loaded = commits.len();
-        let repo_name = loader.get_repo_name();
-
-        let (remote_branch, ahead, behind) = loader
-            .remote_tracking_info()
-            .map(|(branch, ahead, behind)| (Some(branch), ahead, behind))
-            .unwrap_or((None, 0, 0));
-
-        Ok(Self {
-            commits,
-            selected_index: 0,
-            scroll_offset: 0,
-            get_current_branch_name,
-            should_quit: false,
-            split_ratio: 0.35, // 35% for timeline, 65% for details
-            loader,
-            total_loaded,
-            initial_limit,
-            repo_name,
-            remote_branch,
-            ahead,
-            behind,
-            visible_height: 20,
-            search_mode: false,
-            vim_mode: false,
-            search_query: String::new(),
-            filtered_indices: Vec::new(),
-            branch_name_input: String::new(),
-            branch_name_mode: false,
-            pending_checkout_hash: None,
-        })
-    }
-
     pub fn get_selected_commit(&self) -> Option<&Commit> {
         self.commits.get(self.selected_index)
     }
 
     /// Handle user actions
     pub fn handle_action(&mut self, action: Action) -> Result<()> {
-        // Get the list we're navigating (filtered or all)
+        // Get the list we're navigating
         let visible = self.visible_commits();
         let visible_count = visible.len();
 
         if visible_count == 0 {
             return Ok(()); // No commits to navigate
         }
+
+        //...
+
+
+
+
+        
 
         match action {
             Action::Quit => {

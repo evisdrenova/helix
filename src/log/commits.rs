@@ -137,8 +137,8 @@ fn calculate_diff_stats(
     let diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)?;
 
     let mut file_stats: HashMap<String, (usize, usize)> = HashMap::new();
-    // use a map here since the deltas aren't ordered
-    // this might be slow generally, will need to watch
+    // use a map here since the deltas aren't ordered as they come in
+    // if we have too many deltas, this might be slow generally, will need to watch
     diff.print(git2::DiffFormat::Patch, |delta, _hunk, line| {
         if let Some(path) = delta.new_file().path().and_then(|p| p.to_str()) {
             let entry = file_stats.entry(path.to_string()).or_insert((0, 0));
