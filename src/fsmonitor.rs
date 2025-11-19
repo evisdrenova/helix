@@ -54,14 +54,30 @@ impl FSMonitor {
         })
     }
 
-    pub fn start_watching(&mut self) -> Result<()> {
+    pub fn start_watching_repo(&mut self) -> Result<()> {
         self._watcher
             .watch(&self.repo_root, RecursiveMode::Recursive)
             .context("Failed to start watching repository")?;
         Ok(())
     }
 
-    pub fn get_dirty(&self) -> Vec<PathBuf> {
+    pub fn get_dirty_files(&self) -> Vec<PathBuf> {
         self.dirty.iter().map(|entry| entry.key().clone()).collect()
+    }
+
+    pub fn dirty_count(&self) -> usize {
+        self.dirty.len()
+    }
+
+    pub fn is_dirty(&self, path: &Path) -> bool {
+        self.dirty.contains(path)
+    }
+
+    pub fn clear_dirty(&self) {
+        self.dirty.clear();
+    }
+
+    pub fn clear_single_path(&self, path: &Path) {
+        self.dirty.remove(path);
     }
 }
