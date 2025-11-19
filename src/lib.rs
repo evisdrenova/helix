@@ -1,6 +1,6 @@
-// pub mod diff;
-// pub mod fsmonitor;
+pub mod fsmonitor;
 pub mod index;
+// pub mod diff;
 // pub mod object;
 
 use std::result;
