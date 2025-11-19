@@ -32,9 +32,11 @@ impl FSMonitor {
         // channel for batchin events
         let (tx, rx): (Sender<Event>, Receiver<Event>) = bounded(1000);
 
+        // spawns a thread
         let batch_thread =
             thread::spawn(move || Self::batch_events(rx, dirty_clone, repo_root_clone));
 
+        // creates file watcher
         let watcher = RecommendedWatcher::new(
             move |res: notify::Result<Event>| {
                 if let Ok(event) = res {
@@ -50,5 +52,16 @@ impl FSMonitor {
             repo_root,
             _batch_thread: batch_thread,
         })
+    }
+
+    pub fn start_watching(&mut self) -> Result<()> {
+        self._watcher
+            .watch(&self.repo_root, RecursiveMode::Recursive)
+            .context("Failed to start watching repository")?;
+        Ok(())
+    }
+
+    pub fn get_dirty(&self) -> Vec<PathBuf> {
+        self.dirty.iter().map(|entry| entry.key().clone()).collect()
     }
 }
