@@ -4,14 +4,15 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use helix::fsmonitor::FSMonitor;
+use helix::{fsmonitor::FSMonitor, index::Index};
 use ratatui::{backend::CrosstermBackend, Terminal};
-use std::path::Path;
+use std::{collections::HashSet, path::Path};
 use std::{io, path::PathBuf};
 
 use super::actions::Action;
 use super::ui;
 
+#[derive(Debug, Clone, PartialEq)]
 pub enum FileStatus {
     Modified(PathBuf),
     Added(PathBuf),
@@ -19,15 +20,64 @@ pub enum FileStatus {
     Untracked(PathBuf),
 }
 
-pub enum FilterMode {
-    All,
+impl FileStatus {
+    pub fn path(&self) -> &Path {
+        match self {
+            FileStatus::Modified(p) => p,
+            FileStatus::Added(p) => p,
+            FileStatus::Deleted(p) => p,
+            FileStatus::Untracked(p) => p,
+        }
+    }
+
+    pub fn status_char(&self) -> char {
+        match self {
+            FileStatus::Modified(_) => 'M',
+            FileStatus::Added(_) => 'A',
+            FileStatus::Deleted(_) => 'D',
+            FileStatus::Untracked(_) => '?',
+        }
+    }
+
+    pub fn status_text(&self) -> &str {
+        match self {
+            FileStatus::Modified(_) => "Modified",
+            FileStatus::Added(_) => "Added",
+            FileStatus::Deleted(_) => "Deleted",
+            FileStatus::Untracked(_) => "Untracked",
+        }
+    }
 }
 
-pub struct StatusResult {
-    pub modified: Vec<PathBuf>,
-    pub added: Vec<PathBuf>,
-    pub deleted: Vec<PathBuf>,
-    pub untracked: Vec<PathBuf>,
+#[derive(Debug, Clone, PartialEq)]
+pub enum FilterMode {
+    All,
+    Modified,
+    Added,
+    Deleted,
+    Untracked,
+}
+
+impl FilterMode {
+    pub fn next(&self) -> Self {
+        match self {
+            FilterMode::All => FilterMode::Modified,
+            FilterMode::Modified => FilterMode::Added,
+            FilterMode::Added => FilterMode::Deleted,
+            FilterMode::Deleted => FilterMode::Untracked,
+            FilterMode::Untracked => FilterMode::All,
+        }
+    }
+
+    pub fn display_name(&self) -> &str {
+        match self {
+            FilterMode::All => "All",
+            FilterMode::Modified => "Modified",
+            FilterMode::Added => "Added",
+            FilterMode::Deleted => "Deleted",
+            FilterMode::Untracked => "Untracked",
+        }
+    }
 }
 
 pub struct App {
@@ -38,348 +88,326 @@ pub struct App {
     pub should_quit: bool,
     pub show_untracked: bool,
     pub filter_mode: FilterMode,
-}
-
-impl StatusResult {
-    pub fn new() -> Self {
-        Self {
-            modified: Vec::new(),
-            added: Vec::new(),
-            deleted: Vec::new(),
-            untracked: Vec::new(),
-        }
-    }
-
-    pub fn is_clean(&self) -> bool {
-        self.modified.is_empty()
-            && self.added.is_empty()
-            && self.deleted.is_empty()
-            && self.untracked.is_empty()
-    }
-
-    pub fn total_changes(&self) -> usize {
-        self.modified.len() + self.added.len() + self.deleted.len() + self.untracked.len()
-    }
+    pub visible_height: usize,
+    pub repo_path: PathBuf,
+    pub repo_name: String,
+    pub auto_refresh: bool,
+    pub last_refresh: std::time::Instant,
+    pub staged_files: HashSet<PathBuf>, // Files staged for commit
+    pub show_help: bool,
 }
 
 impl App {
     pub fn new(repo_path: &Path) -> Result<Self> {
-        let files: Vec<FileStatus> = Vec::new();
+        let repo_path = repo_path.canonicalize()?;
+        let repo_name = repo_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("repository")
+            .to_string();
 
-        let fsmonitor = FSMonitor::new(repo_path)?;
+        let mut fsmonitor = FSMonitor::new(&repo_path)?;
+        fsmonitor.start_watching_repo()?;
 
-        Ok(Self {
-            files: files,
+        let mut app = Self {
+            files: Vec::new(),
             selected_index: 0,
             scroll_offset: 0,
             fsmonitor,
-            should_quit: true,
+            should_quit: false,
             show_untracked: true,
             filter_mode: FilterMode::All,
-        })
+            visible_height: 20,
+            repo_path,
+            repo_name,
+            auto_refresh: true,
+            last_refresh: std::time::Instant::now(),
+            staged_files: HashSet::new(),
+            show_help: false,
+        };
+
+        // Initial refresh
+        app.refresh_status()?;
+
+        Ok(app)
     }
 
-    // pub fn update_visible_height(&mut self, terminal_height: u16) {
-    //     let main_content_height = terminal_height.saturating_sub(4);
-    //     let inner_height = main_content_height.saturating_sub(2);
-    //     self.visible_height = (inner_height / 4).max(1) as usize;
-    // }
+    pub fn update_visible_height(&mut self, terminal_height: u16) {
+        let main_content_height = terminal_height.saturating_sub(4);
+        let inner_height = main_content_height.saturating_sub(2);
+        self.visible_height = inner_height as usize;
+    }
 
-    // /// Handle user actions
-    // pub fn handle_action(&mut self, action: Action) -> Result<()> {
-    //     // Get the list we're navigating
-    //     let visible = self.visible_commits();
-    //     let visible_count = visible.len();
+    pub fn refresh_status(&mut self) -> Result<()> {
+        self.files.clear();
 
-    //     if visible_count == 0 {
-    //         return Ok(()); // No commits to navigate
-    //     }
+        let index = Index::open(&self.repo_path)?;
 
-    //     match action {
-    //         Action::Quit => {
-    //             self.should_quit = true;
-    //         }
-    //         Action::MoveUp => {
-    //             // Find current position in visible list
-    //             if let Some(pos) = visible
-    //                 .iter()
-    //                 .position(|(idx, _)| *idx == self.selected_index)
-    //             {
-    //                 if pos > 0 {
-    //                     self.selected_index = visible[pos - 1].0;
-    //                     self.adjust_scroll();
-    //                 }
-    //             }
-    //         }
-    //         Action::MoveDown => {
-    //             // Find current position in visible list
-    //             if let Some(pos) = visible
-    //                 .iter()
-    //                 .position(|(idx, _)| *idx == self.selected_index)
-    //             {
-    //                 if pos < visible_count - 1 {
-    //                     self.selected_index = visible[pos + 1].0;
-    //                     self.adjust_scroll();
-    //                 }
-    //             } else if !visible.is_empty() {
-    //                 // Selection not in visible list, jump to first
-    //                 self.selected_index = visible[0].0;
-    //                 self.scroll_offset = 0;
-    //             }
+        // Build set of tracked files
+        let tracked_files: HashSet<PathBuf> = index
+            .entries()
+            .map(|entry| PathBuf::from(entry.path))
+            .collect();
 
-    //             // Load more commits if we're near the end (only when not filtering)
-    //             if self.filtered_indices.is_empty()
-    //                 && self.selected_index >= self.commits.len().saturating_sub(10)
-    //             {
-    //                 self.load_more_commits()?;
-    //             }
-    //         }
-    //         Action::PageUp => {
-    //             if let Some(pos) = visible
-    //                 .iter()
-    //                 .position(|(idx, _)| *idx == self.selected_index)
-    //             {
-    //                 let new_pos = pos.saturating_sub(10);
-    //                 self.selected_index = visible[new_pos].0;
-    //                 self.adjust_scroll();
-    //             }
-    //         }
-    //         Action::PageDown => {
-    //             if let Some(pos) = visible
-    //                 .iter()
-    //                 .position(|(idx, _)| *idx == self.selected_index)
-    //             {
-    //                 let new_pos = (pos + 10).min(visible_count - 1);
-    //                 self.selected_index = visible[new_pos].0;
-    //                 self.adjust_scroll();
-    //             }
+        // Get dirty files from FSMonitor
+        let dirty_files = self.fsmonitor.get_dirty_files();
 
-    //             // Load more if needed (only when not filtering)
-    //             if self.filtered_indices.is_empty()
-    //                 && self.selected_index >= self.commits.len().saturating_sub(10)
-    //             {
-    //                 self.load_more_commits()?;
-    //             }
-    //         }
-    //         Action::CheckoutCommit => {
-    //             if let Some(commit) = self.get_selected_commit() {
-    //                 let branch_name = format!("checkout-{}", &commit.short_hash);
+        for dirty_path in dirty_files {
+            let full_path = self.repo_path.join(&dirty_path);
 
-    //                 match self
-    //                     .loader
-    //                     .checkout_commit(&commit.hash, Some(&branch_name))
-    //                 {
-    //                     Ok(_) => {
-    //                         self.should_quit = true;
-    //                     }
-    //                     Err(e) => {
-    //                         eprintln!("Failed to checkout commit: {}", e);
-    //                     }
-    //                 }
-    //             }
-    //         }
-    //         Action::GoToTop => {
-    //             if !visible.is_empty() {
-    //                 self.selected_index = visible[0].0;
-    //                 self.scroll_offset = 0;
-    //             }
-    //         }
-    //         Action::GoToBottom => {
-    //             if !visible.is_empty() {
-    //                 self.selected_index = visible[visible_count - 1].0;
-    //                 self.adjust_scroll();
-    //             }
-    //         }
-    //         Action::EnterSearchMode | Action::ExitSearchMode => {
-    //             // handled in event_loop
-    //         }
-    //     }
+            if tracked_files.contains(&dirty_path) {
+                if full_path.exists() {
+                    // File is modified
+                    self.files.push(FileStatus::Modified(dirty_path));
+                } else {
+                    // File is deleted
+                    self.files.push(FileStatus::Deleted(dirty_path));
+                }
+            } else if self.show_untracked && full_path.exists() {
+                // File is untracked
+                self.files.push(FileStatus::Untracked(dirty_path));
+            }
+        }
 
-    //     Ok(())
-    // }
+        // Sort files for consistent display
+        self.files.sort_by(|a, b| a.path().cmp(b.path()));
 
-    // fn adjust_scroll(&mut self) {
-    //     // Ensure visible_height is at least 1
-    //     let visible_height = self.visible_height.max(1);
+        self.last_refresh = std::time::Instant::now();
+        Ok(())
+    }
 
-    //     // If selected is above visible area, scroll up
-    //     if self.selected_index < self.scroll_offset {
-    //         self.scroll_offset = self.selected_index;
-    //     }
-    //     // If selected is below visible area, scroll down
-    //     else if self.selected_index >= self.scroll_offset + visible_height {
-    //         self.scroll_offset = self.selected_index.saturating_sub(visible_height - 1);
-    //     }
+    pub fn visible_files(&self) -> Vec<&FileStatus> {
+        let filtered: Vec<&FileStatus> = match self.filter_mode {
+            FilterMode::All => self.files.iter().collect(),
+            FilterMode::Modified => self
+                .files
+                .iter()
+                .filter(|f| matches!(f, FileStatus::Modified(_)))
+                .collect(),
+            FilterMode::Added => self
+                .files
+                .iter()
+                .filter(|f| matches!(f, FileStatus::Added(_)))
+                .collect(),
+            FilterMode::Deleted => self
+                .files
+                .iter()
+                .filter(|f| matches!(f, FileStatus::Deleted(_)))
+                .collect(),
+            FilterMode::Untracked => self
+                .files
+                .iter()
+                .filter(|f| matches!(f, FileStatus::Untracked(_)))
+                .collect(),
+        };
 
-    //     // Ensure scroll doesn't go past the end
-    //     let max_scroll = self.commits.len().saturating_sub(visible_height);
-    //     self.scroll_offset = self.scroll_offset.min(max_scroll);
-    // }
+        filtered
+    }
 
-    // /// Load more commits (lazy loading)
-    // fn load_more_files(&mut self) -> Result<()> {
-    //     // if self.total_loaded < self.commits.len() + 50 {
-    //     //     let new_limit = self.total_loaded + 50;
-    //     //     let new_commits = self.loader.load_commits(new_limit)?;
+    /// Get the currently selected file
+    pub fn get_selected_file(&self) -> Option<&FileStatus> {
+        let visible = self.visible_files();
+        if visible.is_empty() {
+            return None;
+        }
+        visible.get(self.selected_index).copied()
+    }
 
-    //     //     if new_commits.len() > self.commits.len() {
-    //     //         self.commits = new_commits;
-    //     //         self.total_loaded = self.commits.len();
-    //     //     }
-    //     // }
+    /// Toggle staging for the selected file
+    pub fn toggle_stage(&mut self) {
+        if let Some(file) = self.get_selected_file() {
+            let path = file.path().to_path_buf();
+            if self.staged_files.contains(&path) {
+                self.staged_files.remove(&path);
+            } else {
+                self.staged_files.insert(path);
+            }
+        }
+    }
 
-    //     Ok(())
-    // }
+    /// Stage all files
+    pub fn stage_all(&mut self) {
+        for file in &self.files {
+            self.staged_files.insert(file.path().to_path_buf());
+        }
+    }
 
-    // pub fn run(&mut self) -> Result<()> {
-    //     enable_raw_mode()?;
-    //     let mut stdout = io::stdout();
-    //     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    //     let backend = CrosstermBackend::new(stdout);
-    //     let mut terminal = Terminal::new(backend)?;
+    /// Unstage all files
+    pub fn unstage_all(&mut self) {
+        self.staged_files.clear();
+    }
 
-    //     let result = self.event_loop(&mut terminal);
+    pub fn handle_action(&mut self, action: Action) -> Result<()> {
+        let visible = self.visible_files();
+        let visible_count = visible.len();
 
-    //     disable_raw_mode()?;
-    //     execute!(
-    //         terminal.backend_mut(),
-    //         LeaveAlternateScreen,
-    //         DisableMouseCapture
-    //     )?;
-    //     terminal.show_cursor()?;
+        if visible_count == 0
+            && !matches!(action, Action::Quit | Action::Refresh | Action::ToggleHelp)
+        {
+            return Ok(());
+        }
 
-    //     result
-    // }
+        match action {
+            Action::Quit => {
+                self.should_quit = true;
+            }
+            Action::MoveUp => {
+                if self.selected_index > 0 {
+                    self.selected_index -= 1;
+                    self.adjust_scroll();
+                }
+            }
+            Action::MoveDown => {
+                if self.selected_index < visible_count.saturating_sub(1) {
+                    self.selected_index += 1;
+                    self.adjust_scroll();
+                }
+            }
+            Action::PageUp => {
+                self.selected_index = self.selected_index.saturating_sub(10);
+                self.adjust_scroll();
+            }
+            Action::PageDown => {
+                self.selected_index =
+                    (self.selected_index + 10).min(visible_count.saturating_sub(1));
+                self.adjust_scroll();
+            }
+            Action::GoToTop => {
+                self.selected_index = 0;
+                self.scroll_offset = 0;
+            }
+            Action::GoToBottom => {
+                self.selected_index = visible_count.saturating_sub(1);
+                self.adjust_scroll();
+            }
+            Action::ToggleStage => {
+                self.toggle_stage();
+            }
+            Action::StageAll => {
+                self.stage_all();
+            }
+            Action::UnstageAll => {
+                self.unstage_all();
+            }
+            Action::Refresh => {
+                self.refresh_status()?;
+                // Reset selection if out of bounds
+                let visible_count = self.visible_files().len();
+                if self.selected_index >= visible_count && visible_count > 0 {
+                    self.selected_index = visible_count - 1;
+                }
+            }
+            Action::ToggleFilter => {
+                self.filter_mode = self.filter_mode.next();
+                self.selected_index = 0;
+                self.scroll_offset = 0;
+            }
+            Action::ToggleUntracked => {
+                self.show_untracked = !self.show_untracked;
+                self.refresh_status()?;
+            }
+            Action::ToggleHelp => {
+                self.show_help = !self.show_help;
+            }
+        }
 
-    // fn event_loop(&mut self, terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
-    //     loop {
-    //         let terminal_height = terminal.size()?.height;
-    //         self.update_visible_height(terminal_height);
+        Ok(())
+    }
 
-    //         terminal.draw(|f| {
-    //             ui::draw(f, self);
-    //         })?;
+    fn adjust_scroll(&mut self) {
+        let visible_height = self.visible_height.max(1);
 
-    //         if event::poll(std::time::Duration::from_millis(100))? {
-    //             if let Event::Key(key) = event::read()? {
-    //                 // Handle branch name input mode
-    //                 if self.branch_name_mode {
-    //                     match key.code {
-    //                         KeyCode::Esc => {
-    //                             self.branch_name_mode = false;
-    //                             self.branch_name_input.clear();
-    //                             self.pending_checkout_hash = None;
-    //                         }
-    //                         KeyCode::Char(c) => {
-    //                             self.branch_name_input.push(c);
-    //                         }
-    //                         KeyCode::Backspace => {
-    //                             self.branch_name_input.pop();
-    //                         }
-    //                         KeyCode::Enter => {
-    //                             if !self.branch_name_input.is_empty() {
-    //                                 if let Some(ref hash) = self.pending_checkout_hash {
-    //                                     match self
-    //                                         .loader
-    //                                         .checkout_commit(hash, Some(&self.branch_name_input))
-    //                                     {
-    //                                         Ok(_) => {
-    //                                             self.should_quit = true;
-    //                                         }
-    //                                         Err(e) => {
-    //                                             eprintln!("Failed to checkout commit: {}", e);
-    //                                             self.branch_name_mode = false;
-    //                                             self.branch_name_input.clear();
-    //                                             self.pending_checkout_hash = None;
-    //                                         }
-    //                                     }
-    //                                 }
-    //                             }
-    //                         }
-    //                         _ => {}
-    //                     }
-    //                     continue;
-    //                 }
+        // If selected is above visible area, scroll up
+        if self.selected_index < self.scroll_offset {
+            self.scroll_offset = self.selected_index;
+        }
+        // If selected is below visible area, scroll down
+        else if self.selected_index >= self.scroll_offset + visible_height {
+            self.scroll_offset = self.selected_index.saturating_sub(visible_height - 1);
+        }
 
-    //                 // Handle search mode input
-    //                 if self.search_mode {
-    //                     match key.code {
-    //                         KeyCode::Esc => {
-    //                             self.search_mode = false;
-    //                             self.search_query.clear();
-    //                             self.filtered_indices.clear();
-    //                         }
-    //                         KeyCode::Char(c) => {
-    //                             self.search_query.push(c);
-    //                             self.update_search()
-    //                         }
-    //                         KeyCode::Backspace => {
-    //                             self.search_query.pop();
-    //                             self.update_search();
-    //                         }
-    //                         KeyCode::Enter => {
-    //                             self.search_mode = false;
-    //                         }
-    //                         _ => {}
-    //                     }
-    //                     continue;
-    //                 }
+        // Ensure scroll doesn't go past the end
+        let visible_count = self.visible_files().len();
+        let max_scroll = visible_count.saturating_sub(visible_height);
+        self.scroll_offset = self.scroll_offset.min(max_scroll);
+    }
 
-    //                 let action = match key.code {
-    //                     KeyCode::Char('q') | KeyCode::Esc => Some(Action::Quit),
-    //                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-    //                         Some(Action::Quit)
-    //                     }
-    //                     KeyCode::Char('c') => {
-    //                         if let Some(commit) = self.get_selected_commit() {
-    //                             let hash = commit.hash.clone();
-    //                             let short_hash = commit.short_hash.clone();
-    //                             self.branch_name_mode = true;
-    //                             self.pending_checkout_hash = Some(hash);
-    //                             self.branch_name_input = format!("checkout-{}", short_hash);
-    //                         }
-    //                         continue;
-    //                     }
-    //                     KeyCode::Char('s') => {
-    //                         self.search_mode = true;
-    //                         continue;
-    //                     }
-    //                     KeyCode::Char('/') => {
-    //                         self.search_query.clear();
-    //                         self.filtered_indices.clear();
-    //                         continue;
-    //                     }
-    //                     KeyCode::Char('v') => {
-    //                         self.vim_mode = true;
-    //                         continue;
-    //                     }
-    //                     KeyCode::Char('j') | KeyCode::Down => Some(Action::MoveDown),
-    //                     KeyCode::Char('k') | KeyCode::Up => Some(Action::MoveUp),
-    //                     KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-    //                         Some(Action::PageDown)
-    //                     }
-    //                     KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-    //                         Some(Action::PageUp)
-    //                     }
-    //                     KeyCode::Char('g') => Some(Action::GoToTop),
-    //                     KeyCode::Char('G') => Some(Action::GoToBottom),
-    //                     KeyCode::PageDown => Some(Action::PageDown),
-    //                     KeyCode::PageUp => Some(Action::PageUp),
-    //                     KeyCode::Home => Some(Action::GoToTop),
-    //                     KeyCode::End => Some(Action::GoToBottom),
-    //                     _ => None,
-    //                 };
-    //                 if let Some(action) = action {
-    //                     self.handle_action(action)?;
-    //                 }
-    //             }
-    //         }
+    pub fn run(&mut self) -> Result<()> {
+        enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+        let backend = CrosstermBackend::new(stdout);
+        let mut terminal = Terminal::new(backend)?;
 
-    //         if self.should_quit {
-    //             break;
-    //         }
-    //     }
+        let result = self.event_loop(&mut terminal);
 
-    //     Ok(())
-    // }
+        disable_raw_mode()?;
+        execute!(
+            terminal.backend_mut(),
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        )?;
+        terminal.show_cursor()?;
+
+        result
+    }
+
+    fn event_loop(&mut self, terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
+        loop {
+            let terminal_height = terminal.size()?.height;
+            self.update_visible_height(terminal_height);
+
+            // Auto-refresh every 2 seconds if enabled
+            if self.auto_refresh && self.last_refresh.elapsed().as_secs() >= 2 {
+                self.refresh_status()?;
+            }
+
+            terminal.draw(|f| {
+                ui::draw(f, self);
+            })?;
+
+            if event::poll(std::time::Duration::from_millis(100))? {
+                if let Event::Key(key) = event::read()? {
+                    let action = match key.code {
+                        KeyCode::Char('q') | KeyCode::Esc => Some(Action::Quit),
+                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            Some(Action::Quit)
+                        }
+                        KeyCode::Char('j') | KeyCode::Down => Some(Action::MoveDown),
+                        KeyCode::Char('k') | KeyCode::Up => Some(Action::MoveUp),
+                        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            Some(Action::PageDown)
+                        }
+                        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            Some(Action::PageUp)
+                        }
+                        KeyCode::Char('g') => Some(Action::GoToTop),
+                        KeyCode::Char('G') => Some(Action::GoToBottom),
+                        KeyCode::PageDown => Some(Action::PageDown),
+                        KeyCode::PageUp => Some(Action::PageUp),
+                        KeyCode::Home => Some(Action::GoToTop),
+                        KeyCode::End => Some(Action::GoToBottom),
+                        KeyCode::Char(' ') | KeyCode::Enter => Some(Action::ToggleStage),
+                        KeyCode::Char('a') => Some(Action::StageAll),
+                        KeyCode::Char('A') => Some(Action::UnstageAll),
+                        KeyCode::Char('r') => Some(Action::Refresh),
+                        KeyCode::Char('f') => Some(Action::ToggleFilter),
+                        KeyCode::Char('t') => Some(Action::ToggleUntracked),
+                        KeyCode::Char('?') => Some(Action::ToggleHelp),
+                        _ => None,
+                    };
+
+                    if let Some(action) = action {
+                        self.handle_action(action)?;
+                    }
+                }
+            }
+
+            if self.should_quit {
+                break;
+            }
+        }
+
+        Ok(())
+    }
 }
