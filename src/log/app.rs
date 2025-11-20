@@ -12,7 +12,6 @@ use super::actions::Action;
 use super::commits::{Commit, CommitLoader};
 use super::ui;
 
-/// Main application state
 pub struct App {
     /// All loaded commits
     pub commits: Vec<Commit>,
@@ -158,11 +157,6 @@ impl App {
         }
 
         //...
-
-
-
-
-        
 
         match action {
             Action::Quit => {
