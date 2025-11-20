@@ -18,64 +18,59 @@ struct Args {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    // Legacy flags for backward compatibility (when no subcommand is used)
-    #[arg(short, long, global = true)]
-    dry_run: bool,
-
-    /// Branch to push to (defaults to current branch)
+    // branch to push to (defaults to current branch)
     #[arg(short, long, global = true)]
     branch: Option<String>,
 
-    /// Add files, generate message, commit, and push automatically
+    // add files, generate message, commit, and push automatically
     #[arg(short, long)]
     auto: bool,
 
-    /// Only generate commit message for staged changes
+    // only generate commit message for staged changes
     #[arg(short, long)]
     generate: bool,
 
-    /// Add files and generate message (don't commit)
+    // add files and generate message (don't commit)
     #[arg(short = 's', long)]
     stage_and_generate: bool,
 
-    /// Files to add to staging
+    // files to add to staging
     files: Vec<String>,
 }
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// View beautiful git history
     Log {
-        /// Repository path (defaults to current directory)
+        // repo path (defaults to cwd)
         #[arg(value_name = "PATH")]
         path: Option<PathBuf>,
     },
-    /// Show working directory status with FSMonitor
+    // show working directory status
     Status {
-        /// Repository path (defaults to current directory)
+        // Repository path (defaults to cwd)
         #[arg(value_name = "PATH")]
         path: Option<PathBuf>,
     },
-    /// Add files, generate message, commit, and push (default)
+    // add files, generate message, commit, and push (default)
     Commit {
-        /// Files to add to staging
+        // files to add to staging
         files: Vec<String>,
 
-        /// Branch to push to (defaults to current branch)
+        // branch to push to (defaults to current branch)
         #[arg(short, long)]
         branch: Option<String>,
 
-        /// Only generate commit message for staged changes
+        // only generate commit message for staged changes
         #[arg(short, long)]
         generate: bool,
 
-        /// Add files and generate message (don't commit)
+        // add files and generate message (don't commit)
         #[arg(short = 's', long)]
         stage: bool,
     },
-    /// Initialize helix configuration for this repository
+    // initialize helix configuration for this repo
     Init {
-        /// Repository path (defaults to current directory)
+        // repository path (defaults to cwd)
         #[arg(value_name = "PATH")]
         path: Option<PathBuf>,
     },
@@ -85,7 +80,6 @@ enum Commands {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    // Handle subcommands
     match args.command {
         Some(Commands::Log { path }) => {
             let repo_path = resolve_repo_path(path.as_deref())?;
@@ -140,7 +134,6 @@ async fn main() -> Result<()> {
             } else if args.stage_and_generate {
                 workflow.stage_and_generate(args.files).await?;
             } else {
-                // default behavior if no flags provided
                 workflow
                     .auto_commit_and_push(args.files, args.branch)
                     .await?;
@@ -151,7 +144,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Resolve repository path, defaulting to current directory
+// defaults to cwd
 fn resolve_repo_path(path: Option<&Path>) -> Result<PathBuf> {
     let repo_path = match path {
         Some(p) => p.to_path_buf(),
@@ -161,7 +154,7 @@ fn resolve_repo_path(path: Option<&Path>) -> Result<PathBuf> {
     Ok(repo_path.canonicalize()?)
 }
 
-/// Load configuration for a repository (merges global + repo config)
+// load config for a repo (merges global + repo config)
 fn load_config(repo_path: &Path) -> Result<Config> {
     Config::load(Some(repo_path)).map_err(|e| {
         eprintln!("❌ Failed to load config: {}", e);
@@ -181,7 +174,7 @@ fn load_config(repo_path: &Path) -> Result<Config> {
     })
 }
 
-/// Initialize repository-specific configuration
+// init repo-specific config
 fn init_repo_config(repo_path: &Path) -> Result<()> {
     use std::fs;
 
@@ -198,10 +191,8 @@ fn init_repo_config(repo_path: &Path) -> Result<()> {
         return Ok(());
     }
 
-    // Create .helix directory
     fs::create_dir_all(&helix_dir)?;
 
-    // Create default repo config
     let default_config = r#"# Helix repository configuration
 
 [core]
