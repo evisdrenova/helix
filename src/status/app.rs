@@ -12,6 +12,12 @@ use std::{io, path::PathBuf};
 use super::actions::Action;
 use super::ui;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Section {
+    Unstaged,
+    Staged,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum FileStatus {
     Modified(PathBuf),
@@ -95,6 +101,11 @@ pub struct App {
     pub last_refresh: std::time::Instant,
     pub staged_files: HashSet<PathBuf>,
     pub show_help: bool,
+    pub current_section: Section,
+    pub sections_collapsed: HashSet<Section>,
+    pub current_branch: Option<String>,
+    pub search_query: String,
+    pub search_mode: bool,
 }
 
 impl App {
@@ -105,6 +116,7 @@ impl App {
             .and_then(|n| n.to_str())
             .unwrap_or("repository")
             .to_string();
+        let current_branch = get_current_branch(&repo_path).ok();
 
         let mut fsmonitor = FSMonitor::new(&repo_path)?;
         fsmonitor.start_watching_repo()?;
@@ -124,11 +136,14 @@ impl App {
             last_refresh: std::time::Instant::now(),
             staged_files: HashSet::new(),
             show_help: false,
+            current_section: Section::Unstaged,
+            sections_collapsed: HashSet::new(),
+            current_branch,
+            search_query: String::new(),
+            search_mode: false,
         };
 
-        // Initial refresh
         app.refresh_status()?;
-
         Ok(app)
     }
 
@@ -242,7 +257,15 @@ impl App {
         let visible_count = visible.len();
 
         if visible_count == 0
-            && !matches!(action, Action::Quit | Action::Refresh | Action::ToggleHelp)
+            && !matches!(
+                action,
+                Action::Quit
+                    | Action::Refresh
+                    | Action::ToggleHelp
+                    | Action::SwitchSection
+                    | Action::EnterSearchMode
+                    | Action::ExitSearchMode
+            )
         {
             return Ok(());
         }
@@ -309,6 +332,34 @@ impl App {
             Action::ToggleHelp => {
                 self.show_help = !self.show_help;
             }
+            Action::SwitchSection => {
+                // Toggle between Unstaged and Staged sections
+                self.current_section = match self.current_section {
+                    Section::Unstaged => Section::Staged,
+                    Section::Staged => Section::Unstaged,
+                };
+                // Reset selection when switching sections
+                self.selected_index = 0;
+                self.scroll_offset = 0;
+            }
+            Action::CollapseSection => {
+                // Collapse the current section
+                self.sections_collapsed.insert(self.current_section);
+            }
+            Action::ExpandSection => {
+                // Expand the current section
+                self.sections_collapsed.remove(&self.current_section);
+            }
+            Action::EnterSearchMode => {
+                self.search_mode = true;
+            }
+            Action::ExitSearchMode => {
+                self.search_mode = false;
+                self.search_query.clear();
+                self.filter_mode = FilterMode::All;
+                self.selected_index = 0;
+                self.scroll_offset = 0;
+            }
         }
 
         Ok(())
@@ -330,6 +381,17 @@ impl App {
         let visible_count = self.visible_files().len();
         let max_scroll = visible_count.saturating_sub(visible_height);
         self.scroll_offset = self.scroll_offset.min(max_scroll);
+    }
+    fn apply_search_filter(&mut self) {
+        if self.search_query.is_empty() {
+            self.filter_mode = FilterMode::All;
+            return;
+        }
+
+        // Search is active, filter will be applied in visible_files()
+        // Reset selection
+        self.selected_index = 0;
+        self.scroll_offset = 0;
     }
 
     pub fn run(&mut self) -> Result<()> {
@@ -368,8 +430,39 @@ impl App {
 
             if event::poll(std::time::Duration::from_millis(100))? {
                 if let Event::Key(key) = event::read()? {
+                    // Handle search mode separately
+                    if self.search_mode {
+                        match key.code {
+                            KeyCode::Esc => {
+                                self.handle_action(Action::ExitSearchMode)?;
+                            }
+                            KeyCode::Char(c) => {
+                                self.search_query.push(c);
+                                // Filter files based on search
+                                self.apply_search_filter();
+                            }
+                            KeyCode::Backspace => {
+                                self.search_query.pop();
+                                self.apply_search_filter();
+                            }
+                            KeyCode::Enter => {
+                                // Exit search mode but keep filter
+                                self.search_mode = false;
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
+
                     let action = match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => Some(Action::Quit),
+                        KeyCode::Char('q') => Some(Action::Quit),
+                        KeyCode::Esc => {
+                            if !self.search_query.is_empty() {
+                                Some(Action::ExitSearchMode)
+                            } else {
+                                Some(Action::Quit)
+                            }
+                        }
                         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             Some(Action::Quit)
                         }
@@ -394,6 +487,10 @@ impl App {
                         KeyCode::Char('f') => Some(Action::ToggleFilter),
                         KeyCode::Char('t') => Some(Action::ToggleUntracked),
                         KeyCode::Char('?') => Some(Action::ToggleHelp),
+                        KeyCode::Tab => Some(Action::SwitchSection),
+                        KeyCode::Char('h') => Some(Action::CollapseSection),
+                        KeyCode::Char('l') => Some(Action::ExpandSection),
+                        KeyCode::Char('/') => Some(Action::EnterSearchMode),
                         _ => None,
                     };
 
@@ -410,4 +507,15 @@ impl App {
 
         Ok(())
     }
+}
+
+fn get_current_branch(repo_path: &Path) -> Result<String> {
+    use std::process::Command;
+
+    let output = Command::new("git")
+        .current_dir(repo_path)
+        .args(&["branch", "--show-current"])
+        .output()?;
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }

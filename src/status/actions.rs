@@ -14,4 +14,9 @@ pub enum Action {
     ToggleFilter,
     ToggleUntracked,
     ToggleHelp,
+    SwitchSection,   // Tab
+    CollapseSection, // h
+    ExpandSection,   // l
+    EnterSearchMode, // /
+    ExitSearchMode,  // Esc
 }
