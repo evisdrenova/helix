@@ -1,7 +1,13 @@
+/*
+The UI for the status command
+h - collapses a section
+l - expands a section
+*/
+
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Span, Text},
+    text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
     Frame,
 };
@@ -57,21 +63,11 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         "Branch: {} ",
         app.current_branch.as_deref().unwrap_or("main")
     );
-    let filter_text = format!("Filter: [{}] ", app.filter_mode.display_name());
-    let search_text = if app.search_query.is_empty() {
-        String::from("Search: \"\"")
-    } else {
-        format!("Search: \"{}\"", app.search_query)
-    };
 
     let stats_line_1 = Line::from(vec![
         Span::raw(repo_text),
         Span::styled("│ ", Style::default().fg(Color::DarkGray)),
         Span::raw(branch_text),
-        Span::styled("│ ", Style::default().fg(Color::DarkGray)),
-        Span::raw(filter_text),
-        Span::styled("│ ", Style::default().fg(Color::DarkGray)),
-        Span::raw(search_text),
     ]);
 
     let stats_line_2 = Line::from(vec![
@@ -304,7 +300,7 @@ fn create_file_item(
 
 fn draw_empty_state(f: &mut Frame, area: Rect, app: &App) {
     let message = if app.filter_mode == FilterMode::All {
-        "✨ Working directory clean!"
+        "Working directory empty"
     } else {
         "No files match the current filter"
     };

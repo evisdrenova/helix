@@ -17,6 +17,4 @@ pub enum Action {
     SwitchSection,   // Tab
     CollapseSection, // h
     ExpandSection,   // l
-    EnterSearchMode, // /
-    ExitSearchMode,  // Esc
 }

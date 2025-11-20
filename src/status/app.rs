@@ -201,7 +201,6 @@ impl App {
 
         let index = Index::open(&self.repo_path)?;
 
-        // Build set of tracked files
         let tracked_files: HashSet<PathBuf> = index
             .entries()
             .map(|entry| PathBuf::from(entry.path))
@@ -303,12 +302,7 @@ impl App {
         if visible_count == 0
             && !matches!(
                 action,
-                Action::Quit
-                    | Action::Refresh
-                    | Action::ToggleHelp
-                    | Action::SwitchSection
-                    | Action::EnterSearchMode
-                    | Action::ExitSearchMode
+                Action::Quit | Action::Refresh | Action::ToggleHelp | Action::SwitchSection
             )
         {
             return Ok(());
@@ -394,16 +388,6 @@ impl App {
                 // Expand the current section
                 self.sections_collapsed.remove(&self.current_section);
             }
-            Action::EnterSearchMode => {
-                self.search_mode = true;
-            }
-            Action::ExitSearchMode => {
-                self.search_mode = false;
-                self.search_query.clear();
-                self.filter_mode = FilterMode::All;
-                self.selected_index = 0;
-                self.scroll_offset = 0;
-            }
         }
 
         Ok(())
@@ -481,37 +465,9 @@ impl App {
 
             if event::poll(std::time::Duration::from_millis(100))? {
                 if let Event::Key(key) = event::read()? {
-                    // Handle search mode separately
-                    if self.search_mode {
-                        match key.code {
-                            KeyCode::Esc => {
-                                self.handle_action(Action::ExitSearchMode)?;
-                            }
-                            KeyCode::Char(c) => {
-                                self.search_query.push(c);
-                                self.apply_search_filter();
-                            }
-                            KeyCode::Backspace => {
-                                self.search_query.pop();
-                                self.apply_search_filter();
-                            }
-                            KeyCode::Enter => {
-                                self.search_mode = false;
-                            }
-                            _ => {}
-                        }
-                        continue;
-                    }
-
                     let action = match key.code {
                         KeyCode::Char('q') => Some(Action::Quit),
-                        KeyCode::Esc => {
-                            if !self.search_query.is_empty() {
-                                Some(Action::ExitSearchMode)
-                            } else {
-                                Some(Action::Quit)
-                            }
-                        }
+                        KeyCode::Esc => Some(Action::Quit),
                         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             Some(Action::Quit)
                         }
@@ -539,7 +495,6 @@ impl App {
                         KeyCode::Tab => Some(Action::SwitchSection),
                         KeyCode::Char('h') => Some(Action::CollapseSection),
                         KeyCode::Char('l') => Some(Action::ExpandSection),
-                        KeyCode::Char('/') => Some(Action::EnterSearchMode),
                         _ => None,
                     };
 
