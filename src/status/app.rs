@@ -93,7 +93,7 @@ pub struct App {
     pub repo_name: String,
     pub auto_refresh: bool,
     pub last_refresh: std::time::Instant,
-    pub staged_files: HashSet<PathBuf>, // Files staged for commit
+    pub staged_files: HashSet<PathBuf>,
     pub show_help: bool,
 }
 

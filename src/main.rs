@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 mod config;
 mod git;
@@ -50,6 +50,12 @@ enum Commands {
         #[arg(value_name = "PATH")]
         path: Option<PathBuf>,
     },
+    /// Show working directory status with FSMonitor
+    Status {
+        /// Repository path (defaults to current directory)
+        #[arg(value_name = "PATH")]
+        path: Option<PathBuf>,
+    },
     /// Add files, generate message, commit, and push (default)
     Commit {
         /// Files to add to staging
@@ -67,7 +73,8 @@ enum Commands {
         #[arg(short = 's', long)]
         stage: bool,
     },
-    Status {
+    /// Initialize helix configuration for this repository
+    Init {
         /// Repository path (defaults to current directory)
         #[arg(value_name = "PATH")]
         path: Option<PathBuf>,
@@ -81,11 +88,18 @@ async fn main() -> Result<()> {
     // Handle subcommands
     match args.command {
         Some(Commands::Log { path }) => {
-            log::run(path.as_deref())?;
+            let repo_path = resolve_repo_path(path.as_deref())?;
+            log::run(Some(&repo_path))?;
             return Ok(());
         }
         Some(Commands::Status { path }) => {
-            status::run(path.as_deref())?;
+            let repo_path = resolve_repo_path(path.as_deref())?;
+            status::run(Some(&repo_path))?;
+            return Ok(());
+        }
+        Some(Commands::Init { path }) => {
+            let repo_path = resolve_repo_path(path.as_deref())?;
+            init_repo_config(&repo_path)?;
             return Ok(());
         }
         Some(Commands::Commit {
@@ -94,7 +108,8 @@ async fn main() -> Result<()> {
             generate,
             stage,
         }) => {
-            let config = load_config()?;
+            let repo_path = resolve_repo_path(None)?;
+            let config = load_config(&repo_path)?;
             let workflow = Workflow::new(config);
 
             if generate {
@@ -109,7 +124,8 @@ async fn main() -> Result<()> {
             }
         }
         None => {
-            let config = load_config()?;
+            let repo_path = resolve_repo_path(None)?;
+            let config = load_config(&repo_path)?;
             let workflow = Workflow::new(config);
 
             if args.auto {
@@ -135,11 +151,98 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn load_config() -> Result<Config> {
-    Config::load().map_err(|e| {
+/// Resolve repository path, defaulting to current directory
+fn resolve_repo_path(path: Option<&Path>) -> Result<PathBuf> {
+    let repo_path = match path {
+        Some(p) => p.to_path_buf(),
+        None => std::env::current_dir()?,
+    };
+
+    Ok(repo_path.canonicalize()?)
+}
+
+/// Load configuration for a repository (merges global + repo config)
+fn load_config(repo_path: &Path) -> Result<Config> {
+    Config::load(Some(repo_path)).map_err(|e| {
         eprintln!("❌ Failed to load config: {}", e);
-        eprintln!("Please create a .helix.toml file in your home directory");
-        eprintln!("If this is your first time downloading helix, run: `helix init`");
+        eprintln!();
+        eprintln!("Please create a ~/.helix.toml file with your settings.");
+        eprintln!();
+        eprintln!("Example ~/.helix.toml:");
+        eprintln!("  [user]");
+        eprintln!("  name = \"Your Name\"");
+        eprintln!("  email = \"you@example.com\"");
+        eprintln!();
+        eprintln!("  model = \"claude-sonnet-4\"");
+        eprintln!("  api_base = \"https://api.anthropic.com\"");
+        eprintln!("  api_key = \"sk-ant-...\"");
+        eprintln!();
         e
     })
+}
+
+/// Initialize repository-specific configuration
+fn init_repo_config(repo_path: &Path) -> Result<()> {
+    use std::fs;
+
+    let helix_dir = repo_path.join(".helix");
+    let config_path = helix_dir.join("config.toml");
+
+    if config_path.exists() {
+        println!(
+            "✓ .helix/config.toml already exists at {}",
+            config_path.display()
+        );
+        println!();
+        println!("To edit: {}", config_path.display());
+        return Ok(());
+    }
+
+    // Create .helix directory
+    fs::create_dir_all(&helix_dir)?;
+
+    // Create default repo config
+    let default_config = r#"# Helix repository configuration
+
+[core]
+auto_refresh = true
+refresh_interval_secs = 2
+
+[ignore]
+patterns = [
+    "*.log",
+    "*.tmp",
+    "*.swp",
+]
+respect_gitignore = true
+
+# Hooks (optional)
+# [hooks]
+# pre_commit = "./scripts/lint.sh"
+# pre_push = "./scripts/test.sh"
+
+# Additional remotes (optional)
+# [remote.upstream]
+# url = "git@github.com:original/repo.git"
+"#;
+
+    fs::write(&config_path, default_config)?;
+
+    println!("✓ Created .helix/config.toml at {}", config_path.display());
+    println!();
+    println!("Repository-specific configuration initialized!");
+    println!();
+    println!("You can now:");
+    println!(
+        "  1. Edit {} to customize this repo's settings",
+        config_path.display()
+    );
+    println!("  2. Commit .helix/config.toml to share with your team");
+    println!("  3. Settings in .helix/config.toml override ~/.helix.toml");
+    println!();
+    println!("Next steps:");
+    println!("  helix status    # View working directory status");
+    println!("  helix log       # View git history");
+
+    Ok(())
 }
