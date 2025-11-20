@@ -13,33 +13,19 @@ use super::commits::{Commit, CommitLoader};
 use super::ui;
 
 pub struct App {
-    /// All loaded commits
     pub commits: Vec<Commit>,
-    /// Currently selected commit index
     pub selected_index: usize,
-    /// Scroll offset for the timeline pane
     pub scroll_offset: usize,
-    /// Current branch name
     pub get_current_branch_name: String,
-    /// Whether to quit the application
     pub should_quit: bool,
-    /// Split ratio (0.0 to 1.0) - how much space the timeline takes
     pub split_ratio: f32,
-    /// Commit loader for fetching more commits
     pub loader: CommitLoader,
-    /// Total commits loaded
     pub total_loaded: usize,
-    /// Maximum commits to load initially
     pub initial_limit: usize,
-    /// Repo Name
     pub repo_name: String,
-    /// Remote tracking branch (e.g., "origin/main")
     pub remote_branch: Option<String>,
-    /// Commits ahead of remote
     pub ahead: usize,
-    /// Commits behind remote
     pub behind: usize,
-    /// Visible height for timeline (calculated from terminal size)
     pub visible_height: usize,
     pub search_mode: bool,
     pub vim_mode: bool,

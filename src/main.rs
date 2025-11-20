@@ -5,6 +5,7 @@ mod config;
 mod git;
 mod llm;
 mod log;
+mod status;
 mod workflow;
 
 use anyhow::Result;
@@ -66,6 +67,11 @@ enum Commands {
         #[arg(short = 's', long)]
         stage: bool,
     },
+    Status {
+        /// Repository path (defaults to current directory)
+        #[arg(value_name = "PATH")]
+        path: Option<PathBuf>,
+    },
 }
 
 #[tokio::main]
@@ -76,6 +82,10 @@ async fn main() -> Result<()> {
     match args.command {
         Some(Commands::Log { path }) => {
             log::run(path.as_deref())?;
+            return Ok(());
+        }
+        Some(Commands::Status { path }) => {
+            status::run(path.as_deref())?;
             return Ok(());
         }
         Some(Commands::Commit {
