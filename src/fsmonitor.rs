@@ -152,7 +152,7 @@ impl FSMonitor {
         }
     }
 
-    fn path_to_ignore(path: &Path, repo_root: &Path) -> bool {
+    fn path_to_ignore(repo_root: &Path, path: &Path) -> bool {
         // ignore .git directory
         if path.starts_with(repo_root.join(".git")) {
             return true;
@@ -160,7 +160,7 @@ impl FSMonitor {
 
         // ignore temp files, hidden files, etc.
         if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if name.starts_with('.') && name.ends_with(".swp") {
+            if name.contains(".swp") {
                 return true; // Vim swap files
             }
             if name.starts_with('.') && name.ends_with('~') {
@@ -238,30 +238,30 @@ mod tests {
 
         // Should ignore
         assert!(FSMonitor::path_to_ignore(
+            repo_root,
             &Path::new("/repo/.git/index"),
-            repo_root
         ));
         assert!(FSMonitor::path_to_ignore(
+            repo_root,
             &Path::new("/repo/file.swp"),
-            repo_root
         ));
         assert!(FSMonitor::path_to_ignore(
+            repo_root,
             &Path::new("/repo/.DS_Store"),
-            repo_root
         ));
         assert!(FSMonitor::path_to_ignore(
-            &Path::new("/repo/node_modules/package/file.js"),
-            repo_root
+            repo_root,
+            &Path::new("/repo/node_modules/package/file.js")
         ));
 
         // Should not ignore
         assert!(!FSMonitor::path_to_ignore(
-            &Path::new("/repo/src/main.rs"),
-            repo_root
+            repo_root,
+            &Path::new("/repo/src/main.rs")
         ));
         assert!(!FSMonitor::path_to_ignore(
-            &Path::new("/repo/README.md"),
-            repo_root
+            repo_root,
+            &Path::new("/repo/README.md")
         ));
     }
 }
