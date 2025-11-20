@@ -1,5 +1,7 @@
 /*
-Async event system that watches for file changes and sends file names to index to be added
+Async event system that watches for file changes and tracks:
+ - files that are modified
+ - staging changes
 */
 
 use anyhow::{Context, Result};
@@ -20,6 +22,8 @@ pub struct FSMonitor {
     dirty: Arc<DashSet<PathBuf>>, // lockfree reads and writes hashset to track which files are dirty/have been modified
     repo_root: PathBuf,
     _batch_thread: thread::JoinHandle<()>,
+    ignore_rules: Arc<IgnoreRules>,
+    index_dirty: Arc<DashSet<PathBuf>>, // track index changes like staging changes
 }
 
 impl FSMonitor {
@@ -32,12 +36,25 @@ impl FSMonitor {
         let dirty_clone = dirty.clone();
         let repo_root_clone = repo_root.clone();
 
+        let ignore_rules = Arc::new(IgnoreRules::load(&repo_root));
+        let ignore_rules_clone = ignore_rules.clone();
+
+        let index_dirty = Arc::new(DashSet::new());
+        let index_dirty_clone = index_dirty.clone();
+
         // channel for batching events that are given off by the OS when things happen to the files
         let (tx, rx): (Sender<Event>, Receiver<Event>) = bounded(1000);
 
         // spawns a thread
-        let batch_thread =
-            thread::spawn(move || Self::batch_events(rx, dirty_clone, repo_root_clone));
+        let batch_thread = thread::spawn(move || {
+            Self::batch_events(
+                rx,
+                dirty_clone,
+                repo_root_clone,
+                ignore_rules_clone,
+                index_dirty_clone,
+            )
+        });
 
         // creates file watcher
         let watcher = RecommendedWatcher::new(
@@ -54,6 +71,8 @@ impl FSMonitor {
             dirty,
             repo_root,
             _batch_thread: batch_thread,
+            ignore_rules,
+            index_dirty,
         })
     }
 
@@ -61,6 +80,15 @@ impl FSMonitor {
         self._watcher
             .watch(&self.repo_root, RecursiveMode::Recursive)
             .context("Failed to start watching repository")?;
+
+        // watch the index specifically for staging changes
+        let index_path = self.repo_root.join(".git/index");
+        if index_path.exists() {
+            self._watcher
+                .watch(&index_path, RecursiveMode::NonRecursive)
+                .context("Failed to watch .git/index")?;
+        }
+
         Ok(())
     }
 
@@ -84,8 +112,22 @@ impl FSMonitor {
         self.dirty.remove(path);
     }
 
+    pub fn index_changed(&self) -> bool {
+        !self.index_dirty.is_empty()
+    }
+
+    pub fn clear_index_flag(&self) {
+        self.index_dirty.clear();
+    }
+
     // event batching thread - processes events in 10ms windows
-    fn batch_events(rx: Receiver<Event>, dirty: Arc<DashSet<PathBuf>>, repo_root: PathBuf) {
+    fn batch_events(
+        rx: Receiver<Event>,
+        dirty: Arc<DashSet<PathBuf>>,
+        repo_root: PathBuf,
+        ignore_rules: Arc<IgnoreRules>,
+        index_dirty: Arc<DashSet<PathBuf>>,
+    ) {
         let batch_interval = Duration::from_millis(10);
         let mut batch = Vec::new();
 
@@ -103,23 +145,45 @@ impl FSMonitor {
             }
 
             if !batch.is_empty() {
-                Self::process_events_in_batch(&batch, &dirty, &repo_root);
+                Self::process_events_in_batch(
+                    &batch,
+                    &dirty,
+                    &repo_root,
+                    &ignore_rules,
+                    &index_dirty,
+                );
                 batch.clear();
             }
         }
     }
 
-    fn process_events_in_batch(events: &[Event], dirty: &DashSet<PathBuf>, repo_root: &Path) {
+    fn process_events_in_batch(
+        events: &[Event],
+        dirty: &DashSet<PathBuf>,
+        repo_root: &Path,
+        ignore_rules: &IgnoreRules,
+        index_dirty: &DashSet<PathBuf>,
+    ) {
         for event in events {
             if !Self::is_relevant_event(&event.kind) {
                 continue;
             }
+
             for path in &event.paths {
-                if Self::path_to_ignore(path, repo_root) {
+                if path.ends_with(".git/index") {
+                    index_dirty.insert(PathBuf::from(".git/index"));
                     continue;
                 }
 
                 if let Ok(rel_path) = path.strip_prefix(repo_root) {
+                    if ignore_rules.should_ignore(rel_path) {
+                        continue;
+                    }
+
+                    if Self::path_to_ignore(repo_root, path) {
+                        continue;
+                    }
+
                     dirty.insert(rel_path.to_path_buf());
                 }
             }
@@ -128,60 +192,89 @@ impl FSMonitor {
 
     fn is_relevant_event(kind: &EventKind) -> bool {
         match kind {
-            // file content changes
             EventKind::Modify(ModifyKind::Data(DataChange::Any | DataChange::Content)) => true,
-
-            // file metadata changes (permissions, timestamps)
             EventKind::Modify(ModifyKind::Metadata(_)) => true,
-
-            // file creation
             EventKind::Create(CreateKind::File | CreateKind::Any) => true,
-
-            // file deletion
             EventKind::Remove(RemoveKind::File | RemoveKind::Any) => true,
-
-            // renames
             EventKind::Modify(ModifyKind::Name(RenameMode::Any | RenameMode::Both)) => true,
-
-            // access events are reads, ignore
             EventKind::Access(AccessKind::Close(AccessMode::Write)) => true,
             EventKind::Access(_) => false,
-
-            // default is to include just to be safe
             _ => true,
         }
     }
 
     fn path_to_ignore(repo_root: &Path, path: &Path) -> bool {
         // ignore .git directory
-        if path.starts_with(repo_root.join(".git")) {
+        if path.starts_with(repo_root.join(".git")) && !path.ends_with(".git/index") {
             return true;
         }
 
-        // ignore temp files, hidden files, etc.
+        // Ignore common editor temp files
         if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if name.contains(".swp") {
-                return true; // Vim swap files
-            }
-            if name.starts_with('.') && name.ends_with('~') {
-                return true; // backup files
-            }
-            if name.starts_with("__") && name.ends_with("__") {
-                return true; // python cache
+            if name.starts_with('.') && (name.ends_with(".swp") || name.ends_with('~')) {
+                return true;
             }
             if name == ".DS_Store" {
-                return true; // macOS
+                return true;
             }
         }
 
-        // todo: update this to read from a .helixignore file, but for now and testing this is fine to ignore this stuff
+        false
+    }
+}
+
+pub struct IgnoreRules {
+    patterns: Vec<String>,
+}
+
+impl IgnoreRules {
+    pub fn load(repo_path: &Path) -> Self {
+        use std::fs::File;
+        use std::io::{BufRead, BufReader};
+
+        let mut patterns = vec![
+            "target/".to_string(),
+            "node_modules/".to_string(),
+            "__pycache__/".to_string(),
+            ".venv/".to_string(),
+            "dist/".to_string(),
+            "build/".to_string(),
+        ];
+
+        let gitignore_path = repo_path.join(".gitignore");
+        if let Ok(file) = File::open(gitignore_path) {
+            let reader = BufReader::new(file);
+            for line in reader.lines().flatten() {
+                let line = line.trim();
+                if !line.is_empty() && !line.starts_with('#') {
+                    patterns.push(line.to_string());
+                }
+            }
+        }
+
+        Self { patterns }
+    }
+
+    // todo: clean up the ignore, shoudl be deried from the helix.toml local config
+    pub fn should_ignore(&self, path: &Path) -> bool {
         let path_str = path.to_string_lossy();
-        if path_str.contains("/node_modules/")
-            || path_str.contains("/target/")
-            || path_str.contains("/.venv/")
-            || path_str.contains("/__pycache__/")
-        {
-            return true;
+
+        for pattern in &self.patterns {
+            if pattern.ends_with('/') {
+                if path_str.contains(pattern) || path_str.starts_with(pattern) {
+                    return true;
+                }
+            } else if pattern.starts_with('*') {
+                if let Some(ext) = pattern.strip_prefix('*') {
+                    if path_str.ends_with(ext) {
+                        return true;
+                    }
+                }
+            } else {
+                if path_str.contains(pattern) {
+                    return true;
+                }
+            }
         }
 
         false

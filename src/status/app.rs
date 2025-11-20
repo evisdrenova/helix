@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
     execute,
@@ -6,7 +6,7 @@ use crossterm::{
 };
 use helix::{fsmonitor::FSMonitor, index::Index};
 use ratatui::{backend::CrosstermBackend, Terminal};
-use std::{collections::HashSet, path::Path};
+use std::{collections::HashSet, path::Path, process::Command};
 use std::{io, path::PathBuf};
 
 use super::actions::Action;
@@ -16,6 +16,12 @@ use super::ui;
 pub enum Section {
     Unstaged,
     Staged,
+}
+
+#[derive(Default, Debug)]
+pub struct StageStatus {
+    pub staged: HashSet<PathBuf>,
+    pub modified: HashSet<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -42,15 +48,6 @@ impl FileStatus {
             FileStatus::Added(_) => 'A',
             FileStatus::Deleted(_) => 'D',
             FileStatus::Untracked(_) => '?',
-        }
-    }
-
-    pub fn status_text(&self) -> &str {
-        match self {
-            FileStatus::Modified(_) => "Modified",
-            FileStatus::Added(_) => "Added",
-            FileStatus::Deleted(_) => "Deleted",
-            FileStatus::Untracked(_) => "Untracked",
         }
     }
 }
@@ -147,6 +144,52 @@ impl App {
         Ok(app)
     }
 
+    // todoL look at these in more detail. i don't like that we ahve to call git porcelain here
+    fn get_git_status(&self) -> Result<StageStatus> {
+        let output = Command::new("git")
+            .current_dir(&self.repo_path)
+            .args(&["status", "--porcelain"])
+            .output()
+            .context("Failed to run git status")?;
+
+        let output_str = String::from_utf8_lossy(&output.stdout);
+
+        let mut status = StageStatus::default();
+
+        for line in output_str.lines() {
+            if line.len() < 4 {
+                continue;
+            }
+
+            // Git status format: XY filename
+            // X = index status, Y = worktree status
+            let index_status = line.chars().nth(0).unwrap();
+            let worktree_status = line.chars().nth(1).unwrap();
+            let path = PathBuf::from(line[3..].trim());
+
+            // If index status is not ' ' or '?', file is staged
+            if index_status != ' ' && index_status != '?' {
+                status.staged.insert(path.clone());
+            }
+
+            // If worktree status is not ' ', file has modifications
+            if worktree_status != ' ' {
+                status.modified.insert(path.clone());
+            }
+        }
+
+        Ok(status)
+    }
+
+    fn sync_staging_from_git(&mut self, git_status: &StageStatus) {
+        // Clear and rebuild staged files from git's truth
+        self.staged_files.clear();
+
+        for path in &git_status.staged {
+            self.staged_files.insert(path.clone());
+        }
+    }
+
     pub fn update_visible_height(&mut self, terminal_height: u16) {
         let main_content_height = terminal_height.saturating_sub(4);
         let inner_height = main_content_height.saturating_sub(2);
@@ -172,7 +215,8 @@ impl App {
 
             if tracked_files.contains(&dirty_path) {
                 if full_path.exists() {
-                    // File is modified
+                    // File exists - it's either modified or unmodified
+                    // The staging info is already synced from git_status
                     self.files.push(FileStatus::Modified(dirty_path));
                 } else {
                     // File is deleted
@@ -419,6 +463,13 @@ impl App {
             let terminal_height = terminal.size()?.height;
             self.update_visible_height(terminal_height);
 
+            // Check if .git/index changed (external git add/reset/restore)
+            if self.fsmonitor.index_changed() {
+                let git_status = self.get_git_status()?;
+                self.sync_staging_from_git(&git_status);
+                self.fsmonitor.clear_index_flag();
+            }
+
             // Auto-refresh every 2 seconds if enabled
             if self.auto_refresh && self.last_refresh.elapsed().as_secs() >= 2 {
                 self.refresh_status()?;
@@ -438,7 +489,6 @@ impl App {
                             }
                             KeyCode::Char(c) => {
                                 self.search_query.push(c);
-                                // Filter files based on search
                                 self.apply_search_filter();
                             }
                             KeyCode::Backspace => {
@@ -446,7 +496,6 @@ impl App {
                                 self.apply_search_filter();
                             }
                             KeyCode::Enter => {
-                                // Exit search mode but keep filter
                                 self.search_mode = false;
                             }
                             _ => {}
