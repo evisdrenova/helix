@@ -157,18 +157,9 @@ fn resolve_repo_path(path: Option<&Path>) -> Result<PathBuf> {
 // load config for a repo (merges global + repo config)
 fn load_config(repo_path: &Path) -> Result<Config> {
     Config::load(Some(repo_path)).map_err(|e| {
-        eprintln!("❌ Failed to load config: {}", e);
+        eprintln!("Failed to load  ~/.helix.toml config: {}", e);
         eprintln!();
-        eprintln!("Please create a ~/.helix.toml file with your settings.");
-        eprintln!();
-        eprintln!("Example ~/.helix.toml:");
-        eprintln!("  [user]");
-        eprintln!("  name = \"Your Name\"");
-        eprintln!("  email = \"you@example.com\"");
-        eprintln!();
-        eprintln!("  model = \"claude-sonnet-4\"");
-        eprintln!("  api_base = \"https://api.anthropic.com\"");
-        eprintln!("  api_key = \"sk-ant-...\"");
+        eprintln!("Please create a ~/.helix.toml file by running `helix init`");
         eprintln!();
         e
     })
@@ -206,30 +197,18 @@ patterns = [
     "*.swp",
 ]
 respect_gitignore = true
-
-# Hooks (optional)
-# [hooks]
-# pre_commit = "./scripts/lint.sh"
-# pre_push = "./scripts/test.sh"
-
-# Additional remotes (optional)
-# [remote.upstream]
-# url = "git@github.com:original/repo.git"
 "#;
 
     fs::write(&config_path, default_config)?;
 
     println!("✓ Created .helix/config.toml at {}", config_path.display());
     println!();
-    println!("Repository-specific configuration initialized!");
-    println!();
-    println!("You can now:");
     println!(
-        "  1. Edit {} to customize this repo's settings",
+        "Edit {} to customize this repo's settings",
         config_path.display()
     );
-    println!("  2. Commit .helix/config.toml to share with your team");
-    println!("  3. Settings in .helix/config.toml override ~/.helix.toml");
+    println!();
+    println!("  Settings in .helix/config.toml override ~/.helix.toml");
     println!();
     println!("Next steps:");
     println!("  helix status    # View working directory status");

@@ -1,6 +1,3 @@
-# Helix repository configuration
-# This file is committed to git and shared with your team
-
 [core]
 auto_refresh = true
 refresh_interval_secs = 2
@@ -12,12 +9,3 @@ patterns = [
     "*.swp",
 ]
 respect_gitignore = true
-
-# Hooks (optional)
-# [hooks]
-# pre_commit = "./scripts/lint.sh"
-# pre_push = "./scripts/test.sh"
-
-# Additional remotes (optional)
-# [remote.upstream]
-# url = "git@github.com:original/repo.git"

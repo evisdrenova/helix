@@ -1,5 +1,5 @@
 /*
-This file creates a read-only memory map of the .git/index file which is used as the staging area to track the current state of your working directory relative to the last commit.
+This file creates a read-only memory mapped version of the .git/index file which is used as the staging area to track the current state of your working directory relative to the last commit.
 It's a structured binary file inside of every repo that acts as a snapshot of your working directory at a given point in time. It has a header and then listing of every file (called "entries") that represent one tracked file in your working directory. When you `git add file.rs`, it adds or updates an entry by comparing the file metadata + hash
 
 Working Directory ─┐
@@ -19,7 +19,7 @@ stuff we'll want to add later (probably):
 - Verify version (v2/v3/v4).
 - Respect path compression for v4 (or detect and bail).
 - Parse/skip known extensions safely.
-- Validate bounds on every entry; tolerate non-UTF8 paths (you can store &[u8]).
+- Validate bounds on every entry; tolerate non-UTF8 paths (can store &[u8]).
 */
 
 use anyhow::{bail, Result};
@@ -51,7 +51,6 @@ impl ReadOnlyMmap {
             ));
         }
 
-        // check to make sure file isn't empty
         if meta.len() == 0 {
             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "empty file"));
         }
@@ -72,7 +71,7 @@ pub struct Index {
     entry_count: u32,
 }
 
-// index entries are usually files
+// index entries are usually files from our working directory
 pub struct IndexEntry<'a> {
     pub path: &'a str,
     pub oid: Oid,
@@ -87,7 +86,7 @@ pub struct IndexEntryIter<'a> {
 }
 
 impl Index {
-    // open a git index file from a repository root
+    // open and memory map .git/index
     pub fn open(repo_root: &Path) -> Result<Self> {
         let mmap = ReadOnlyMmap::open(&repo_root.join(".git/index"))?;
         let buf = mmap.bytes();
