@@ -16,4 +16,8 @@ impl Oid {
         oid_bytes.copy_from_slice(bytes);
         Oid(oid_bytes)
     }
+
+    pub fn as_bytes(&self) -> &[u8; 20] {
+        &self.0
+    }
 }

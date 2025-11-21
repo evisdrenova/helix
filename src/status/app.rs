@@ -4,9 +4,14 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use helix::{fsmonitor::FSMonitor, index::Index};
+use helix::{fsmonitor::FSMonitor, index::Index, Oid};
 use ratatui::{backend::CrosstermBackend, Terminal};
-use std::{collections::HashSet, path::Path, process::Command};
+use sha1::{Digest, Sha1};
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+    process::Command,
+};
 use std::{io, path::PathBuf};
 
 use super::actions::Action;
@@ -105,6 +110,19 @@ pub struct App {
     pub search_mode: bool,
 }
 
+#[derive(Debug)]
+struct IndexEntryInfo {
+    oid: Oid,
+    mtime: u64,
+    size: u64,
+}
+
+#[derive(Debug)]
+enum FileState {
+    Modified,
+    Unchanged,
+}
+
 impl App {
     pub fn new(repo_path: &Path) -> Result<Self> {
         let repo_path = repo_path.canonicalize()?;
@@ -201,37 +219,86 @@ impl App {
 
         let index = Index::open(&self.repo_path)?;
 
-        let tracked_files: HashSet<PathBuf> = index
+        // Build map with full index entry info
+        let tracked_files: HashMap<PathBuf, IndexEntryInfo> = index
             .entries()
-            .map(|entry| PathBuf::from(entry.path))
+            .map(|entry| {
+                (
+                    PathBuf::from(entry.path),
+                    IndexEntryInfo {
+                        oid: entry.oid,
+                        mtime: entry.mtime,
+                        size: entry.size,
+                    },
+                )
+            })
             .collect();
 
-        // Get dirty files from FSMonitor
         let dirty_files = self.fsmonitor.get_dirty_files();
 
         for dirty_path in dirty_files {
             let full_path = self.repo_path.join(&dirty_path);
 
-            if tracked_files.contains(&dirty_path) {
+            if let Some(index_entry) = tracked_files.get(&dirty_path) {
                 if full_path.exists() {
-                    // File exists - it's either modified or unmodified
-                    // The staging info is already synced from git_status
-                    self.files.push(FileStatus::Modified(dirty_path));
+                    // Use git's fast path optimization
+                    match self.is_file_actually_modified(&full_path, index_entry)? {
+                        FileState::Modified => {
+                            self.files.push(FileStatus::Modified(dirty_path));
+                        }
+                        FileState::Unchanged => {
+                            // File unchanged - just mtime bump from editor save
+                            self.fsmonitor.clear_single_path(&dirty_path);
+                        }
+                    }
                 } else {
-                    // File is deleted
                     self.files.push(FileStatus::Deleted(dirty_path));
                 }
             } else if self.show_untracked && full_path.exists() {
-                // File is untracked
                 self.files.push(FileStatus::Untracked(dirty_path));
             }
         }
 
-        // Sort files for consistent display
         self.files.sort_by(|a, b| a.path().cmp(b.path()));
-
         self.last_refresh = std::time::Instant::now();
         Ok(())
+    }
+
+    /// Check if file content actually changed compared to index
+    fn file_content_changed(&self, file_path: &Path, index_oid: &Oid) -> Result<bool> {
+        // Hash the current file content
+        let current_oid = hash_file_git_compatible(file_path)?;
+
+        // Compare with index
+        Ok(current_oid.as_bytes() != index_oid.as_bytes())
+    }
+
+    fn is_file_actually_modified(
+        &self,
+        file_path: &Path,
+        index_entry: &IndexEntryInfo,
+    ) -> Result<FileState> {
+        use std::time::UNIX_EPOCH;
+
+        let metadata = std::fs::metadata(file_path)?;
+
+        let current_mtime = metadata.modified()?.duration_since(UNIX_EPOCH)?.as_secs();
+        let current_size = metadata.len();
+
+        // FAST PATH: If mtime and size match index, assume unchanged
+        // This is what git does to avoid hashing on every check
+        if current_mtime == index_entry.mtime && current_size == index_entry.size {
+            return Ok(FileState::Unchanged);
+        }
+
+        // SLOW PATH: mtime or size differs, need to hash
+        let current_oid = hash_file_git_compatible(file_path)?;
+
+        if current_oid.as_bytes() == index_entry.oid.as_bytes() {
+            Ok(FileState::Unchanged)
+        } else {
+            Ok(FileState::Modified)
+        }
     }
 
     pub fn visible_files(&self) -> Vec<&FileStatus> {
@@ -522,4 +589,22 @@ fn get_current_branch(repo_path: &Path) -> Result<String> {
         .output()?;
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn hash_file_git_compatible(path: &Path) -> Result<Oid> {
+    let contents =
+        std::fs::read(path).with_context(|| format!("Failed to read {}", path.display()))?;
+
+    // Git hashes with format: "blob <size>\0<contents>"
+    let header = format!("blob {}\0", contents.len());
+
+    let mut hasher = Sha1::new();
+    hasher.update(header.as_bytes());
+    hasher.update(&contents);
+    let result = hasher.finalize();
+
+    let mut oid_bytes = [0u8; 20];
+    oid_bytes.copy_from_slice(&result);
+
+    Ok(Oid::from_bytes(&oid_bytes))
 }
