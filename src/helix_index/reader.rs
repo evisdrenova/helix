@@ -126,6 +126,7 @@ mod tests {
 
         assert_eq!(data.header.generation, 42);
         assert_eq!(data.header.repo_fingerprint, [0xaa; 16]);
+        assert_eq!(data.entries.len(), 1);
 
         Ok(())
     }
