@@ -200,7 +200,7 @@ impl App {
     }
 
     fn sync_staging_from_git(&mut self, git_status: &StageStatus) {
-        // Clear and rebuild staged files from git's truth
+        // Clear and rebuild staged files from git's truth index
         self.staged_files.clear();
 
         for path in &git_status.staged {
