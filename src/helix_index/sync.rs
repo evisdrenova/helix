@@ -14,11 +14,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 // thinking of a LSM type of algorithm where can we just update certain entries
 // although it might be simpler to just re-write the entire thing??
 
-pub struct Syncer {
+pub struct SyncEngine {
     repo_path: PathBuf,
 }
 
-impl Syncer {
+impl SyncEngine {
     pub fn new(repo_path: &Path) -> Self {
         Self {
             repo_path: repo_path.to_path_buf(),
@@ -37,16 +37,14 @@ impl Syncer {
     }
 
     /// Sync with custom timeout for .git/index.lock
+    ///
     pub fn sync_with_timeout(&self, timeout: Duration) -> Result<()> {
         // Wait for any concurrent git operation to finish
         wait_for_git_lock(&self.repo_path, timeout)?;
 
-        // Read current helix.idx to get generation (if exists)
         let reader = Reader::new(&self.repo_path);
-        if !reader.exists() {
-            return Err(anyhow::anyhow!("reader doesn't exist"));
-        }
 
+        // if reader exists, read it, otherwise create it and set the generation to 0
         let current_generation = if reader.exists() {
             reader
                 .read()
@@ -268,7 +266,7 @@ mod tests {
             .output()?;
 
         // Sync
-        let syncer = Syncer::new(temp_dir.path());
+        let syncer = SyncEngine::new(temp_dir.path());
         syncer.sync()?;
 
         // Verify helix.idx was created
@@ -296,7 +294,7 @@ mod tests {
             .current_dir(temp_dir.path())
             .output()?;
 
-        let syncer = Syncer::new(temp_dir.path());
+        let syncer = SyncEngine::new(temp_dir.path());
 
         // First sync
         syncer.sync()?;
@@ -336,7 +334,7 @@ mod tests {
             .output()?;
 
         // Sync
-        let syncer = Syncer::new(temp_dir.path());
+        let syncer = SyncEngine::new(temp_dir.path());
         syncer.sync()?;
 
         let reader = Reader::new(temp_dir.path());

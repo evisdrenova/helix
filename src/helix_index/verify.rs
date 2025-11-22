@@ -128,7 +128,7 @@ fn compute_git_index_checksum(path: &Path) -> Result<[u8; 20]> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::helix_index::sync::Syncer;
+    use crate::helix_index::sync::SyncEngine;
     use std::fs;
     use std::process::Command;
     use std::thread;
@@ -171,7 +171,7 @@ mod tests {
         init_test_repo(temp_dir.path())?;
 
         // Sync to create helix.idx
-        let syncer = Syncer::new(temp_dir.path());
+        let syncer = SyncEngine::new(temp_dir.path());
         syncer.sync()?;
 
         let verifier = Verifier::new(temp_dir.path());
@@ -188,7 +188,7 @@ mod tests {
         init_test_repo(temp_dir.path())?;
 
         // Create helix.idx
-        let syncer = Syncer::new(temp_dir.path());
+        let syncer = SyncEngine::new(temp_dir.path());
         syncer.sync()?;
 
         // Verify it's valid
@@ -196,10 +196,11 @@ mod tests {
         assert_eq!(verifier.verify()?, VerifyResult::Valid);
 
         // Sleep to ensure mtime changes
-        thread::sleep(Duration::from_millis(10));
+        thread::sleep(Duration::from_millis(100));
 
         // Modify .git/index (add another file)
         fs::write(temp_dir.path().join("another.txt"), "world")?;
+
         Command::new("git")
             .args(&["add", "another.txt"])
             .current_dir(temp_dir.path())
@@ -207,6 +208,9 @@ mod tests {
 
         // Now verify should detect mismatch
         let result = verifier.verify()?;
+
+        println!("the index {:?}", result);
+
         assert_eq!(result, VerifyResult::MtimeMismatch);
 
         Ok(())
