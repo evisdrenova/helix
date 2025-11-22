@@ -7,5 +7,6 @@ patterns = [
     "*.log",
     "*.tmp",
     "*.swp",
+    "*.DS_Store"
 ]
 respect_gitignore = true

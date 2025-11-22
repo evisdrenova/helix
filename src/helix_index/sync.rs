@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-//TODO: maybe in a later version see if we can be smarter here about what we need to re-write is there is some drift
+// TODO: maybe in a later version see if we can be smarter here about what we need to re-write is there is some drift
 // thinking of a LSM type of algorithm where can we just update certain entries
 // although it might be simpler to just re-write the entire thing??
 
