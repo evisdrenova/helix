@@ -320,3 +320,112 @@ impl Entry {
         ))
     }
 }
+
+bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct EntryFlags: u16 {
+        const TRACKED    = 1 << 0;
+        const STAGED     = 1 << 1;
+        const MODIFIED   = 1 << 2;
+        const DELETED    = 1 << 3;
+        const UNTRACKED  = 1 << 4;
+        const CONFLICT   = 1 << 5;
+        const RESERVED1  = 1 << 6;
+        const RESERVED2  = 1 << 7;
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Footer {
+    /// SHA-256 checksum of header + all entries
+    pub checksum: [u8; 32],
+}
+
+impl Footer {
+    pub fn new(checksum: [u8; 32]) -> Self {
+        Self { checksum }
+    }
+
+    pub fn to_bytes(&self) -> [u8; FOOTER_SIZE] {
+        self.checksum
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, FormatError> {
+        if bytes.len() < FOOTER_SIZE {
+            return Err(FormatError::InvalidFooter("Too short".into()));
+        }
+
+        let mut checksum = [0u8; 32];
+        checksum.copy_from_slice(&bytes[0..32]);
+
+        Ok(Self { checksum })
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum FormatError {
+    #[error("Invalid magic bytes: {0:?}")]
+    InvalidMagic([u8; 4]),
+
+    #[error("Unsupported version: {0}")]
+    UnsupportedVersion(u32),
+
+    #[error("Invalid header: {0}")]
+    InvalidHeader(String),
+
+    #[error("Invalid entry: {0}")]
+    InvalidEntry(String),
+
+    #[error("Invalid footer: {0}")]
+    InvalidFooter(String),
+
+    #[error("Checksum mismatch")]
+    ChecksumMismatch,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_header_size() {
+        assert_eq!(HEADER_SIZE, 140);
+    }
+
+    #[test]
+    fn test_header_roundtrip() {
+        let header = Header::new(
+            42,         // generation
+            [0xaa; 16], // repo_fingerprint
+            1234567890, // git_index_mtime_sec
+            123456,     // git_index_mtime_nsec
+            4096,       // git_index_size
+            [0xbb; 20], // git_index_checksum
+            10,         // entry_count
+        );
+
+        let bytes = header.to_bytes();
+        assert_eq!(bytes.len(), HEADER_SIZE);
+
+        let decoded = Header::from_bytes(&bytes).unwrap();
+        assert_eq!(header, decoded);
+    }
+
+    #[test]
+    fn test_entry_roundtrip() {
+        let entry = Entry {
+            path: PathBuf::from("src/main.rs"),
+            size: 1024,
+            mtime_sec: 1234567890,
+            mtime_nsec: 123456,
+            flags: EntryFlags::TRACKED | EntryFlags::STAGED,
+            oid: [0xcc; 20],
+            reserved: [0; ENTRY_RESERVED_SIZE],
+        };
+
+        let bytes = entry.to_bytes();
+        let (decoded, consumed) = Entry::from_bytes(&bytes).unwrap();
+        assert_eq!(entry, decoded);
+        assert_eq!(consumed, bytes.len());
+    }
+}
