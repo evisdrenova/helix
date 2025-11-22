@@ -21,11 +21,16 @@ Binary format for helix.idx V1.0
  This is modeled after the .git/index file format.
 */
 
+use std::path::PathBuf;
+
 // Magic bytes: "HLIX"
 pub const MAGIC: [u8; 4] = *b"HLIX";
 
 // Header is 140 bytes (fixed)
 pub const HEADER_SIZE: usize = 4 + 4 + 8 + 16 + 8 + 4 + 8 + 20 + 4 + 64;
+
+// Current format version
+pub const VERSION: u32 = 1;
 
 // Footer size in bytes (fixed)
 pub const FOOTER_SIZE: usize = 32;
@@ -208,7 +213,7 @@ pub struct Entry {
     pub path: PathBuf,
     pub size: u64,
     pub mtime_sec: u64,
-    pub mtime_nsec: u64,
+    pub mtime_nsec: u32,
     pub flags: EntryFlags,
     pub oid: [u8; 20],
     pub reserved: [u8; ENTRY_RESERVED_SIZE],
@@ -218,7 +223,8 @@ impl Entry {
     /// Serialize entry to bytes (variable length)
     /// Format: [path_len: u16][path: bytes][size: u64][mtime_sec: u64][mtime_nsec: u32][flags: u16][oid: 20 bytes][reserved: 64 bytes]
     pub fn to_bytes(&self) -> Vec<u8> {
-        let path_bytes = self.path.to_string_lossy().as_bytes();
+        let path_binding = self.path.to_string_lossy();
+        let path_bytes = path_binding.as_bytes();
         let path_len = path_bytes.len() as u16;
 
         let mut buf =

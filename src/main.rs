@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 mod config;
 mod git;
+
 mod llm;
 mod log;
 mod status;
