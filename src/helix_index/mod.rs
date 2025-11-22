@@ -1,3 +1,4 @@
+pub mod api;
 pub mod fingerprint;
 pub mod format;
 pub mod reader;

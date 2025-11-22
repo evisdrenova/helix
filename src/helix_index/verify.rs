@@ -208,9 +208,6 @@ mod tests {
 
         // Now verify should detect mismatch
         let result = verifier.verify()?;
-
-        println!("the index {:?}", result);
-
         assert_eq!(result, VerifyResult::MtimeMismatch);
 
         Ok(())
