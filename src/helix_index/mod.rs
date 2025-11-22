@@ -1,6 +1,7 @@
 pub mod fingerprint;
 pub mod format;
 pub mod reader;
+pub mod verify;
 pub mod writer;
 
 pub use format::{Entry, EntryFlags, Header};
