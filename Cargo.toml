@@ -45,5 +45,9 @@ unicode-width = "0.2.0"
 
 
 [[bench]]
-name = "index"
+name = "helix_index"
+harness = false
+
+[[bench]]
+name = "status_performance"
 harness = false

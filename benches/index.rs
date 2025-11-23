@@ -1,5 +1,5 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use helix::index::Index;
+use helix::index::GitIndex;
 use std::collections::HashMap;
 use std::fs;
 use std::hint::black_box;
@@ -234,7 +234,7 @@ fn bench_index_read_by_repo(c: &mut Criterion) {
             repo_path,
             |b, path| {
                 b.iter(|| {
-                    let idx = Index::open(black_box(path)).unwrap();
+                    let idx = GitIndex::open(black_box(path)).unwrap();
                     black_box(idx.entries().count())
                 });
             },
@@ -268,7 +268,7 @@ fn bench_index_read_by_repo(c: &mut Criterion) {
         eprintln!("Measuring {}...", config.name);
 
         let helix_times = run_manual_bench(|| {
-            let idx = Index::open(repo_path).unwrap();
+            let idx = GitIndex::open(repo_path).unwrap();
             idx.entries().count()
         });
 
