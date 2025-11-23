@@ -7,6 +7,7 @@ import json
 import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
+from datetime import date
 
 
 def parse_criterion_results(criterion_dir: Path) -> Dict:
@@ -84,8 +85,8 @@ def format_benchmark_name(name: str) -> str:
     return display.title()
 
 
-def print_aligned_table(results: Dict):
-    """Print results as a nicely aligned table."""
+def build_aligned_table(results: Dict) -> str:
+    """Build results as a nicely aligned markdown table and return it as a string."""
 
     # Get all unique parameters (10, 100, 1000) sorted
     all_params = sorted(
@@ -121,16 +122,18 @@ def print_aligned_table(results: Dict):
         for i, cell in enumerate(row):
             col_widths[i] = max(col_widths[i], len(cell))
 
-    # Print header
+    lines = []
+
+    # Header
     header_line = (
         "| " + " | ".join(h.ljust(w) for h, w in zip(headers, col_widths)) + " |"
     )
     separator = "|" + "|".join("-" * (w + 2) for w in col_widths) + "|"
 
-    print(header_line)
-    print(separator)
+    lines.append(header_line)
+    lines.append(separator)
 
-    # Print rows
+    # Rows
     for row in rows:
         row_line = (
             "| "
@@ -140,7 +143,14 @@ def print_aligned_table(results: Dict):
             )
             + " |"
         )
-        print(row_line)
+        lines.append(row_line)
+
+    return "\n".join(lines)
+
+
+def print_aligned_table(results: Dict):
+    """Print the aligned table (kept for backwards compatibility)."""
+    print(build_aligned_table(results))
 
 
 def calculate_speedup(git_time: float, helix_time: float) -> str:
@@ -156,17 +166,18 @@ def calculate_speedup(git_time: float, helix_time: float) -> str:
         return "same"
 
 
-def print_comparison_table(results: Dict):
-    """Print comparison table between git and helix."""
+def build_comparison_table(results: Dict) -> str:
+    """Build comparison table between git and helix as markdown and return it."""
 
     git_baseline = results.get("git_status_baseline", {})
     helix_cached = results.get("helix_index_cached_run", {})
     helix_first = results.get("helix_index_first_run", {})
 
     if not git_baseline or not helix_cached:
-        return
+        return ""
 
-    print("\n## Performance Comparison\n")
+    lines = []
+    lines.append("## Performance Comparison\n")
 
     all_params = sorted(git_baseline.keys(), key=lambda x: int(x) if x.isdigit() else 0)
 
@@ -210,36 +221,45 @@ def print_comparison_table(results: Dict):
         for i, cell in enumerate(row):
             col_widths[i] = max(col_widths[i], len(cell))
 
-    # Print header
     header_line = (
         "| " + " | ".join(h.ljust(w) for h, w in zip(headers, col_widths)) + " |"
     )
     separator = "|" + "|".join("-" * (w + 2) for w in col_widths) + "|"
 
-    print(header_line)
-    print(separator)
+    lines.append(header_line)
+    lines.append(separator)
 
-    # Print rows
+    # Rows
     for row in comparison_rows:
         if all(cell == "" for cell in row):
             continue
         row_line = (
             "| " + " | ".join(cell.ljust(w) for cell, w in zip(row, col_widths)) + " |"
         )
-        print(row_line)
+        lines.append(row_line)
+
+    return "\n".join(lines)
 
 
-def print_summary_stats(results: Dict):
-    """Print summary statistics."""
+def print_comparison_table(results: Dict):
+    """Print comparison table (kept for backwards compatibility)."""
+    s = build_comparison_table(results)
+    if s:
+        print(s)
+
+
+def build_summary_stats(results: Dict) -> str:
+    """Build summary statistics as markdown and return it."""
 
     git_baseline = results.get("git_status_baseline", {})
     helix_cached = results.get("helix_index_cached_run", {})
     query_staged = results.get("query_staged", {})
 
     if not git_baseline or not helix_cached:
-        return
+        return ""
 
-    print("\n## Summary Statistics\n")
+    lines = []
+    lines.append("## Summary Statistics\n")
 
     # Calculate average speedup
     speedups = []
@@ -252,18 +272,29 @@ def print_summary_stats(results: Dict):
 
     if speedups:
         avg_speedup = sum(speedups) / len(speedups)
-        print(f"**Average speedup (cached):** {avg_speedup:.1f}x faster than git")
+        lines.append(
+            f"**Average speedup (cached):** {avg_speedup:.1f}x faster than git"
+        )
 
     # Query performance
     if query_staged:
         avg_query = sum(query_staged.values()) / len(query_staged)
-        print(f"**Average query time:** {format_time(avg_query)}")
+        lines.append(f"**Average query time:** {format_time(avg_query)}")
 
     # Load time
     helix_open = results.get("helix_index_open", {})
     if helix_open:
         avg_load = sum(helix_open.values()) / len(helix_open)
-        print(f"**Average index load time:** {format_time(avg_load)}")
+        lines.append(f"**Average index load time:** {format_time(avg_load)}")
+
+    return "\n".join(lines)
+
+
+def print_summary_stats(results: Dict):
+    """Print summary stats (kept for backwards compatibility)."""
+    s = build_summary_stats(results)
+    if s:
+        print(s)
 
 
 def main():
@@ -277,8 +308,6 @@ def main():
         )
         sys.exit(1)
 
-    print("# Helix Benchmark Results\n")
-
     # Parse results
     results = parse_criterion_results(criterion_dir)
 
@@ -286,15 +315,41 @@ def main():
         print("Error: No benchmark results found.", file=sys.stderr)
         sys.exit(1)
 
-    # Print main table
-    print("## All Operations\n")
-    print_aligned_table(results)
+    # Build sections
+    title = "# Helix Benchmark Results\n"
+    aligned_section = "## All Operations\n\n" + build_aligned_table(results)
+    comparison_section = build_comparison_table(results)
+    summary_section = build_summary_stats(results)
 
-    # Print comparison
-    print_comparison_table(results)
+    # Print to stdout (keep existing behavior)
+    print(title)
+    print(aligned_section)
+    if comparison_section:
+        print()
+        print(comparison_section)
+    if summary_section:
+        print()
+        print(summary_section)
 
-    # Print summary
-    print_summary_stats(results)
+    # Save to ../benches/archive/{date}.md relative to this script
+    today_str = date.today().isoformat()
+    script_dir = Path(__file__).resolve().parent
+    archive_dir = script_dir.parent / "benches" / "archive"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    archive_path = archive_dir / f"{today_str}.md"
+
+    full_md = [title, aligned_section]
+    if comparison_section:
+        full_md.append("\n" + comparison_section)
+    if summary_section:
+        full_md.append("\n" + summary_section)
+
+    archive_content = "\n\n".join(full_md).rstrip() + "\n"
+
+    with open(archive_path, "w", encoding="utf-8") as f:
+        f.write(archive_content)
+
+    print(f"\nWrote archive to {archive_path}")
 
 
 if __name__ == "__main__":
