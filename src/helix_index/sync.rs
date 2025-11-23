@@ -2,10 +2,14 @@ use super::fingerprint::generate_repo_fingerprint;
 use super::format::{Entry, EntryFlags, Header};
 use super::reader::Reader;
 use super::writer::Writer;
+
 use crate::index::GitIndex;
 use crate::Oid;
+
 use anyhow::{Context, Result};
+use rayon::prelude::*;
 use sha1::{Digest, Sha1};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -32,19 +36,81 @@ impl SyncEngine {
     /// 2. Reads .git/index
     /// 3. Builds entries with status flags
     /// 4. Writes helix.idx atomically
+
+    /// Full sync: rebuild the entire helix index from .git/index
+    /// Only used on first run or corruption
     pub fn sync(&self) -> Result<()> {
         self.sync_with_timeout(Duration::from_secs(5))
     }
 
-    /// Sync with custom timeout for .git/index.lock
-    ///
-    pub fn sync_with_timeout(&self, timeout: Duration) -> Result<()> {
-        // Wait for any concurrent git operation to finish
-        wait_for_git_lock(&self.repo_path, timeout)?;
+    /// Incremental sync: only update changed entries
+    pub fn sync_incremental(&self, changed_paths: &[PathBuf]) -> Result<()> {
+        wait_for_git_lock(&self.repo_path, Duration::from_secs(5))?;
 
         let reader = Reader::new(&self.repo_path);
+        if !reader.exists() {
+            // No index exists, do full sync
+            return self.sync();
+        };
 
-        // if reader exists, read it, otherwise create it and set the generation to 0
+        let mut index_data = reader.read()?;
+
+        // Open git index
+        let git_index = GitIndex::open(&self.repo_path)?;
+
+        // Load HEAD tree once for staging detection
+        let head_tree = self.load_head_tree()?;
+
+        for changed_path in changed_paths {
+            match git_index.get_entry(changed_path) {
+                Ok(git_entry) => {
+                    // Find existing entry or create new
+                    if let Some(existing) = index_data
+                        .entries
+                        .iter_mut()
+                        .find(|e| &e.path == changed_path)
+                    {
+                        *existing = self.build_entry_from_git(&git_entry, &head_tree)?;
+                    } else {
+                        let entry = self.build_entry_from_git(&git_entry, &head_tree)?;
+                        index_data.entries.push(entry);
+                    }
+                }
+                Err(_) => {
+                    // File removed from index
+                    index_data.entries.retain(|e| &e.path != changed_path);
+                }
+            }
+        }
+
+        // Update header metadata
+        let git_index_path = self.repo_path.join(".git/index");
+        let git_metadata = fs::metadata(&git_index_path)?;
+        let git_mtime = git_metadata.modified()?;
+        let (git_mtime_sec, git_mtime_nsec) = system_time_to_parts(git_mtime);
+        let git_size = git_metadata.len();
+        let git_checksum = read_git_index_checksum(&git_index_path)?;
+
+        index_data.header.generation += 1;
+        index_data.header.git_index_mtime_sec = git_mtime_sec;
+        index_data.header.git_index_mtime_nsec = git_mtime_nsec;
+        index_data.header.git_index_size = git_size;
+        index_data.header.git_index_checksum = git_checksum;
+        index_data.header.entry_count = index_data.entries.len() as u32;
+
+        // Write atomically
+        let writer = Writer::new(&self.repo_path);
+        writer.write(&index_data.header, &index_data.entries)?;
+
+        Ok(())
+    }
+
+    /// Sync with custom timeout for .git/index.lock
+    pub fn sync_with_timeout(&self, timeout: Duration) -> Result<()> {
+        wait_for_git_lock(&self.repo_path, timeout)?;
+
+        // Read current generation
+        let reader = Reader::new(&self.repo_path);
         let current_generation = if reader.exists() {
             reader
                 .read()
@@ -61,30 +127,22 @@ impl SyncEngine {
             anyhow::bail!(".git/index does not exist");
         }
 
-        let git_metadata =
-            fs::metadata(&git_index_path).context("Failed to read .git/index metadata")?;
-
+        let git_metadata = fs::metadata(&git_index_path)?;
         let git_mtime = git_metadata.modified()?;
         let (git_mtime_sec, git_mtime_nsec) = system_time_to_parts(git_mtime);
         let git_size = git_metadata.len();
-
-        // Read .git/index checksum (last 20 bytes)
-        let git_data = fs::read(&git_index_path)?;
-        let mut git_checksum = [0u8; 20];
-        if git_data.len() >= 20 {
-            git_checksum.copy_from_slice(&git_data[git_data.len() - 20..]);
-        }
+        let git_checksum = read_git_index_checksum(&git_index_path)?;
 
         // Parse .git/index
-        let index = GitIndex::open(&self.repo_path).context("Failed to open .git/index")?;
+        let index = GitIndex::open(&self.repo_path)?;
 
-        // Build entries
-        let entries = self.build_entries(&index)?;
+        // Build entries (optimized)
+        let entries = self.build_entries_optimized(&index)?;
 
         // Generate header
         let repo_fingerprint = generate_repo_fingerprint(&self.repo_path)?;
         let header = Header::new(
-            current_generation + 1, // Increment generation
+            current_generation + 1,
             repo_fingerprint,
             git_mtime_sec,
             git_mtime_nsec,
@@ -100,55 +158,116 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Build entries from .git/index
-    fn build_entries(&self, index: &GitIndex) -> Result<Vec<Entry>> {
-        let mut entries = Vec::new();
+    /// Build entries optimized: load HEAD tree once, skip modification detection
+    fn build_entries_optimized(&self, index: &GitIndex) -> Result<Vec<Entry>> {
+        // Load HEAD tree once (shared across all threads)
+        let head_tree = self.load_head_tree()?;
 
-        // Get all tracked files from index
-        for index_entry in index.entries() {
-            let path = PathBuf::from(&index_entry.path);
-            let full_path = self.repo_path.join(&path);
+        // Materialize the index entries into a Vec so Rayon can parallelize over it.
+        // This still borrows from the mmap via &str, but lifetime is valid for this scope.
+        let index_entries: Vec<_> = index.entries().collect();
 
-            let mut flags = EntryFlags::TRACKED;
+        let entries: Result<Vec<Entry>> = index_entries
+            .into_par_iter()
+            .map(|e| self.build_entry_from_git(&e, &head_tree))
+            .collect();
 
-            // Check if file is staged (compare with HEAD)
-            if self.is_staged(&path, &index_entry.oid)? {
-                flags |= EntryFlags::STAGED;
-            }
+        entries
+    }
 
-            // Check if file exists and get metadata
-            let (size, mtime_sec, mtime_nsec) = if full_path.exists() {
-                let metadata = fs::metadata(&full_path)?;
-                let mtime = metadata.modified()?;
-                let (sec, nsec) = system_time_to_parts(mtime);
+    fn build_entry_from_git(
+        &self,
+        index_entry: &crate::index::IndexEntry,
+        head_tree: &HashMap<PathBuf, Vec<u8>>,
+    ) -> Result<Entry> {
+        let path = PathBuf::from(&index_entry.path);
+        let full_path = self.repo_path.join(&path);
 
-                // Check if modified (compare file hash with index)
-                if self.is_modified(&full_path, &index_entry.oid)? {
-                    flags |= EntryFlags::MODIFIED;
-                }
+        let mut flags = EntryFlags::TRACKED;
 
-                (metadata.len(), sec, nsec)
-            } else {
-                // File deleted
-                flags |= EntryFlags::DELETED;
-                (0, 0, 0)
-            };
+        // Check if staged (compare index OID with HEAD OID)
+        let index_oid = index_entry.oid.as_bytes();
+        let is_staged = head_tree
+            .get(&path)
+            .map(|head_oid| head_oid.as_slice() != index_oid)
+            .unwrap_or(true); // Not in HEAD = new file = staged
 
-            entries.push(Entry {
-                path,
-                size,
-                mtime_sec,
-                mtime_nsec,
-                flags,
-                oid: *index_entry.oid.as_bytes(),
-                reserved: [0; 64],
-            });
+        if is_staged {
+            flags |= EntryFlags::STAGED;
         }
 
-        // TODO: Add untracked files (would need to scan working tree)
-        // For V1, we'll just track what's in .git/index
+        // Get file metadata (don't hash - Solution 2)
+        let (size, mtime_sec, mtime_nsec) = if full_path.exists() {
+            let metadata = fs::metadata(&full_path)?;
+            let mtime = metadata.modified()?;
+            let (sec, nsec) = system_time_to_parts(mtime);
+            (metadata.len(), sec, nsec)
+        } else {
+            flags |= EntryFlags::DELETED;
+            (0, 0, 0)
+        };
 
-        Ok(entries)
+        // Don't detect modifications during sync - FSMonitor will handle it
+        // This is Solution 2: skip expensive file hashing
+
+        Ok(Entry {
+            path,
+            size,
+            mtime_sec,
+            mtime_nsec,
+            flags,
+            oid: *index_oid,
+            reserved: [0; 64],
+        })
+    }
+
+    fn load_head_tree(&self) -> Result<HashMap<PathBuf, Vec<u8>>> {
+        let repo = gix::open(&self.repo_path).context("Failed to open repository with gix")?;
+
+        // Get HEAD commit
+        let commit = match repo.head()?.peel_to_commit() {
+            // 1. Success arm: Peel was successful and returned the Commit object.
+            Ok(commit) => commit,
+
+            // 2. Error arm: The peel failed (e.g., HEAD is unborn, or points to a non-commit object).
+            Err(_) => {
+                // Unborn HEAD or failed to peel
+                return Ok(HashMap::new());
+            }
+        };
+
+        // Get the tree from the commit
+        let tree = commit
+            .tree()
+            .context("Failed to get tree from commit")?
+            .to_owned(); // Get an owned Tree object
+
+        // Use a Recorder to traverse and collect all entries
+        let mut recorder = gix::traverse::tree::Recorder::default();
+        tree.traverse()
+            .breadthfirst(&mut recorder)
+            .context("Failed to traverse tree")?;
+
+        let map: HashMap<PathBuf, Vec<u8>> = recorder
+            .records
+            .into_iter()
+            .filter_map(|record| {
+                // Only include blobs (files), ignoring other entries like submodules or trees
+                if record.mode.is_blob() {
+                    // record.filename is a gix::bstr::BString, convert to PathBuf
+                    let path = PathBuf::from(record.filepath.to_string());
+
+                    // record.oid is gix::Oid, convert to Vec<u8> (its raw bytes)
+                    let oid_bytes = record.oid.to_owned().as_bytes().to_vec();
+
+                    Some((path, oid_bytes))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        Ok(map)
     }
 
     /// Check if a file is staged (index differs from HEAD)
@@ -190,11 +309,164 @@ impl SyncEngine {
         // Compare with index
         Ok(current_oid != index_oid.as_bytes())
     }
+    pub fn sync_with_timing(&self, timeout: Duration) -> Result<SyncTiming> {
+        let total_start = Instant::now();
+
+        wait_for_git_lock(&self.repo_path, timeout)?;
+
+        // Read current generation
+        let gen_start = Instant::now();
+        let reader = Reader::new(&self.repo_path);
+        let current_generation = if reader.exists() {
+            reader
+                .read()
+                .ok()
+                .map(|data| data.header.generation)
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        let gen_time = gen_start.elapsed();
+
+        // Get .git/index metadata
+        let meta_start = Instant::now();
+        let git_index_path = self.repo_path.join(".git/index");
+        if !git_index_path.exists() {
+            anyhow::bail!(".git/index does not exist");
+        }
+
+        let git_metadata = fs::metadata(&git_index_path)?;
+        let git_mtime = git_metadata.modified()?;
+        let (git_mtime_sec, git_mtime_nsec) = system_time_to_parts(git_mtime);
+        let git_size = git_metadata.len();
+        let git_checksum = read_git_index_checksum(&git_index_path)?;
+        let meta_time = meta_start.elapsed();
+
+        // Parse .git/index
+        let index_start = Instant::now();
+        let index = GitIndex::open(&self.repo_path)?;
+        let index_time = index_start.elapsed();
+
+        // Build entries (optimized)
+        let build_start = Instant::now();
+        let entries = self.build_entries_optimized_with_timing(&index)?;
+        let build_time = build_start.elapsed();
+
+        // Generate header
+        let header_start = Instant::now();
+        let repo_fingerprint = generate_repo_fingerprint(&self.repo_path)?;
+        let header = Header::new(
+            current_generation + 1,
+            repo_fingerprint,
+            git_mtime_sec,
+            git_mtime_nsec,
+            git_size,
+            git_checksum,
+            entries.0.len() as u32,
+        );
+        let header_time = header_start.elapsed();
+
+        // Write atomically
+        let write_start = Instant::now();
+        let writer = Writer::new(&self.repo_path);
+        let write_timing = writer.write_with_timing(&header, &entries.0)?;
+        let write_time = write_start.elapsed();
+
+        println!("{}", write_timing); // Print detailed write breakdown
+
+        let total_time = total_start.elapsed();
+
+        Ok(SyncTiming {
+            total: total_time,
+            generation_read: gen_time,
+            metadata_read: meta_time,
+            index_parse: index_time,
+            build_entries: build_time,
+            header_gen: header_time,
+            write: write_time,
+        })
+    }
+
+    fn build_entries_optimized_with_timing(
+        &self,
+        index: &GitIndex,
+    ) -> Result<(Vec<Entry>, BuildTiming)> {
+        let total_start = Instant::now();
+
+        // Load HEAD tree once (Solution 1)
+        let head_start = Instant::now();
+        let head_tree = self.load_head_tree()?;
+        let head_time = head_start.elapsed();
+
+        // Collect entries into a Vec for parallel processing
+        let index_entries: Vec<_> = index.entries().collect();
+
+        let loop_start = Instant::now();
+        let entries_res: Result<Vec<Entry>> = index_entries
+            .into_par_iter()
+            .map(|e| self.build_entry_from_git(&e, &head_tree))
+            .collect();
+        let entries = entries_res?;
+        let loop_time = loop_start.elapsed();
+
+        let total_time = total_start.elapsed();
+
+        Ok((
+            entries,
+            BuildTiming {
+                total: total_time,
+                load_head_tree: head_time,
+                build_loop: loop_time,
+            },
+        ))
+    }
+}
+
+pub struct SyncTiming {
+    pub total: Duration,
+    pub generation_read: Duration,
+    pub metadata_read: Duration,
+    pub index_parse: Duration,
+    pub build_entries: Duration,
+    pub header_gen: Duration,
+    pub write: Duration,
+}
+
+#[derive(Debug, Clone)]
+pub struct BuildTiming {
+    pub total: Duration,
+    pub load_head_tree: Duration,
+    pub build_loop: Duration,
+}
+
+impl std::fmt::Display for SyncTiming {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "Sync Timing Breakdown:")?;
+        writeln!(f, "  Total:           {:>8.2?}", self.total)?;
+        writeln!(f, "  Generation read: {:>8.2?}", self.generation_read)?;
+        writeln!(f, "  Metadata read:   {:>8.2?}", self.metadata_read)?;
+        writeln!(f, "  Index parse:     {:>8.2?}", self.index_parse)?;
+        writeln!(f, "  Build entries:   {:>8.2?}", self.build_entries)?;
+        writeln!(f, "  Header gen:      {:>8.2?}", self.header_gen)?;
+        writeln!(f, "  Write:           {:>8.2?}", self.write)?;
+        Ok(())
+    }
 }
 
 fn system_time_to_parts(time: SystemTime) -> (u64, u32) {
     let duration = time.duration_since(UNIX_EPOCH).unwrap_or_default();
     (duration.as_secs(), duration.subsec_nanos())
+}
+
+fn read_git_index_checksum(path: &Path) -> Result<[u8; 20]> {
+    let data = fs::read(path)?;
+    if data.len() < 20 {
+        anyhow::bail!(".git/index too small");
+    }
+
+    let mut checksum = [0u8; 20];
+    checksum.copy_from_slice(&data[data.len() - 20..]);
+    Ok(checksum)
 }
 
 fn hash_file_git_compatible(path: &Path) -> Result<Vec<u8>> {
@@ -218,7 +490,7 @@ fn wait_for_git_lock(repo_path: &Path, timeout: Duration) -> Result<()> {
 
     while lock_path.exists() {
         if start.elapsed() > timeout {
-            anyhow::bail!("Timeout waiting for .git/index.lock to be released");
+            anyhow::bail!("Timeout waiting for .git/index.lock");
         }
         std::thread::sleep(Duration::from_millis(50));
     }

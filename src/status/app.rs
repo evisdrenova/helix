@@ -215,21 +215,28 @@ impl App {
         self.visible_height = inner_height as usize;
     }
 
-    /// Refresh status from helix index + FSMonitor
     pub fn refresh_status(&mut self) -> Result<()> {
         self.files.clear();
 
         // Check if .git/index changed
         if self.fsmonitor.index_changed() {
-            // Rebuild helix index
-            self.helix_index.refresh()?;
+            // Get which files changed from FSMonitor
+            let dirty_files = self.fsmonitor.get_dirty_files();
+
+            if dirty_files.is_empty() {
+                // Index changed but no specific files dirty - do full refresh
+                self.helix_index.refresh()?;
+            } else {
+                // Incremental update - FAST PATH
+                self.helix_index.refresh_incremental(&dirty_files)?;
+            }
+
             self.fsmonitor.clear_index_flag();
         }
 
-        // Get staging info from helix index
+        // Get staging info from helix index (now up to date)
         self.staged_files = self.helix_index.get_staged();
 
-        // Get dirty files from FSMonitor
         let dirty_files = self.fsmonitor.get_dirty_files();
 
         // Open .git/index to check tracked files
