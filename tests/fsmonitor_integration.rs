@@ -1,5 +1,5 @@
 use anyhow::Result;
-use helix::{fsmonitor::FSMonitor, index::Index};
+use helix::{fsmonitor::FSMonitor, index::GitIndex};
 use std::fs;
 use std::thread;
 use std::time::Duration;
@@ -38,7 +38,7 @@ fn test_fsmonitor_with_index() -> Result<()> {
         .output()?;
 
     // Read initial index
-    let index = Index::open(repo_path)?;
+    let index = GitIndex::open(repo_path)?;
     let initial_count = index.entries().count();
     println!("Initial index entries: {}", initial_count);
 

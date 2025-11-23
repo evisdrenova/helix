@@ -2,7 +2,7 @@ use super::fingerprint::generate_repo_fingerprint;
 use super::format::{Entry, EntryFlags, Header};
 use super::reader::Reader;
 use super::writer::Writer;
-use crate::index::Index;
+use crate::index::GitIndex;
 use crate::Oid;
 use anyhow::{Context, Result};
 use sha1::{Digest, Sha1};
@@ -76,7 +76,7 @@ impl SyncEngine {
         }
 
         // Parse .git/index
-        let index = Index::open(&self.repo_path).context("Failed to open .git/index")?;
+        let index = GitIndex::open(&self.repo_path).context("Failed to open .git/index")?;
 
         // Build entries
         let entries = self.build_entries(&index)?;
@@ -101,7 +101,7 @@ impl SyncEngine {
     }
 
     /// Build entries from .git/index
-    fn build_entries(&self, index: &Index) -> Result<Vec<Entry>> {
+    fn build_entries(&self, index: &GitIndex) -> Result<Vec<Entry>> {
         let mut entries = Vec::new();
 
         // Get all tracked files from index

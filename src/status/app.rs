@@ -4,7 +4,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use helix::{fsmonitor::FSMonitor, index::Index, Oid};
+use helix::{fsmonitor::FSMonitor, helix_index::api::HelixIndex, index::GitIndex, Oid};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use sha1::{Digest, Sha1};
 use std::{
@@ -106,8 +106,7 @@ pub struct App {
     pub current_section: Section,
     pub sections_collapsed: HashSet<Section>,
     pub current_branch: Option<String>,
-    pub search_query: String,
-    pub search_mode: bool,
+    pub helix_index: HelixIndex,
 }
 
 #[derive(Debug)]
@@ -133,6 +132,9 @@ impl App {
             .to_string();
         let current_branch = get_current_branch(&repo_path).ok();
 
+        let helix_index =
+            HelixIndex::load_or_rebuild(&repo_path).context("Failed to load Helix index")?;
+
         let mut fsmonitor = FSMonitor::new(&repo_path)?;
         fsmonitor.start_watching_repo()?;
 
@@ -154,15 +156,14 @@ impl App {
             current_section: Section::Unstaged,
             sections_collapsed: HashSet::new(),
             current_branch,
-            search_query: String::new(),
-            search_mode: false,
+            helix_index,
         };
 
         app.refresh_status()?;
         Ok(app)
     }
 
-    // todoL look at these in more detail. i don't like that we ahve to call git porcelain here
+    // todo: look at these in more detail. i don't like that we ahve to call git porcelain here
     fn get_git_status(&self) -> Result<StageStatus> {
         let output = Command::new("git")
             .current_dir(&self.repo_path)
@@ -214,91 +215,53 @@ impl App {
         self.visible_height = inner_height as usize;
     }
 
+    /// Refresh status from helix index + FSMonitor
     pub fn refresh_status(&mut self) -> Result<()> {
         self.files.clear();
 
-        let index = Index::open(&self.repo_path)?;
+        // Check if .git/index changed
+        if self.fsmonitor.index_changed() {
+            // Rebuild helix index
+            self.helix_index.refresh()?;
+            self.fsmonitor.clear_index_flag();
+        }
 
-        // Build map with full index entry info
-        let tracked_files: HashMap<PathBuf, IndexEntryInfo> = index
-            .entries()
-            .map(|entry| {
-                (
-                    PathBuf::from(entry.path),
-                    IndexEntryInfo {
-                        oid: entry.oid,
-                        mtime: entry.mtime,
-                        size: entry.size,
-                    },
-                )
-            })
-            .collect();
+        // Get staging info from helix index
+        self.staged_files = self.helix_index.get_staged();
 
+        // Get dirty files from FSMonitor
         let dirty_files = self.fsmonitor.get_dirty_files();
 
+        // Open .git/index to check tracked files
+        let index = GitIndex::open(&self.repo_path)?;
+        let tracked_files: HashSet<PathBuf> = index
+            .entries()
+            .map(|entry| PathBuf::from(entry.path))
+            .collect();
+
+        // Process dirty files
         for dirty_path in dirty_files {
             let full_path = self.repo_path.join(&dirty_path);
 
-            if let Some(index_entry) = tracked_files.get(&dirty_path) {
+            if tracked_files.contains(&dirty_path) {
                 if full_path.exists() {
-                    // Use git's fast path optimization
-                    match self.is_file_actually_modified(&full_path, index_entry)? {
-                        FileState::Modified => {
-                            self.files.push(FileStatus::Modified(dirty_path));
-                        }
-                        FileState::Unchanged => {
-                            // File unchanged - just mtime bump from editor save
-                            self.fsmonitor.clear_single_path(&dirty_path);
-                        }
-                    }
+                    // File is modified
+                    self.files.push(FileStatus::Modified(dirty_path));
                 } else {
+                    // File is deleted
                     self.files.push(FileStatus::Deleted(dirty_path));
                 }
             } else if self.show_untracked && full_path.exists() {
+                // File is untracked
                 self.files.push(FileStatus::Untracked(dirty_path));
             }
         }
 
+        // Sort files
         self.files.sort_by(|a, b| a.path().cmp(b.path()));
+
         self.last_refresh = std::time::Instant::now();
         Ok(())
-    }
-
-    /// Check if file content actually changed compared to index
-    fn file_content_changed(&self, file_path: &Path, index_oid: &Oid) -> Result<bool> {
-        // Hash the current file content
-        let current_oid = hash_file_git_compatible(file_path)?;
-
-        // Compare with index
-        Ok(current_oid.as_bytes() != index_oid.as_bytes())
-    }
-
-    fn is_file_actually_modified(
-        &self,
-        file_path: &Path,
-        index_entry: &IndexEntryInfo,
-    ) -> Result<FileState> {
-        use std::time::UNIX_EPOCH;
-
-        let metadata = std::fs::metadata(file_path)?;
-
-        let current_mtime = metadata.modified()?.duration_since(UNIX_EPOCH)?.as_secs();
-        let current_size = metadata.len();
-
-        // FAST PATH: If mtime and size match index, assume unchanged
-        // This is what git does to avoid hashing on every check
-        if current_mtime == index_entry.mtime && current_size == index_entry.size {
-            return Ok(FileState::Unchanged);
-        }
-
-        // SLOW PATH: mtime or size differs, need to hash
-        let current_oid = hash_file_git_compatible(file_path)?;
-
-        if current_oid.as_bytes() == index_entry.oid.as_bytes() {
-            Ok(FileState::Unchanged)
-        } else {
-            Ok(FileState::Modified)
-        }
     }
 
     pub fn visible_files(&self) -> Vec<&FileStatus> {
@@ -476,17 +439,6 @@ impl App {
         let visible_count = self.visible_files().len();
         let max_scroll = visible_count.saturating_sub(visible_height);
         self.scroll_offset = self.scroll_offset.min(max_scroll);
-    }
-    fn apply_search_filter(&mut self) {
-        if self.search_query.is_empty() {
-            self.filter_mode = FilterMode::All;
-            return;
-        }
-
-        // Search is active, filter will be applied in visible_files()
-        // Reset selection
-        self.selected_index = 0;
-        self.scroll_offset = 0;
     }
 
     pub fn run(&mut self) -> Result<()> {

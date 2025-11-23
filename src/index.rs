@@ -66,7 +66,7 @@ impl ReadOnlyMmap {
     }
 }
 
-pub struct Index {
+pub struct GitIndex {
     mmap: ReadOnlyMmap,
     entry_count: u32,
 }
@@ -80,12 +80,12 @@ pub struct IndexEntry<'a> {
 }
 
 pub struct IndexEntryIter<'a> {
-    index: &'a Index,
+    index: &'a GitIndex,
     offset: usize,
     seen: u32,
 }
 
-impl Index {
+impl GitIndex {
     // open and memory map .git/index
     pub fn open(repo_root: &Path) -> Result<Self> {
         let mmap = ReadOnlyMmap::open(&repo_root.join(".git/index"))?;
