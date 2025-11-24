@@ -1,8 +1,8 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use helix::helix_index::{api::HelixIndex, sync::SyncEngine, verify::Verifier, Reader, Writer};
+use helix::helix_index::{api::HelixIndex, sync::SyncEngine, verify::Verifier, Reader};
 use std::fs;
 use std::hint::black_box;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use tempfile::TempDir;
 
@@ -44,8 +44,8 @@ fn bench_open(c: &mut Criterion) {
         init_test_repo(temp_dir.path(), *size).unwrap();
 
         // Pre-build index
-        let SyncEngine = SyncEngine::new(temp_dir.path());
-        SyncEngine.sync().unwrap();
+        let sync_engine = SyncEngine::new(temp_dir.path());
+        sync_engine.full_sync().unwrap();
 
         group.throughput(Throughput::Elements(*size as u64));
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, _| {
@@ -67,8 +67,8 @@ fn bench_verify(c: &mut Criterion) {
         init_test_repo(temp_dir.path(), *size).unwrap();
 
         // Pre-build index
-        let SyncEngine = SyncEngine::new(temp_dir.path());
-        SyncEngine.sync().unwrap();
+        let sync_engine = SyncEngine::new(temp_dir.path());
+        sync_engine.full_sync().unwrap();
 
         group.throughput(Throughput::Elements(*size as u64));
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, _| {
@@ -92,8 +92,8 @@ fn bench_sync(c: &mut Criterion) {
         group.throughput(Throughput::Elements(*size as u64));
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, _| {
             b.iter(|| {
-                let SyncEngine = SyncEngine::new(temp_dir.path());
-                black_box(SyncEngine.sync().unwrap());
+                let sync_engine = SyncEngine::new(temp_dir.path());
+                black_box(sync_engine.full_sync().unwrap());
             });
         });
     }
@@ -109,8 +109,8 @@ fn bench_sync_incremental(c: &mut Criterion) {
         init_test_repo(temp_dir.path(), 1000).unwrap();
 
         // Initial sync
-        let SyncEngine = SyncEngine::new(temp_dir.path());
-        SyncEngine.sync().unwrap();
+        let sync_engine = SyncEngine::new(temp_dir.path());
+        sync_engine.full_sync().unwrap();
 
         group.throughput(Throughput::Elements(*change_count as u64));
         group.bench_with_input(
@@ -130,7 +130,7 @@ fn bench_sync_incremental(c: &mut Criterion) {
                         .output()
                         .unwrap();
 
-                    black_box(SyncEngine.sync().unwrap());
+                    black_box(sync_engine.full_sync().unwrap());
                 });
             },
         );

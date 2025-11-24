@@ -7,11 +7,7 @@ use crossterm::{
 use helix::{fsmonitor::FSMonitor, helix_index::api::HelixIndex, index::GitIndex, Oid};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use sha1::{Digest, Sha1};
-use std::{
-    collections::{HashMap, HashSet},
-    path::Path,
-    process::Command,
-};
+use std::{collections::HashSet, path::Path, process::Command};
 use std::{io, path::PathBuf};
 
 use super::actions::Action;
@@ -107,19 +103,6 @@ pub struct App {
     pub sections_collapsed: HashSet<Section>,
     pub current_branch: Option<String>,
     pub helix_index: HelixIndex,
-}
-
-#[derive(Debug)]
-struct IndexEntryInfo {
-    oid: Oid,
-    mtime: u64,
-    size: u64,
-}
-
-#[derive(Debug)]
-enum FileState {
-    Modified,
-    Unchanged,
 }
 
 impl App {
@@ -548,22 +531,4 @@ fn get_current_branch(repo_path: &Path) -> Result<String> {
         .output()?;
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
-fn hash_file_git_compatible(path: &Path) -> Result<Oid> {
-    let contents =
-        std::fs::read(path).with_context(|| format!("Failed to read {}", path.display()))?;
-
-    // Git hashes with format: "blob <size>\0<contents>"
-    let header = format!("blob {}\0", contents.len());
-
-    let mut hasher = Sha1::new();
-    hasher.update(header.as_bytes());
-    hasher.update(&contents);
-    let result = hasher.finalize();
-
-    let mut oid_bytes = [0u8; 20];
-    oid_bytes.copy_from_slice(&result);
-
-    Ok(Oid::from_bytes(&oid_bytes))
 }

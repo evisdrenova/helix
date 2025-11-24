@@ -18,7 +18,7 @@ use super::app::{App, FileStatus, FilterMode};
 
 pub fn draw(f: &mut Frame, app: &App) {
     if app.show_help {
-        draw_help_overlay(f, app);
+        draw_help_overlay(f);
         return;
     }
 
@@ -349,7 +349,7 @@ fn draw_help_bar(f: &mut Frame, area: Rect) {
     f.render_widget(help, area);
 }
 
-fn draw_help_overlay(f: &mut Frame, app: &App) {
+fn draw_help_overlay(f: &mut Frame) {
     let area = centered_rect(60, 70, f.area());
 
     let help_text = vec![

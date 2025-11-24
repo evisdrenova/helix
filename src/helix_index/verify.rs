@@ -1,38 +1,26 @@
-/*
-Verification lgoic for detecting drift between the helix.idx and .git/index files
-*/
+// Verification logic for detecting drift between the helix.idx and .git/index files
 
 use std::{
     fs,
     path::{Path, PathBuf},
 };
 
-use crate::helix_index::{fingerprint::generate_repo_fingerprint, Reader};
+use crate::helix_index::{
+    fingerprint::generate_repo_fingerprint,
+    utils::{read_git_index_checksum, system_time_to_parts},
+    Reader,
+};
 use anyhow::{Context, Result};
-use std::time::SystemTime;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VerifyResult {
-    /// Index is fresh and matches .git/index
-    Valid,
-
-    /// Index doesn't exist
-    Missing,
-
-    /// Fingerprint mismatch (wrong repo)
-    WrongRepo,
-
-    /// .git/index mtime changed
-    MtimeMismatch,
-
-    /// .git/index size changed
-    SizeMismatch,
-
-    /// .git/index checksum changed
-    ChecksumMismatch,
-
-    /// Corruption detected
-    Corrupted,
+    Valid,            // Index is fresh and matches .git/index
+    Missing,          // Index doesn't exist
+    WrongRepo,        // Fingerprint mismatch (wrong repo)
+    MtimeMismatch,    // .git/index mtime changed
+    SizeMismatch,     // .git/index size changed
+    ChecksumMismatch, // .git/index checksum changed
+    Corrupted,        // Corruption detected
 }
 
 pub struct Verifier {
@@ -90,39 +78,13 @@ impl Verifier {
             return Ok(VerifyResult::SizeMismatch);
         }
 
-        // Tier 4: Checksum check (optional, more expensive)
-        let git_checksum = compute_git_index_checksum(&git_index_path)?;
+        let git_checksum = read_git_index_checksum(&git_index_path)?;
         if git_checksum != index_data.header.git_index_checksum {
             return Ok(VerifyResult::ChecksumMismatch);
         }
 
         Ok(VerifyResult::Valid)
     }
-}
-
-fn system_time_to_parts(time: SystemTime) -> (u64, u32) {
-    use std::time::UNIX_EPOCH;
-
-    let duration = time.duration_since(UNIX_EPOCH).unwrap_or_default();
-    (duration.as_secs(), duration.subsec_nanos())
-}
-
-fn compute_git_index_checksum(path: &Path) -> Result<[u8; 20]> {
-    use sha1::{Digest, Sha1};
-
-    let data = fs::read(path).context("Failed to read .git/index")?;
-
-    // Git index has SHA-1 checksum in last 20 bytes
-    // We want the checksum OF the index (including its own checksum)
-    // So we just take the last 20 bytes
-    if data.len() < 20 {
-        anyhow::bail!(".git/index too small");
-    }
-
-    let mut checksum = [0u8; 20];
-    checksum.copy_from_slice(&data[data.len() - 20..]);
-
-    Ok(checksum)
 }
 
 #[cfg(test)]
@@ -172,7 +134,7 @@ mod tests {
 
         // Sync to create helix.idx
         let syncer = SyncEngine::new(temp_dir.path());
-        syncer.sync()?;
+        syncer.full_sync()?;
 
         let verifier = Verifier::new(temp_dir.path());
         let result = verifier.verify()?;
@@ -189,7 +151,7 @@ mod tests {
 
         // Create helix.idx
         let syncer = SyncEngine::new(temp_dir.path());
-        syncer.sync()?;
+        syncer.full_sync()?;
 
         // Verify it's valid
         let verifier = Verifier::new(temp_dir.path());
