@@ -29,14 +29,6 @@ impl SyncEngine {
         }
     }
 
-    /// Sync helix.idx from .git/index
-    ///
-    /// This is the core rebuild operation. It:
-    /// 1. Checks for .git/index.lock (waits if needed)
-    /// 2. Reads .git/index
-    /// 3. Builds entries with status flags
-    /// 4. Writes helix.idx atomically
-
     /// Full sync: rebuild the entire helix index from .git/index
     /// Only used on first run or corruption
     pub fn sync(&self) -> Result<()> {
@@ -175,18 +167,20 @@ impl SyncEngine {
         entries
     }
 
+    /// Build our index with files from .git/index so we can compare them against the head commit
+    /// to understand the status of the files (staged, not-staged). Originally we checked for the file metadata here
+    /// but that didn't scale well for large repos. There is a tiny window where the size & mtime might be astale if someone modifies files between git operations and the first helix run. FSMonitor will pick up that metadata as soon as the user starts making
+    /// any changes anyways so i think it's worth the trade-off.
     fn build_entry_from_git(
         &self,
         index_entry: &crate::index::IndexEntry,
         head_tree: &HashMap<PathBuf, Vec<u8>>,
     ) -> Result<Entry> {
         let path = PathBuf::from(&index_entry.path);
-        let full_path = self.repo_path.join(&path);
 
         let mut flags = EntryFlags::TRACKED;
-
-        // Check if staged (compare index OID with HEAD OID)
         let index_oid = index_entry.oid.as_bytes();
+
         let is_staged = head_tree
             .get(&path)
             .map(|head_oid| head_oid.as_slice() != index_oid)
@@ -196,25 +190,12 @@ impl SyncEngine {
             flags |= EntryFlags::STAGED;
         }
 
-        // Get file metadata (don't hash - Solution 2)
-        let (size, mtime_sec, mtime_nsec) = if full_path.exists() {
-            let metadata = fs::metadata(&full_path)?;
-            let mtime = metadata.modified()?;
-            let (sec, nsec) = system_time_to_parts(mtime);
-            (metadata.len(), sec, nsec)
-        } else {
-            flags |= EntryFlags::DELETED;
-            (0, 0, 0)
-        };
-
-        // Don't detect modifications during sync - FSMonitor will handle it
-        // This is Solution 2: skip expensive file hashing
-
+        // read the size, mtime from the index and then set the mtine_nsec to 0. See comment above func signature for more info
         Ok(Entry {
             path,
-            size,
-            mtime_sec,
-            mtime_nsec,
+            size: index_entry.size as u64,
+            mtime_sec: index_entry.mtime as u64,
+            mtime_nsec: 0,
             flags,
             oid: *index_oid,
             reserved: [0; 64],
