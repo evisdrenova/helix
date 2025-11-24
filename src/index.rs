@@ -22,9 +22,9 @@ stuff we'll want to add later (probably):
 - Validate bounds on every entry; tolerate non-UTF8 paths (can store &[u8]).
 */
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use memmap2::{Mmap, MmapOptions};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::{fs::File, io};
 
 use crate::Oid;
@@ -117,6 +117,12 @@ impl GitIndex {
             offset: 12, // skip 12-byte header
             seen: 0,
         }
+    }
+
+    pub fn get_entry(&self, path: &Path) -> Result<IndexEntry> {
+        self.entries()
+            .find(|e| e.path == path.to_string_lossy())
+            .with_context(|| format!("Unable to find entry in .git/index at path {:?}", path))
     }
 }
 

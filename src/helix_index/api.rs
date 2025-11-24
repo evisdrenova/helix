@@ -55,7 +55,7 @@ impl HelixIndex {
     // Force rebuild from .git/index
     pub fn rebuild(repo_path: &Path) -> Result<Self> {
         let syncer = SyncEngine::new(repo_path);
-        syncer.sync()?;
+        syncer.full_sync()?;
 
         let reader = Reader::new(repo_path);
         let data = reader.read()?;
@@ -65,10 +65,22 @@ impl HelixIndex {
             data,
         })
     }
-    /// Refresh from .git/index (incremental update)
+
+    /// Refresh incrementally (fast path for git add/reset)
+    pub fn refresh_incremental(&mut self, changed_paths: &[PathBuf]) -> Result<()> {
+        let syncer = SyncEngine::new(&self.repo_path);
+        syncer.incremental_sync(changed_paths)?;
+
+        let reader = Reader::new(&self.repo_path);
+        self.data = reader.read()?;
+
+        Ok(())
+    }
+
+    /// Full Refresh from .git/index (incremental update)
     pub fn refresh(&mut self) -> Result<()> {
         let syncer = SyncEngine::new(&self.repo_path);
-        syncer.sync()?;
+        syncer.full_sync()?;
 
         let reader = Reader::new(&self.repo_path);
         self.data = reader.read()?;

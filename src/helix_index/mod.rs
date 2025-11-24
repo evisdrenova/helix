@@ -3,6 +3,7 @@ pub mod fingerprint;
 pub mod format;
 pub mod reader;
 pub mod sync;
+pub mod utils;
 pub mod verify;
 pub mod writer;
 

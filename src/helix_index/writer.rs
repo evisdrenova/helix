@@ -24,13 +24,9 @@ impl Writer {
         }
     }
 
-    /// Write index atomically using temp file + rename
-    ///
-    /// Algorithm:
     /// 1. Write helix.idx.new
-    /// 2. fsync
+    /// 2. flush
     /// 3. rename -> helix.idx
-    /// 4. fsync directory
     pub fn write(&self, header: &Header, entries: &[Entry]) -> Result<()> {
         let helix_dir = self.repo_path.join(".git/helix");
         let index_path = helix_dir.join("helix.idx");
@@ -44,12 +40,10 @@ impl Writer {
             let mut file = File::create(&temp_path).context("Failed to create temp index file")?;
 
             // Write header
-            file.write_all(&header.to_bytes())
-                .context("Failed to write header")?;
-
-            // Compute checksum as we write
+            let header_bytes = header.to_bytes();
+            file.write_all(&header_bytes)?;
             let mut hasher = Sha256::new();
-            hasher.update(&header.to_bytes());
+            hasher.update(&header_bytes);
 
             // Write entries
             for entry in entries {
@@ -67,17 +61,14 @@ impl Writer {
             file.write_all(&footer.to_bytes())
                 .context("Failed to write footer")?;
 
-            file.sync_all().context("Failed to sync temp file")?;
+            /*  we use flush() here instad of fsync because helix_index is derived and can alwyas be rebuilt since it relies on the git index in a way this is an optimistic sync that is very very fast, 10x+ faster than fsync. But there is
+            the risk of a power outage in the window from when flush runs and the data is in the kernal page cache to
+            when it is eventually written to disk. However, we have a checksum which verifies the validity of the helixindex and if it's off does a full re-write that is durable. In this way, we get speed almost all of the time and in teh rare cases when something crashes and it messes up our read-only index, we can always take the slower route to build. This is also the reason why we don't fsync the directory. we could do that below after we flush or fsync the file to make sure that it is definitely written to disk, but since we can always recreate the helix index, we're prioritizing speed over durability i could also make this configurable? we see the biggest penalities in large repos, so we could always check the number of entries in the git/index and if there's a lot then flush, otherwise fsync, since it won't impact us too much. */
+            file.flush().context("Failed to sync temp file")?;
         }
 
         // Atomic rename
         fs::rename(&temp_path, &index_path).context("Failed to rename temp file to index")?;
-
-        // Sync directory for crash safety
-        let dir_file = File::open(&helix_dir).context("Failed to open helix directory for sync")?;
-        dir_file
-            .sync_all()
-            .context("Failed to sync helix directory")?;
 
         Ok(())
     }

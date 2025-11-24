@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
 from datetime import date
+from uuid import uuid4
 
 
 def parse_criterion_results(criterion_dir: Path) -> Dict:
@@ -331,12 +332,23 @@ def main():
         print()
         print(summary_section)
 
-    # Save to ../benches/archive/{date}.md relative to this script
     today_str = date.today().isoformat()
     script_dir = Path(__file__).resolve().parent
     archive_dir = script_dir.parent / "benches" / "archive"
     archive_dir.mkdir(parents=True, exist_ok=True)
-    archive_path = archive_dir / f"{today_str}.md"
+
+    # Find existing archives for today
+    existing = sorted(archive_dir.glob(f"{today_str}-*.md"))
+
+    if existing:
+        # Extract last counter and increment
+        last_file = existing[-1]
+        last_counter = int(last_file.stem.split("-")[-1])
+        next_counter = last_counter + 1
+    else:
+        next_counter = 1
+
+    archive_path = archive_dir / f"{today_str}-{next_counter:03d}.md"
 
     full_md = [title, aligned_section]
     if comparison_section:
