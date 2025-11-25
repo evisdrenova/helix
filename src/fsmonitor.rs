@@ -288,7 +288,7 @@ impl IgnoreRules {
             IgnorePattern::Extension("~".to_string()),
             IgnorePattern::Substring(".DS_Store".to_string()),
             // Helix's own cache (don't watch our own index!)
-            IgnorePattern::Directory(".git/helix/".to_string()),
+            IgnorePattern::Directory(".helix/".to_string()),
         ]
     }
 
@@ -459,7 +459,7 @@ mod tests {
         assert!(rules.should_ignore(Path::new(".DS_Store")));
 
         // Should ignore helix cache
-        assert!(rules.should_ignore(Path::new(".git/helix/helix.idx")));
+        assert!(rules.should_ignore(Path::new(".helix/helix.idx")));
 
         // Should NOT ignore normal files
         assert!(!rules.should_ignore(Path::new("src/main.rs")));

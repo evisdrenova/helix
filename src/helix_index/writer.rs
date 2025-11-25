@@ -28,12 +28,11 @@ impl Writer {
     /// 2. flush
     /// 3. rename -> helix.idx
     pub fn write(&self, header: &Header, entries: &[Entry]) -> Result<()> {
-        let helix_dir = self.repo_path.join(".git/helix");
+        let helix_dir = self.repo_path.join(".helix");
         let index_path = helix_dir.join("helix.idx");
         let temp_path = helix_dir.join("helix.idx.new");
 
-        // Ensure .git/helix directory exists
-        fs::create_dir_all(&helix_dir).context("Failed to create .git/helix directory")?;
+        fs::create_dir_all(&helix_dir).context("Failed to create .helix directory")?;
 
         // Write to temp file
         {
@@ -75,7 +74,7 @@ impl Writer {
 
     // Get the expected path for helix.idx
     pub fn index_path(&self) -> PathBuf {
-        self.repo_path.join(".git/helix/helix.idx")
+        self.repo_path.join(".helix/helix.idx")
     }
 }
 
@@ -94,8 +93,8 @@ mod tests {
         let header = Header::new(1, [0; 16], 0, 0, 0, [0; 20], 0);
         writer.write(&header, &[])?;
 
-        assert!(repo_path.join(".git/helix").exists());
-        assert!(repo_path.join(".git/helix/helix.idx").exists());
+        assert!(repo_path.join(".helix").exists());
+        assert!(repo_path.join(".helix/helix.idx").exists());
 
         Ok(())
     }
@@ -118,7 +117,7 @@ mod tests {
         writer.write(&header2, &[])?;
 
         // Temp file should not exist
-        let temp_path = repo_path.join(".git/helix/helix.idx.new");
+        let temp_path = repo_path.join(".helix/helix.idx.new");
         assert!(!temp_path.exists());
 
         Ok(())

@@ -1,6 +1,7 @@
 pub mod fsmonitor;
 pub mod helix_index;
 pub mod index;
+pub mod init;
 // pub mod diff;
 // pub mod object;
 

@@ -42,7 +42,7 @@ fn test_helix_index_created_on_status() -> Result<()> {
     let index = HelixIndex::load_or_rebuild(temp_dir.path())?;
 
     // Verify helix index was created
-    assert!(temp_dir.path().join(".git/helix/helix.idx").exists());
+    assert!(temp_dir.path().join(".helix/helix.idx").exists());
 
     // Verify staging info is correct
     let staged = index.get_staged();

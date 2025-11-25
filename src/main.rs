@@ -1,5 +1,9 @@
 use clap::{Parser, Subcommand};
-use std::path::{Path, PathBuf};
+use helix::{fsmonitor::FSMonitor, init::init_helix_repo};
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 mod config;
 mod git;
@@ -9,7 +13,7 @@ mod log;
 mod status;
 mod workflow;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use config::Config;
 use workflow::Workflow;
 
@@ -94,7 +98,7 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Init { path }) => {
             let repo_path = resolve_repo_path(path.as_deref())?;
-            init_repo_config(&repo_path)?;
+            init_helix_repo(&repo_path)?;
             return Ok(());
         }
         Some(Commands::Commit {
@@ -172,6 +176,8 @@ fn init_repo_config(repo_path: &Path) -> Result<()> {
 
     let helix_dir = repo_path.join(".helix");
     let config_path = helix_dir.join("config.toml");
+
+    let fsmonitor = FSMonitor::new(repo_path);
 
     if config_path.exists() {
         println!(

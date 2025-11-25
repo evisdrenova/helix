@@ -24,7 +24,7 @@ impl Reader {
 
     // Read and parse helix.idx
     pub fn read(&self) -> Result<HelixIndexData> {
-        let index_path = self.repo_path.join(".git/helix/helix.idx");
+        let index_path = self.repo_path.join(".helix/helix.idx");
 
         if !index_path.exists() {
             anyhow::bail!("helix.idx does not exist at {}", index_path.display());
@@ -79,7 +79,7 @@ impl Reader {
     }
 
     pub fn exists(&self) -> bool {
-        self.repo_path.join(".git/helix/helix.idx").exists()
+        self.repo_path.join(".helix/helix.idx").exists()
     }
 }
 
