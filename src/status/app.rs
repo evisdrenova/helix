@@ -4,9 +4,8 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use helix::{fsmonitor::FSMonitor, helix_index::api::HelixIndex, index::GitIndex, Oid};
+use helix::{fsmonitor::FSMonitor, helix_index::api::HelixIndex, index::GitIndex};
 use ratatui::{backend::CrosstermBackend, Terminal};
-use sha1::{Digest, Sha1};
 use std::{collections::HashSet, path::Path, process::Command};
 use std::{io, path::PathBuf};
 

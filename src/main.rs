@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use helix::init::init_helix_repo;
+use helix::{add, init::init_helix_repo};
 use std::path::{Path, PathBuf};
 
 mod config;
@@ -70,6 +70,23 @@ enum Commands {
         #[arg(short = 's', long)]
         stage: bool,
     },
+    Add {
+        /// Files or directories to add
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
+
+        /// Show verbose output
+        #[arg(short, long)]
+        verbose: bool,
+
+        /// Perform a dry run (don't actually add)
+        #[arg(short = 'n', long)]
+        dry_run: bool,
+
+        /// Force add (even if in .gitignore)
+        #[arg(short, long)]
+        force: bool,
+    },
     // initialize helix configuration for this repo
     Init {
         // repository path (defaults to cwd)
@@ -96,6 +113,24 @@ async fn main() -> Result<()> {
         Some(Commands::Init { path }) => {
             let repo_path = resolve_repo_path(path.as_deref())?;
             init_helix_repo(&repo_path)?;
+            return Ok(());
+        }
+
+        Some(Commands::Add {
+            paths,
+            verbose,
+            dry_run,
+            force,
+        }) => {
+            let repo_path = resolve_repo_path(None)?;
+
+            let options = add::AddOptions {
+                verbose,
+                dry_run,
+                force,
+            };
+
+            add::add(&repo_path, &paths, options)?;
             return Ok(());
         }
         Some(Commands::Commit {

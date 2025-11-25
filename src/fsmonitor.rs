@@ -2,6 +2,7 @@
 Async event system that watches for file changes and tracks:
  - files that are modified
  - staging changes
+ - 
 */
 
 use anyhow::{Context, Result};

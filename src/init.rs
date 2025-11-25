@@ -28,7 +28,7 @@ fn ensure_git_repo(repo_path: &Path) -> Result<()> {
         return Ok(());
     }
 
-    // No .git directory - initialize one
+    // No .git directory, initialize it
     println!("○ Initializing git repository...");
 
     let output = Command::new("git")

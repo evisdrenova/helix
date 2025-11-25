@@ -60,7 +60,7 @@ impl App {
             split_ratio: 0.35, // 35% for timeline, 65% for details
             loader,
             total_loaded,
-            initial_limit,
+            initial_limit: initial_limit,
             repo_name,
             remote_branch,
             ahead,

@@ -12,13 +12,12 @@ pub struct HelixIndex {
 }
 
 impl HelixIndex {
-    // Load helix.idx or rebuild if missing/stale
+    /// Verify the current state of the Helix Index and either load or rebuild it depending on its state.
     pub fn load_or_rebuild(repo_path: &Path) -> Result<Self> {
         let verifier = Verifier::new(repo_path);
 
         match verifier.verify()? {
             VerifyResult::Valid => {
-                // Fast path: index is fresh
                 let reader = Reader::new(repo_path);
                 let data = reader.read()?;
 
@@ -28,32 +27,28 @@ impl HelixIndex {
                 })
             }
             VerifyResult::Missing => {
-                // Index doesn't exist, build it
                 eprintln!("Building helix.idx for the first time...");
-                Self::rebuild(repo_path)
+                Self::rebuild_helix_index(repo_path)
             }
             VerifyResult::MtimeMismatch
             | VerifyResult::SizeMismatch
             | VerifyResult::ChecksumMismatch => {
-                // Index is stale, rebuild
                 eprintln!("helix.idx is stale, rebuilding...");
-                Self::rebuild(repo_path)
+                Self::rebuild_helix_index(repo_path)
             }
             VerifyResult::WrongRepo => {
-                // Index is from a different repo, rebuild
                 eprintln!("helix.idx is from a different repo, rebuilding...");
-                Self::rebuild(repo_path)
+                Self::rebuild_helix_index(repo_path)
             }
             VerifyResult::Corrupted => {
-                // Index is corrupted, rebuild
                 eprintln!("helix.idx is corrupted, rebuilding...");
-                Self::rebuild(repo_path)
+                Self::rebuild_helix_index(repo_path)
             }
         }
     }
 
-    // Force rebuild from .git/index
-    pub fn rebuild(repo_path: &Path) -> Result<Self> {
+    /// Rebuild the helix index from scratch using a full sync and return a new instance
+    pub fn rebuild_helix_index(repo_path: &Path) -> Result<Self> {
         let syncer = SyncEngine::new(repo_path);
         syncer.full_sync()?;
 
@@ -66,8 +61,8 @@ impl HelixIndex {
         })
     }
 
-    /// Refresh incrementally (fast path for git add/reset)
-    pub fn refresh_incremental(&mut self, changed_paths: &[PathBuf]) -> Result<()> {
+    /// Incrementally refresh specific paths in the the helix index
+    pub fn incremental_refresh(&mut self, changed_paths: &[PathBuf]) -> Result<()> {
         let syncer = SyncEngine::new(&self.repo_path);
         syncer.incremental_sync(changed_paths)?;
 
@@ -77,8 +72,8 @@ impl HelixIndex {
         Ok(())
     }
 
-    /// Full Refresh from .git/index (incremental update)
-    pub fn refresh(&mut self) -> Result<()> {
+    /// Full Refresh from .git/index (incremental update) and return existing instance
+    pub fn full_refresh(&mut self) -> Result<()> {
         let syncer = SyncEngine::new(&self.repo_path);
         syncer.full_sync()?;
 
@@ -88,7 +83,7 @@ impl HelixIndex {
         Ok(())
     }
 
-    /// Get all staged files
+    /// Get all staged files. This can include tracked and untracked files.
     pub fn get_staged(&self) -> HashSet<PathBuf> {
         self.data
             .entries
@@ -98,7 +93,7 @@ impl HelixIndex {
             .collect()
     }
 
-    /// Get all modified files
+    /// Get all modified files. This can include both tracked and untracked files.
     pub fn get_modified(&self) -> HashSet<PathBuf> {
         self.data
             .entries
@@ -144,6 +139,37 @@ impl HelixIndex {
             .entries
             .iter()
             .any(|e| e.path == path && e.flags.contains(EntryFlags::STAGED))
+    }
+
+    /// Returns unstaged files
+    pub fn get_unstaged(&self) -> HashSet<PathBuf> {
+        self.data
+            .entries
+            .iter()
+            .filter(|e| {
+                e.flags.contains(EntryFlags::MODIFIED) && e.flags.contains(EntryFlags::TRACKED)
+            })
+            .map(|e| e.path.clone())
+            .collect()
+    }
+
+    /// Get all files that need staging (for `helix add .`)
+    pub fn get_files_to_add(&self) -> HashSet<PathBuf> {
+        self.data
+            .entries
+            .iter()
+            .filter(|e| {
+                // Untracked files
+                e.flags.contains(EntryFlags::UNTRACKED)
+                // OR modified but not staged
+                || (e.flags.contains(EntryFlags::MODIFIED) 
+                    && !e.flags.contains(EntryFlags::STAGED))
+                // OR deleted but not staged
+                || (e.flags.contains(EntryFlags::DELETED) 
+                    && !e.flags.contains(EntryFlags::STAGED))
+            })
+            .map(|e| e.path.clone())
+            .collect()
     }
 
     /// Get current generation
@@ -266,7 +292,7 @@ mod tests {
             .output()?;
 
         // Refresh
-        index.refresh()?;
+        index.full_refresh()?;
 
         assert_eq!(index.entries().len(), 2);
         assert_eq!(index.generation(), 2);
