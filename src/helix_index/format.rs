@@ -329,14 +329,27 @@ impl Entry {
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct EntryFlags: u16 {
-        const TRACKED    = 1 << 0;
-        const STAGED     = 1 << 1;
-        const MODIFIED   = 1 << 2;
-        const DELETED    = 1 << 3;
-        const UNTRACKED  = 1 << 4;
-        const CONFLICT   = 1 << 5;
+        const TRACKED    = 1 << 0; // Present in .git/index
+        const STAGED     = 1 << 1; // index != HEAD
+        const MODIFIED   = 1 << 2; // working tree != index
+        const DELETED    = 1 << 3; // path missing from working tree
+        const UNTRACKED  = 1 << 4; // not in .git/index, but present in our cache
+        const CONFLICT   = 1 << 5; // merge conflict
         const RESERVED1  = 1 << 6;
         const RESERVED2  = 1 << 7;
+    }
+}
+
+impl EntryFlags {
+    pub fn is_clean(self) -> bool {
+        self.contains(EntryFlags::TRACKED)
+            && !self.intersects(EntryFlags::MODIFIED | EntryFlags::STAGED | EntryFlags::DELETED)
+    }
+
+    pub fn is_partially_staged(self) -> bool {
+        self.contains(EntryFlags::TRACKED)
+            && self.contains(EntryFlags::MODIFIED)
+            && self.contains(EntryFlags::STAGED)
     }
 }
 

@@ -11,6 +11,17 @@ pub struct HelixIndex {
     data: HelixIndexData,
 }
 
+/*
+
+tracked && modified && !staged = unstaged
+tracked && staged && !modified = staged
+tracked && !modified && !staged = clean
+tracked && staged && modified = partially staged
+
+untracked && !staged = untracked
+untracked && staged = staged (new file)
+*/
+
 impl HelixIndex {
     /// Verify the current state of the Helix Index and either load or rebuild it depending on its state.
     pub fn load_or_rebuild(repo_path: &Path) -> Result<Self> {
@@ -88,7 +99,9 @@ impl HelixIndex {
         self.data
             .entries
             .iter()
-            .filter(|e| e.flags.contains(EntryFlags::STAGED))
+            .filter(|e| {
+                e.flags.contains(EntryFlags::STAGED) && e.flags.contains(EntryFlags::TRACKED)
+            })
             .map(|e| e.path.clone())
             .collect()
     }
@@ -98,7 +111,9 @@ impl HelixIndex {
         self.data
             .entries
             .iter()
-            .filter(|e| e.flags.contains(EntryFlags::MODIFIED))
+            .filter(|e| {
+                e.flags.contains(EntryFlags::MODIFIED) || e.flags.contains(EntryFlags::UNTRACKED)
+            })
             .map(|e| e.path.clone())
             .collect()
     }
@@ -108,7 +123,9 @@ impl HelixIndex {
         self.data
             .entries
             .iter()
-            .filter(|e| e.flags.contains(EntryFlags::DELETED))
+            .filter(|e| {
+                e.flags.contains(EntryFlags::DELETED) && e.flags.contains(EntryFlags::TRACKED)
+            })
             .map(|e| e.path.clone())
             .collect()
     }
@@ -135,10 +152,11 @@ impl HelixIndex {
 
     /// Check if a file is staged
     pub fn is_staged(&self, path: &Path) -> bool {
-        self.data
-            .entries
-            .iter()
-            .any(|e| e.path == path && e.flags.contains(EntryFlags::STAGED))
+        self.data.entries.iter().any(|e| {
+            e.path == path
+                && e.flags.contains(EntryFlags::STAGED)
+                && e.flags.contains(EntryFlags::TRACKED)
+        })
     }
 
     /// Returns unstaged files
@@ -147,7 +165,9 @@ impl HelixIndex {
             .entries
             .iter()
             .filter(|e| {
-                e.flags.contains(EntryFlags::MODIFIED) && e.flags.contains(EntryFlags::TRACKED)
+                e.flags.contains(EntryFlags::TRACKED)
+                    && e.flags.contains(EntryFlags::MODIFIED)
+                    && !e.flags.contains(EntryFlags::STAGED)
             })
             .map(|e| e.path.clone())
             .collect()
@@ -159,19 +179,22 @@ impl HelixIndex {
             .entries
             .iter()
             .filter(|e| {
-                // Untracked files
+                // New file not tracked yet
                 e.flags.contains(EntryFlags::UNTRACKED)
-                // OR modified but not staged
-                || (e.flags.contains(EntryFlags::MODIFIED) 
-                    && !e.flags.contains(EntryFlags::STAGED))
-                // OR deleted but not staged
-                || (e.flags.contains(EntryFlags::DELETED) 
-                    && !e.flags.contains(EntryFlags::STAGED))
+
+            // Modified tracked file not staged
+            || (e.flags.contains(EntryFlags::TRACKED)
+                && e.flags.contains(EntryFlags::MODIFIED)
+                && !e.flags.contains(EntryFlags::STAGED))
+
+            // Deleted tracked file not staged
+            || (e.flags.contains(EntryFlags::TRACKED)
+                && e.flags.contains(EntryFlags::DELETED)
+                && !e.flags.contains(EntryFlags::STAGED))
             })
             .map(|e| e.path.clone())
             .collect()
     }
-
     /// Get current generation
     pub fn generation(&self) -> u64 {
         self.data.header.generation
