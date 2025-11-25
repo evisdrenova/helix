@@ -194,3 +194,107 @@ patterns = [
 
     Ok(())
 }
+
+fn print_success_message(repo_path: &Path) -> Result<()> {
+    println!();
+    println!("🎉 Helix is ready!");
+    println!();
+    println!("Configuration:");
+    println!("  Repo:   {}", repo_path.display());
+    println!("  Config: {}/.helix/config.toml", repo_path.display());
+    println!("  Index:  {}/.helix/helix.idx", repo_path.display());
+    println!();
+    println!("Next steps:");
+    println!("  helix status           # View working directory status");
+    println!("  helix log              # View git history");
+    println!("  helix commit <files>   # Add, generate message, and commit");
+    println!();
+    println!("Tips:");
+    println!("  • Edit .helix/config.toml to customize settings");
+    println!("  • Run 'helix init' again to rebuild the index");
+    println!();
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_init_fresh_directory() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo_path = temp_dir.path();
+
+        init_helix_repo(repo_path)?;
+
+        // Verify git repo created
+        assert!(repo_path.join(".git").exists());
+
+        // Verify helix directory created
+        assert!(repo_path.join(".helix").exists());
+
+        // Verify index created
+        assert!(repo_path.join(".helix/helix.idx").exists());
+
+        // Verify config created
+        assert!(repo_path.join(".helix/config.toml").exists());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_init_existing_git_repo() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo_path = temp_dir.path();
+
+        // Pre-create git repo
+        Command::new("git")
+            .args(&["init"])
+            .current_dir(repo_path)
+            .output()?;
+
+        Command::new("git")
+            .args(&["config", "user.name", "Test User"])
+            .current_dir(repo_path)
+            .output()?;
+
+        Command::new("git")
+            .args(&["config", "user.email", "test@test.com"])
+            .current_dir(repo_path)
+            .output()?;
+
+        // Add some files
+        fs::write(repo_path.join("test.txt"), "hello")?;
+        Command::new("git")
+            .args(&["add", "test.txt"])
+            .current_dir(repo_path)
+            .output()?;
+
+        init_helix_repo(repo_path)?;
+
+        // Verify helix index built
+        let reader = helix_index::Reader::new(repo_path);
+        let data = reader.read()?;
+        assert_eq!(data.entries.len(), 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_init_idempotent() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo_path = temp_dir.path();
+
+        // Init twice
+        init_helix_repo(repo_path)?;
+        init_helix_repo(repo_path)?;
+
+        // Should still work
+        assert!(repo_path.join(".helix/helix.idx").exists());
+
+        Ok(())
+    }
+}
