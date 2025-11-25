@@ -24,7 +24,7 @@ stuff we'll want to add later (probably):
 
 use anyhow::{bail, Context, Result};
 use memmap2::{Mmap, MmapOptions};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::{fs::File, io};
 
 use crate::Oid;

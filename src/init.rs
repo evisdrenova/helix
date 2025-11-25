@@ -11,15 +11,10 @@ pub fn init_helix_repo(repo_path: &Path) -> Result<()> {
     println!();
 
     ensure_git_repo(repo_path)?;
-
     verify_git_config(repo_path)?;
-
     create_helix_directory(repo_path)?;
-
     build_initial_index(repo_path)?;
-
     create_repo_config(repo_path)?;
-
     print_success_message(repo_path)?;
 
     Ok(())
@@ -171,12 +166,7 @@ fn create_repo_config(repo_path: &Path) -> Result<()> {
 # This file configures Helix behavior for this repository.
 # Settings here override global settings in ~/.helix.toml
 
-[core]
-# Automatically refresh index when files change
-auto_refresh = true
 
-# How often to check for changes (seconds)
-refresh_interval_secs = 2
 
 [ignore]
 # Additional patterns to ignore (beyond .gitignore)

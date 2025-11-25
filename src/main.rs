@@ -1,9 +1,6 @@
 use clap::{Parser, Subcommand};
-use helix::{fsmonitor::FSMonitor, init::init_helix_repo};
-use std::{
-    path::{Path, PathBuf},
-    process::Command,
-};
+use helix::init::init_helix_repo;
+use std::path::{Path, PathBuf};
 
 mod config;
 mod git;
@@ -13,7 +10,7 @@ mod log;
 mod status;
 mod workflow;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use config::Config;
 use workflow::Workflow;
 

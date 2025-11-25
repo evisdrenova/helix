@@ -1,6 +1,4 @@
-[core]
-auto_refresh = true
-refresh_interval_secs = 2
+
 
 [ignore]
 patterns = [

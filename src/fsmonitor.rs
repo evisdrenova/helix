@@ -10,7 +10,7 @@ use dashmap::DashSet;
 use notify::event::{
     AccessKind, AccessMode, CreateKind, DataChange, ModifyKind, RemoveKind, RenameMode,
 };
-use notify::{event, Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Deserialize;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -204,25 +204,6 @@ impl FSMonitor {
             EventKind::Access(_) => false,
             _ => true,
         }
-    }
-
-    fn path_to_ignore(repo_root: &Path, path: &Path) -> bool {
-        // ignore .git directory
-        if path.starts_with(repo_root.join(".git")) && !path.ends_with(".git/index") {
-            return true;
-        }
-
-        // Ignore common editor temp files
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if name.starts_with('.') && (name.contains(".swp") || name.ends_with('~')) {
-                return true;
-            }
-            if name == ".DS_Store" {
-                return true;
-            }
-        }
-
-        false
     }
 }
 // Ignore rules from multiple sources with clear precedence:
