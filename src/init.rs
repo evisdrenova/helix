@@ -154,3 +154,43 @@ fn build_initial_index(repo_path: &Path) -> Result<()> {
 
     Ok(())
 }
+
+fn create_repo_config(repo_path: &Path) -> Result<()> {
+    let helix_dir = repo_path.join(".helix");
+    let config_path = helix_dir.join("config.toml");
+
+    if config_path.exists() {
+        println!("✓ .helix/config.toml exists");
+        return Ok(());
+    }
+
+    fs::create_dir_all(&helix_dir).context("Failed to create .helix directory")?;
+
+    let default_config = r#"# Helix repository configuration
+#
+# This file configures Helix behavior for this repository.
+# Settings here override global settings in ~/.helix.toml
+
+[core]
+# Automatically refresh index when files change
+auto_refresh = true
+
+# How often to check for changes (seconds)
+refresh_interval_secs = 2
+
+[ignore]
+# Additional patterns to ignore (beyond .gitignore)
+patterns = [
+    "*.log",
+    "*.tmp",
+    "*.swp",
+    ".DS_Store",
+]
+"#;
+
+    fs::write(&config_path, default_config).context("Failed to write .helix/config.toml")?;
+
+    println!("✓ Created .helix/config.toml");
+
+    Ok(())
+}
