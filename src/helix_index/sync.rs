@@ -3,12 +3,25 @@ This file defines the sync engine that creates the helix.index from .git/index a
 only index that the helix CLI command use to be very fast. It supports a full sync mode when the repo is first initialized and an incremental
 sync mode as the user runs commands and makes file changes.
 
-States:
-- Tracked -> git has a history of this file either from the repo or in the last commit
-    - unmodified -> the file has not been changed since the last commit
-    - modified -> the file has changes since the last commit but those changes have not yet been added to the staging area (UNSTAGED)
-    - staged -> the file has been added to the staging area with it's most recent changes and is ready to be committed
-- untracked -> Git has no history of these files in the last commit or in the repo. These are typically new files that have been been created in the working directory but have not yet been added. This also includes files that have been explicitly ignored by .gitignore.
+
+State model for EntryFlags:
+
+We model three worlds:
+- HEAD         (last committed state)
+- index        (.git/index, staging area)
+- working tree (files on disk)
+
+Bits:
+
+- TRACKED   -> this path exists in .git/index
+- STAGED    -> index differs from HEAD for this path (index != HEAD)
+- MODIFIED  -> working tree differs from index (working != index)
+- DELETED   -> tracked in index/HEAD but missing from working tree
+- UNTRACKED -> not in .git/index, but discovered via FSMonitor
+
+This file (sync.rs) only compares **index vs HEAD**, so it is responsible
+for setting TRACKED and STAGED. MODIFIED / DELETED / UNTRACKED are set
+by the FSMonitor / working-tree side of the pipeline.
 */
 
 use super::fingerprint::generate_repo_fingerprint;
@@ -178,10 +191,20 @@ impl SyncEngine {
         entries
     }
 
-    /// Build our index with files from .git/index so we can compare them against the head commit
-    /// to understand the status of the files (staged, not-staged). Originally we checked for the file metadata here
-    /// but that didn't scale well for large repos. There is a tiny window where the size & mtime might be stale if someone modifies files between git operations and the first helix run. FSMonitor will pick up that metadata as soon as the user starts making
-    /// any changes anyways so i think it's worth the trade-off.
+    /// Build a helix index Entry from a Git index entry.
+    ///
+    /// This function ONLY has visibility into:
+    /// - .git/index (the staging area)
+    /// - HEAD (via `head_tree`)
+    ///
+    /// So it is responsible for:
+    /// - Setting TRACKED (always, since we're iterating the index)
+    /// - Setting STAGED when index != HEAD (or when the path doesn't exist in HEAD)
+    ///
+    /// It does NOT set:
+    /// - MODIFIED  (requires working tree vs index comparison)
+    /// - DELETED   (requires working tree presence info)
+    /// - UNTRACKED (requires FSMonitor / paths not in the index)
     fn build_helix_entry_from_git_entry(
         &self,
         index_entry: &crate::index::IndexEntry,
@@ -192,6 +215,7 @@ impl SyncEngine {
         let mut flags = EntryFlags::TRACKED;
         let index_oid = index_entry.oid.as_bytes();
 
+        // if the page is in the head commit then it's staged
         let is_staged = head_tree
             .get(&path)
             .map(|head_oid| head_oid.as_slice() != index_oid)
