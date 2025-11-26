@@ -1,3 +1,5 @@
+use crate::index::GitIndex;
+
 use super::format::{Entry, EntryFlags};
 use super::reader::{HelixIndexData, Reader};
 use super::sync::SyncEngine;
@@ -83,6 +85,64 @@ impl HelixIndex {
         Ok(())
     }
 
+    // Apply working tree changes to EntryFlags based on dirty paths from FSMonitor.
+    ///
+    /// This is responsible for setting:
+    /// - MODIFIED  (working tree != index)
+    /// - DELETED   (tracked in index, missing on disk)
+    /// - UNTRACKED (not in index, exists on disk, not ignored)
+    ///
+    /// It does NOT touch:
+    /// - TRACKED / STAGED (those come from SyncEngine using .git/index + HEAD)
+    pub fn apply_worktree_changes(&mut self, dirty_paths: &[PathBuf]) -> Result<()> {
+        // Snapshot of tracked paths from .git/index
+        let git_index = GitIndex::open(&self.repo_path)?;
+        let tracked: HashSet<PathBuf> =
+            git_index.entries().map(|e| PathBuf::from(e.path)).collect();
+
+        for rel_path in dirty_paths {
+            let full_path = self.repo_path.join(rel_path);
+            let exists = full_path.exists();
+
+            if tracked.contains(rel_path) {
+                // Tracked file: adjust MODIFIED / DELETED bits
+                if let Some(entry) = self.find_entry_mut(rel_path) {
+                    // Clear working-tree-related bits before recomputing
+                    entry
+                        .flags
+                        .remove(EntryFlags::MODIFIED | EntryFlags::DELETED | EntryFlags::UNTRACKED);
+
+                    if exists {
+                        // tracked + exists + dirty => modified (unstaged)
+                        entry.flags.insert(EntryFlags::MODIFIED);
+                    } else {
+                        // tracked + missing => deleted (unstaged)
+                        entry
+                            .flags
+                            .insert(EntryFlags::DELETED | EntryFlags::MODIFIED);
+                    }
+                }
+            } else {
+                // Not in .git/index => candidate for UNTRACKED
+                if exists {
+                    let entry = self.ensure_untracked_entry(rel_path);
+                    // For untracked entries, we explicitly mark them as untracked & modified.
+                    entry
+                        .flags
+                        .remove(EntryFlags::TRACKED | EntryFlags::STAGED | EntryFlags::DELETED);
+                    entry
+                        .flags
+                        .insert(EntryFlags::UNTRACKED | EntryFlags::MODIFIED);
+                } else {
+                    // Not tracked and missing on disk => nothing to keep
+                    self.remove_entry_if_exists(rel_path);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Get all staged files. This can include tracked and untracked files.
     pub fn get_staged(&self) -> HashSet<PathBuf> {
         self.data
@@ -100,9 +160,7 @@ impl HelixIndex {
         self.data
             .entries
             .iter()
-            .filter(|e| {
-                e.flags.contains(EntryFlags::MODIFIED) || e.flags.contains(EntryFlags::UNTRACKED)
-            })
+            .filter(|e| e.flags.contains(EntryFlags::MODIFIED))
             .map(|e| e.path.clone())
             .collect()
     }
@@ -192,6 +250,34 @@ impl HelixIndex {
     /// Get all entries (for debugging)
     pub fn entries(&self) -> &[Entry] {
         &self.data.entries
+    }
+
+    fn find_entry_mut(&mut self, path: &Path) -> Option<&mut Entry> {
+        self.data.entries.iter_mut().find(|e| e.path == path)
+    }
+
+    fn remove_entry_if_exists(&mut self, path: &Path) {
+        self.data.entries.retain(|e| e.path != path);
+    }
+
+    fn ensure_untracked_entry(&mut self, path: &Path) -> &mut Entry {
+        // see if an entry already exists
+        if let Some(pos) = self.data.entries.iter().position(|e| e.path == path) {
+            return &mut self.data.entries[pos];
+        }
+
+        self.data.entries.push(Entry {
+            path: path.to_path_buf(),
+            size: 0,
+            mtime_sec: 0,
+            mtime_nsec: 0,
+            flags: EntryFlags::empty(),
+            oid: [0; 20], // we don't need a real OID for untracked entries
+            reserved: [0; 64],
+        });
+
+        let len = self.data.entries.len();
+        &mut self.data.entries[len - 1]
     }
 }
 
