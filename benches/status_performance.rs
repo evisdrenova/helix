@@ -151,7 +151,7 @@ fn bench_helix_index_after_change(c: &mut Criterion) {
                     .output()
                     .unwrap();
 
-                black_box(index.refresh().unwrap());
+                black_box(index.full_refresh().unwrap());
             });
         });
     }

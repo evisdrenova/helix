@@ -326,6 +326,15 @@ impl Entry {
     }
 }
 
+/*
+tracked && modified && !staged = unstaged
+tracked && staged && !modified = staged
+tracked && !modified && !staged = clean
+tracked && staged && modified = partially staged
+untracked && !staged = untracked
+untracked && staged = staged (new file)
+*/
+
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct EntryFlags: u16 {
@@ -412,15 +421,7 @@ mod tests {
 
     #[test]
     fn test_header_roundtrip() {
-        let header = Header::new(
-            42,         // generation
-            [0xaa; 16], // repo_fingerprint
-            1234567890, // git_index_mtime_sec
-            123456,     // git_index_mtime_nsec
-            4096,       // git_index_size
-            [0xbb; 20], // git_index_checksum
-            10,         // entry_count
-        );
+        let header = Header::new(42, [0xaa; 16], 1234567890, 123456, 4096, [0xbb; 20], 10);
 
         let bytes = header.to_bytes();
         assert_eq!(bytes.len(), HEADER_SIZE);

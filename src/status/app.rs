@@ -207,10 +207,10 @@ impl App {
 
             if dirty_files.is_empty() {
                 // Index changed but no specific files dirty - do full refresh
-                self.helix_index.refresh()?;
+                self.helix_index.full_refresh()?;
             } else {
                 // Incremental update - FAST PATH
-                self.helix_index.refresh_incremental(&dirty_files)?;
+                self.helix_index.incremental_refresh(&dirty_files)?;
             }
 
             self.fsmonitor.clear_index_flag();

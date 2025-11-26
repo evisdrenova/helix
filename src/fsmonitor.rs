@@ -2,7 +2,7 @@
 Async event system that watches for file changes and tracks:
  - files that are modified
  - staging changes
- - 
+ -
 */
 
 use anyhow::{Context, Result};
@@ -412,6 +412,9 @@ mod tests {
             !dirty_files.is_empty(),
             "Should have detected file creation"
         );
+        println!("dirty fails {:?}", dirty_files);
+        let file_name = Path::new("test.txt");
+        assert!(dirty_files.contains(&file_name.to_path_buf()));
 
         // Clear and verify
         monitor.clear_dirty();

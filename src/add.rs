@@ -1,7 +1,3 @@
-/*
-Defines the helix add command for adding files to the .git/index and staging them
-*/
-
 use crate::helix_index::api::HelixIndex;
 use crate::helix_index::sync::SyncEngine;
 use anyhow::{Context, Result};
@@ -32,47 +28,74 @@ impl Default for AddOptions {
     }
 }
 
+// pub fn add(repo_path: &Path, paths: &[PathBuf], options: AddOptions) -> Result<()> {
+//     let start = Instant::now();
+
+//     if paths.is_empty() {
+//         anyhow::bail!("No paths specified. Use 'helix add <files>' or 'helix add .'");
+//     }
+
+//     let helix_index = HelixIndex::load_or_rebuild(repo_path)?;
+
+//     let files_to_add = resolve_files_to_add(repo_path, &helix_index, &paths, &options)?;
+
+//     if files_to_add.is_empty() {
+//         if options.verbose {
+//             println!("No files to add (everything up-to-date)");
+//         }
+//         return Ok(());
+//     }
+
+//     if options.verbose {
+//         println!("Adding {} files...", files_to_add.len());
+//         for file in &files_to_add {
+//             println!("  add '{}'", file.display());
+//         }
+//     }
+
+//     if options.dry_run {
+//         for path in &files_to_add {
+//             println!("Would add: {}", path.display());
+//         }
+//         return Ok(());
+//     }
+
+//     add_via_git(repo_path, &files_to_add, &options)?;
+
+//     update_helix_index(repo_path, &files_to_add)?;
+
+//     let elapsed = start.elapsed();
+
+//     if options.verbose {
+//         println!("Added {} files in {:?}", files_to_add.len(), elapsed);
+//     }
+
+//     Ok(())
+// }
+
 pub fn add(repo_path: &Path, paths: &[PathBuf], options: AddOptions) -> Result<()> {
-    let start = Instant::now();
-
-    if paths.is_empty() {
-        anyhow::bail!("No paths specified. Use 'helix add <files>' or 'helix add .'");
-    }
-
     let helix_index = HelixIndex::load_or_rebuild(repo_path)?;
 
-    let files_to_add = resolve_files_to_add(repo_path, &helix_index, &paths, &options)?;
+    let files_to_add: Vec<PathBuf> = if paths.contains(&PathBuf::from(".")) {
+        // Add everything that needs staging
+        helix_index.get_files_to_add().into_iter().collect()
+    } else {
+        // Add specific files
+        let files_to_add_set = helix_index.get_files_to_add();
+        paths
+            .iter()
+            .filter(|p| files_to_add_set.contains(*p))
+            .cloned()
+            .collect()
+    };
 
     if files_to_add.is_empty() {
-        if options.verbose {
-            println!("No files to add (everything up-to-date)");
-        }
-        return Ok(());
-    }
-
-    if options.verbose {
-        println!("Adding {} files...", files_to_add.len());
-        for file in &files_to_add {
-            println!("  add '{}'", file.display());
-        }
-    }
-
-    if options.dry_run {
-        for path in &files_to_add {
-            println!("Would add: {}", path.display());
-        }
+        println!("No files to add");
         return Ok(());
     }
 
     add_via_git(repo_path, &files_to_add, &options)?;
-
     update_helix_index(repo_path, &files_to_add)?;
-
-    let elapsed = start.elapsed();
-
-    if options.verbose {
-        println!("Added {} files in {:?}", files_to_add.len(), elapsed);
-    }
 
     Ok(())
 }

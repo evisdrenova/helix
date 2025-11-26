@@ -11,7 +11,6 @@ States:
 - untracked -> Git has no history of these files in the last commit or in the repo. These are typically new files that have been been created in the working directory but have not yet been added. This also includes files that have been explicitly ignored by .gitignore.
 */
 
-
 use super::fingerprint::generate_repo_fingerprint;
 use super::format::{Entry, EntryFlags, Header};
 use super::reader::Reader;
@@ -213,7 +212,7 @@ impl SyncEngine {
         })
     }
 
-    /// Get the current repos HEAD commit and create a hashmap of all of the paths in the tree
+    /// Get the current repos HEAD commit and return a hashmap of all of the paths in the tree
     fn load_full_head_tree(&self) -> Result<HashMap<PathBuf, Vec<u8>>> {
         let repo = gix::open(&self.repo_path).context("Failed to open repository with gix")?;
 

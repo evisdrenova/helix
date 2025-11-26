@@ -11,17 +11,6 @@ pub struct HelixIndex {
     data: HelixIndexData,
 }
 
-/*
-
-tracked && modified && !staged = unstaged
-tracked && staged && !modified = staged
-tracked && !modified && !staged = clean
-tracked && staged && modified = partially staged
-
-untracked && !staged = untracked
-untracked && staged = staged (new file)
-*/
-
 impl HelixIndex {
     /// Verify the current state of the Helix Index and either load or rebuild it depending on its state.
     pub fn load_or_rebuild(repo_path: &Path) -> Result<Self> {
@@ -83,7 +72,7 @@ impl HelixIndex {
         Ok(())
     }
 
-    /// Full Refresh from .git/index (incremental update) and return existing instance
+    /// Full Refresh from .git/index and return existing instance
     pub fn full_refresh(&mut self) -> Result<()> {
         let syncer = SyncEngine::new(&self.repo_path);
         syncer.full_sync()?;
