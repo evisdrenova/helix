@@ -4,7 +4,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use helix::{fsmonitor::FSMonitor, helix_index::api::HelixIndex, index::GitIndex};
+use helix::{fsmonitor::FSMonitor, helix_index::api::HelixIndex};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::{collections::HashSet, path::Path, process::Command};
 use std::{io, path::PathBuf};
@@ -69,16 +69,6 @@ impl FilterMode {
             FilterMode::Added => FilterMode::Deleted,
             FilterMode::Deleted => FilterMode::Untracked,
             FilterMode::Untracked => FilterMode::All,
-        }
-    }
-
-    pub fn display_name(&self) -> &str {
-        match self {
-            FilterMode::All => "All",
-            FilterMode::Modified => "Modified",
-            FilterMode::Added => "Added",
-            FilterMode::Deleted => "Deleted",
-            FilterMode::Untracked => "Untracked",
         }
     }
 }
@@ -200,11 +190,11 @@ impl App {
     pub fn refresh_status(&mut self) -> Result<()> {
         self.files.clear();
 
-        // Check if .git/index changed
-        if self.fsmonitor.index_changed() {
-            // Get which files changed from FSMonitor
-            let dirty_files = self.fsmonitor.get_dirty_files();
+        // Snapshot dirty working-tree paths once
+        let dirty_files = self.fsmonitor.get_dirty_files();
 
+        // 1) If .git/index changed, refresh the helix index (TRACKED/STAGED side)
+        if self.fsmonitor.index_changed() {
             if dirty_files.is_empty() {
                 // Index changed but no specific files dirty - do full refresh
                 self.helix_index.full_refresh()?;
@@ -216,37 +206,42 @@ impl App {
             self.fsmonitor.clear_index_flag();
         }
 
-        // Get staging info from helix index (now up to date)
+        // 2) Apply working tree changes to EntryFlags (MODIFIED/DELETED/UNTRACKED)
+        if !dirty_files.is_empty() {
+            self.helix_index.apply_worktree_changes(&dirty_files)?;
+            // We've consumed the dirty set for this refresh cycle
+            self.fsmonitor.clear_dirty();
+        }
+
+        // 3) Staged files come directly from the helix index
         self.staged_files = self.helix_index.get_staged();
 
-        let dirty_files = self.fsmonitor.get_dirty_files();
+        // 4) Build UI-level FileStatus from the helix index flags
+        let mut seen: HashSet<PathBuf> = HashSet::new();
 
-        // Open .git/index to check tracked files
-        let index = GitIndex::open(&self.repo_path)?;
-        let tracked_files: HashSet<PathBuf> = index
-            .entries()
-            .map(|entry| PathBuf::from(entry.path))
-            .collect();
-
-        // Process dirty files
-        for dirty_path in dirty_files {
-            let full_path = self.repo_path.join(&dirty_path);
-
-            if tracked_files.contains(&dirty_path) {
-                if full_path.exists() {
-                    // File is modified
-                    self.files.push(FileStatus::Modified(dirty_path));
-                } else {
-                    // File is deleted
-                    self.files.push(FileStatus::Deleted(dirty_path));
-                }
-            } else if self.show_untracked && full_path.exists() {
-                // File is untracked
-                self.files.push(FileStatus::Untracked(dirty_path));
+        // Untracked files (if we’re showing them)
+        if self.show_untracked {
+            for path in self.helix_index.get_untracked() {
+                seen.insert(path.clone());
+                self.files.push(FileStatus::Untracked(path));
             }
         }
 
-        // Sort files
+        // Deleted files
+        for path in self.helix_index.get_deleted() {
+            if seen.insert(path.clone()) {
+                self.files.push(FileStatus::Deleted(path));
+            }
+        }
+
+        // Modified (unstaged) files
+        for path in self.helix_index.get_unstaged() {
+            if seen.insert(path.clone()) {
+                self.files.push(FileStatus::Modified(path));
+            }
+        }
+
+        // Sort files for stable display
         self.files.sort_by(|a, b| a.path().cmp(b.path()));
 
         self.last_refresh = std::time::Instant::now();
