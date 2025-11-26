@@ -183,11 +183,6 @@ impl FSMonitor {
                     if ignore_rules.should_ignore(rel_path) {
                         continue;
                     }
-
-                    if ignore_rules.should_ignore(rel_path) {
-                        continue;
-                    }
-
                     dirty.insert(rel_path.to_path_buf());
                 }
             }
