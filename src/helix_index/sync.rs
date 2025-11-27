@@ -68,10 +68,30 @@ impl SyncEngine {
         };
 
         let git_index_path = self.repo_path.join(".git/index");
+
+        println!("the git index path: {:?}", git_index_path);
+
+        // handle brand-new repo with no .git/index yet
         if !git_index_path.exists() {
-            anyhow::bail!(".git/index does not exist, either initialize a repo with `git init` or `helix init`");
+            // Treat as an empty Git index: no entries, zeroed metadata.
+            let repo_fingerprint = generate_repo_fingerprint(&self.repo_path)?;
+            let header = Header::new(
+                current_generation + 1,
+                repo_fingerprint,
+                0,       // git_mtime_sec
+                0,       // git_mtime_nsec
+                0,       // git_size
+                [0; 20], // git_checksum (no index yet)
+                0,       // entry_count
+            );
+
+            let writer = Writer::new(&self.repo_path);
+            writer.write(&header, &[])?; // empty entries vec
+
+            return Ok(());
         }
 
+        // 🔹 Existing behavior for repos that *do* have an index
         let git_metadata = fs::metadata(&git_index_path)?;
         let git_mtime = git_metadata.modified()?;
         let (git_mtime_sec, git_mtime_nsec) = system_time_to_parts(git_mtime);

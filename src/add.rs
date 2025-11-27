@@ -430,29 +430,96 @@ mod tests {
     #[test]
     fn test_add_single_file() -> Result<()> {
         let temp_dir = TempDir::new()?;
-        init_test_repo(temp_dir.path())?;
+        let repo_path = temp_dir.path();
+        println!("\n[TEST] repo_path = {}", repo_path.display());
+
+        init_test_repo(repo_path)?;
+        println!("[TEST] Initialized git repo");
 
         // Create a file
-        fs::write(temp_dir.path().join("test.txt"), "hello")?;
+        let file_path = repo_path.join("test.txt");
+        fs::write(&file_path, "hello")?;
+        println!("[TEST] Created file {}", file_path.display());
 
-        // Add it
+        // Sanity check: what does git status say before helix add?
+        let pre_output = Command::new("git")
+            .args(&["status", "--porcelain"])
+            .current_dir(repo_path)
+            .output()
+            .context("failed to run git status (pre-add)")?;
+        let pre_status = String::from_utf8_lossy(&pre_output.stdout);
+        println!(
+            "[TEST] git status --porcelain (before helix add):\n{}",
+            pre_status
+        );
+
+        // Add it via helix
+        println!("[TEST] Calling helix add ...");
         add(
-            temp_dir.path(),
+            repo_path,
             &[PathBuf::from("test.txt")],
-            AddOptions::default(),
+            AddOptions {
+                verbose: true,
+                ..AddOptions::default()
+            },
         )?;
 
-        // Verify it's staged
+        // Check git status exit code and stderr as well
         let output = Command::new("git")
             .args(&["status", "--porcelain"])
-            .current_dir(temp_dir.path())
-            .output()?;
+            .current_dir(repo_path)
+            .output()
+            .context("failed to run git status (post-add)")?;
+
+        println!("[TEST] git status exit code: {:?}", output.status.code());
+        if !output.stderr.is_empty() {
+            println!(
+                "[TEST] git status stderr:\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
 
         let status = String::from_utf8_lossy(&output.stdout);
-        assert!(status.contains("A  test.txt") || status.contains("A test.txt"));
+        println!(
+            "[TEST] git status --porcelain (after helix add):\n{}",
+            status
+        );
+
+        // Assert with a more helpful message if it fails
+        assert!(
+            status.contains("A  test.txt") || status.contains("A test.txt"),
+            "[TEST] expected 'A  test.txt' or 'A test.txt' in git status output, got:\n{}",
+            status
+        );
 
         Ok(())
     }
+
+    // fn test_add_single_file() -> Result<()> {
+    //     let temp_dir = TempDir::new()?;
+    //     init_test_repo(temp_dir.path())?;
+
+    //     // Create a file
+    //     fs::write(temp_dir.path().join("test.txt"), "hello")?;
+
+    //     // Add it
+    //     add(
+    //         temp_dir.path(),
+    //         &[PathBuf::from("test.txt")],
+    //         AddOptions::default(),
+    //     )?;
+
+    //     // Verify it's staged
+    //     let output = Command::new("git")
+    //         .args(&["status", "--porcelain"])
+    //         .current_dir(temp_dir.path())
+    //         .output()?;
+
+    //     let status = String::from_utf8_lossy(&output.stdout);
+    //     assert!(status.contains("A  test.txt") || status.contains("A test.txt"));
+
+    //     Ok(())
+    // }
 
     #[test]
     fn test_add_directory() -> Result<()> {
