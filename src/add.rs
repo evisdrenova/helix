@@ -73,11 +73,11 @@ impl Default for AddOptions {
 //     Ok(())
 // }
 
+/// Add files to staging area
 pub fn add(repo_path: &Path, paths: &[PathBuf], options: AddOptions) -> Result<()> {
     let helix_index = HelixIndex::load_or_rebuild(repo_path)?;
 
     let files_to_add: Vec<PathBuf> = if paths.contains(&PathBuf::from(".")) {
-        // Add everything that needs staging
         helix_index.get_files_to_add().into_iter().collect()
     } else {
         // Add specific files
@@ -100,175 +100,175 @@ pub fn add(repo_path: &Path, paths: &[PathBuf], options: AddOptions) -> Result<(
     Ok(())
 }
 
-fn resolve_files_to_add(
-    repo_path: &Path,
-    helix_index: &HelixIndex,
-    paths: &[PathBuf],
-    options: &AddOptions,
-) -> Result<Vec<PathBuf>> {
-    let tracked_files: HashSet<PathBuf> = helix_index
-        .entries()
-        .into_iter()
-        .map(|entry| entry.path.clone())
-        .collect();
+// fn resolve_files_to_add(
+//     repo_path: &Path,
+//     helix_index: &HelixIndex,
+//     paths: &[PathBuf],
+//     options: &AddOptions,
+// ) -> Result<Vec<PathBuf>> {
+//     let tracked_files: HashSet<PathBuf> = helix_index
+//         .entries()
+//         .into_iter()
+//         .map(|entry| entry.path.clone())
+//         .collect();
 
-    let staged_files = helix_index.get_staged();
+//     let staged_files = helix_index.get_staged();
 
-    let unstaged_files = helix_index.get_untracked();
+//     let unstaged_files = helix_index.get_untracked();
 
-    println!("staged files: {:?}", staged_files);
-    println!("unstaged files: {:?}", unstaged_files);
+//     println!("staged files: {:?}", staged_files);
+//     println!("unstaged files: {:?}", unstaged_files);
 
-    let candidate_files = expand_paths(repo_path, paths)?;
+//     let candidate_files = expand_paths(repo_path, paths)?;
 
-    let mut files_to_add = Vec::new();
+//     let mut files_to_add = Vec::new();
 
-    for file_path in candidate_files {
-        let full_path = repo_path.join(&file_path);
+//     for file_path in candidate_files {
+//         let full_path = repo_path.join(&file_path);
 
-        if !full_path.exists() {
-            if options.verbose {
-                eprintln!("Warning: {} does not exist, skipping", file_path.display());
-            }
-            continue;
-        }
+//         if !full_path.exists() {
+//             if options.verbose {
+//                 eprintln!("Warning: {} does not exist, skipping", file_path.display());
+//             }
+//             continue;
+//         }
 
-        // Check if file needs to be added
-        if should_add_file(
-            &file_path,
-            &full_path,
-            &tracked_files,
-            &staged_files,
-            helix_index,
-            options,
-        )? {
-            files_to_add.push(file_path);
-        }
-    }
+//         // Check if file needs to be added
+//         if should_add_file(
+//             &file_path,
+//             &full_path,
+//             &tracked_files,
+//             &staged_files,
+//             helix_index,
+//             options,
+//         )? {
+//             files_to_add.push(file_path);
+//         }
+//     }
 
-    Ok(files_to_add)
-}
+//     Ok(files_to_add)
+// }
 
-fn should_add_file(
-    relative_path: &Path,
-    full_path: &Path,
-    tracked_files: &HashSet<PathBuf>,
-    staged_files: &HashSet<PathBuf>,
-    helix_index: &HelixIndex,
-    _options: &AddOptions,
-) -> Result<bool> {
-    // If file is untracked, always add it
-    if !tracked_files.contains(relative_path) {
-        return Ok(true);
-    }
+// fn should_add_file(
+//     relative_path: &Path,
+//     full_path: &Path,
+//     tracked_files: &HashSet<PathBuf>,
+//     staged_files: &HashSet<PathBuf>,
+//     helix_index: &HelixIndex,
+//     _options: &AddOptions,
+// ) -> Result<bool> {
+//     // If file is untracked, always add it
+//     if !tracked_files.contains(relative_path) {
+//         return Ok(true);
+//     }
 
-    // File is tracked - check if it's already staged and unchanged
-    if staged_files.contains(relative_path) {
-        // File is already staged
-        // Check if it's been modified since staging
-        let entry = helix_index
-            .entries()
-            .into_iter()
-            .find(|e| e.path == relative_path)
-            .ok_or_else(|| anyhow::anyhow!("Entry not found"))?;
+//     // File is tracked - check if it's already staged and unchanged
+//     if staged_files.contains(relative_path) {
+//         // File is already staged
+//         // Check if it's been modified since staging
+//         let entry = helix_index
+//             .entries()
+//             .into_iter()
+//             .find(|e| e.path == relative_path)
+//             .ok_or_else(|| anyhow::anyhow!("Entry not found"))?;
 
-        let metadata = fs::metadata(full_path)?;
-        let disk_mtime = metadata
-            .modified()?
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_nanos();
+//         let metadata = fs::metadata(full_path)?;
+//         let disk_mtime = metadata
+//             .modified()?
+//             .duration_since(std::time::UNIX_EPOCH)?
+//             .as_nanos();
 
-        if disk_mtime == entry.mtime_nsec as u128 {
-            // File hasn't changed since staging - skip
-            return Ok(false);
-        }
+//         if disk_mtime == entry.mtime_nsec as u128 {
+//             // File hasn't changed since staging - skip
+//             return Ok(false);
+//         }
 
-        // File changed since staging - re-add it
-        return Ok(true);
-    }
+//         // File changed since staging - re-add it
+//         return Ok(true);
+//     }
 
-    // File is tracked but not staged
-    // Check if it's modified compared to index
-    let entry = helix_index
-        .entries()
-        .into_iter()
-        .find(|e| e.path == relative_path)
-        .ok_or_else(|| anyhow::anyhow!("Entry not found"))?;
+//     // File is tracked but not staged
+//     // Check if it's modified compared to index
+//     let entry = helix_index
+//         .entries()
+//         .into_iter()
+//         .find(|e| e.path == relative_path)
+//         .ok_or_else(|| anyhow::anyhow!("Entry not found"))?;
 
-    let metadata = fs::metadata(full_path)?;
-    let disk_mtime = metadata
-        .modified()?
-        .duration_since(std::time::UNIX_EPOCH)?
-        .as_nanos();
+//     let metadata = fs::metadata(full_path)?;
+//     let disk_mtime = metadata
+//         .modified()?
+//         .duration_since(std::time::UNIX_EPOCH)?
+//         .as_nanos();
 
-    // If mtime different, file is modified
-    if disk_mtime != entry.mtime_sec as u128 {
-        return Ok(true);
-    }
+//     // If mtime different, file is modified
+//     if disk_mtime != entry.mtime_sec as u128 {
+//         return Ok(true);
+//     }
 
-    // File unchanged - skip
-    Ok(false)
-}
+//     // File unchanged - skip
+//     Ok(false)
+// }
 
-/// Expand paths (handle ".", globs, directories)
-fn expand_paths(repo_path: &Path, paths: &[PathBuf]) -> Result<Vec<PathBuf>> {
-    let mut expanded = Vec::new();
+// /// Expand paths (handle ".", globs, directories)
+// fn expand_paths(repo_path: &Path, paths: &[PathBuf]) -> Result<Vec<PathBuf>> {
+//     let mut expanded = Vec::new();
 
-    for path in paths {
-        let full_path = if path.is_absolute() {
-            path.clone()
-        } else {
-            repo_path.join(path)
-        };
+//     for path in paths {
+//         let full_path = if path.is_absolute() {
+//             path.clone()
+//         } else {
+//             repo_path.join(path)
+//         };
 
-        if !full_path.try_exists()? {
-            eprintln!("Warning: '{}' does not exist, skipping", path.display());
-            continue;
-        }
+//         if !full_path.try_exists()? {
+//             eprintln!("Warning: '{}' does not exist, skipping", path.display());
+//             continue;
+//         }
 
-        if full_path.is_file() {
-            // Single file
-            let relative = full_path
-                .strip_prefix(repo_path)
-                .context("Path is outside repository")?;
-            expanded.push(relative.to_path_buf());
-        } else if full_path.is_dir() {
-            // Directory - recursively add all files
-            let files = collect_files_recursive(&full_path, repo_path)?;
-            expanded.extend(files);
-        }
-    }
+//         if full_path.is_file() {
+//             // Single file
+//             let relative = full_path
+//                 .strip_prefix(repo_path)
+//                 .context("Path is outside repository")?;
+//             expanded.push(relative.to_path_buf());
+//         } else if full_path.is_dir() {
+//             // Directory - recursively add all files
+//             let files = collect_files_recursive(&full_path, repo_path)?;
+//             expanded.extend(files);
+//         }
+//     }
 
-    expanded.sort();
-    expanded.dedup();
+//     expanded.sort();
+//     expanded.dedup();
 
-    Ok(expanded)
-}
+//     Ok(expanded)
+// }
 
-/// Recursively collect files from a directory
-fn collect_files_recursive(dir: &Path, repo_root: &Path) -> Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
+// /// Recursively collect files from a directory
+// fn collect_files_recursive(dir: &Path, repo_root: &Path) -> Result<Vec<PathBuf>> {
+//     let mut files = Vec::new();
 
-    for entry in WalkDir::new(dir)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|e| {
-            // Skip .git directory
-            !e.path().components().any(|c| c.as_os_str() == ".git")
-        })
-    {
-        let entry = entry?;
-        if entry.file_type().is_file() {
-            let relative = entry
-                .path()
-                .strip_prefix(repo_root)
-                .context("Path outside repo")?;
-            files.push(relative.to_path_buf());
-        }
-    }
+//     for entry in WalkDir::new(dir)
+//         .follow_links(false)
+//         .into_iter()
+//         .filter_entry(|e| {
+//             // Skip .git directory
+//             !e.path().components().any(|c| c.as_os_str() == ".git")
+//         })
+//     {
+//         let entry = entry?;
+//         if entry.file_type().is_file() {
+//             let relative = entry
+//                 .path()
+//                 .strip_prefix(repo_root)
+//                 .context("Path outside repo")?;
+//             files.push(relative.to_path_buf());
+//         }
+//     }
 
-    Ok(files)
-}
+//     Ok(files)
+// }
 
 /// Add files using git (ensures compatibility)
 fn add_via_git(repo_path: &Path, paths: &[PathBuf], options: &AddOptions) -> Result<()> {

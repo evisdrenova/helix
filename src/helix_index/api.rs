@@ -14,7 +14,7 @@ pub struct HelixIndex {
 }
 
 impl HelixIndex {
-    /// Verify the current state of the Helix Index and either load or rebuild it depending on its state.
+    /// Verify the current state of the Helix Index. If it is in a valid state, then load the index. If it is in an invalid state then rebuild it and load it.
     pub fn load_or_rebuild(repo_path: &Path) -> Result<Self> {
         let verifier = Verifier::new(repo_path);
 
@@ -86,6 +86,7 @@ impl HelixIndex {
     }
 
     // Apply working tree changes to EntryFlags based on dirty paths from FSMonitor.
+    /// dirty paths have some sort of change at the path
     ///
     /// This is responsible for setting:
     /// - MODIFIED  (working tree != index)
@@ -103,27 +104,28 @@ impl HelixIndex {
         for rel_path in dirty_paths {
             let full_path = self.repo_path.join(rel_path);
             let exists = full_path.exists();
-
+            // path is in the .git/index therefore it is TRACKED
             if tracked.contains(rel_path) {
                 // Tracked file: adjust MODIFIED / DELETED bits
                 if let Some(entry) = self.find_entry_mut(rel_path) {
                     // Clear working-tree-related bits before recomputing
+                    // now just TRACKED and/or STAGED/UNSTAGED
                     entry
                         .flags
                         .remove(EntryFlags::MODIFIED | EntryFlags::DELETED | EntryFlags::UNTRACKED);
 
                     if exists {
-                        // tracked + exists + dirty => modified (unstaged)
+                        // tracked + exists in the working directory + dirty => modified (unstaged)
                         entry.flags.insert(EntryFlags::MODIFIED);
                     } else {
-                        // tracked + missing => deleted (unstaged)
+                        // tracked + missing in working directory => deleted (unstaged)
                         entry
                             .flags
                             .insert(EntryFlags::DELETED | EntryFlags::MODIFIED);
                     }
                 }
             } else {
-                // Not in .git/index => candidate for UNTRACKED
+                // exists in the working directory but Not in .git/index => candidate for UNTRACKED
                 if exists {
                     let entry = self.ensure_untracked_entry(rel_path);
                     // For untracked entries, we explicitly mark them as untracked & modified.
@@ -220,7 +222,7 @@ impl HelixIndex {
             .collect()
     }
 
-    /// Get all files that need staging (for `helix add .`)
+    /// Get all files that need staging
     pub fn get_files_to_add(&self) -> HashSet<PathBuf> {
         self.data
             .entries
@@ -242,6 +244,7 @@ impl HelixIndex {
             .map(|e| e.path.clone())
             .collect()
     }
+
     /// Get current generation
     pub fn generation(&self) -> u64 {
         self.data.header.generation
