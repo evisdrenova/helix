@@ -1,26 +1,17 @@
-// Verification logic for detecting drift between the helix.idx and .git/index files
+// Verification logic for detecting corruption in helix.idx
 
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
-use crate::helix_index::{
-    fingerprint::generate_repo_fingerprint,
-    utils::{read_git_index_checksum, system_time_to_parts},
-    Reader,
-};
-use anyhow::{Context, Result};
+use crate::helix_index::{fingerprint::generate_repo_fingerprint, Reader};
+use anyhow::Result;
 
+/// Verification result for helix.idx integrity
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VerifyResult {
-    Valid,            // Index is fresh and matches .git/index
-    Missing,          // Index doesn't exist
-    WrongRepo,        // Fingerprint mismatch (wrong repo)
-    MtimeMismatch,    // .git/index mtime changed
-    SizeMismatch,     // .git/index size changed
-    ChecksumMismatch, // .git/index checksum changed
-    Corrupted,        // Corruption detected
+    Valid,     // Index is internally consistent
+    Missing,   // Index doesn't exist
+    WrongRepo, // Fingerprint mismatch (wrong repo)
+    Corrupted, // Checksum failed or parse error
 }
 
 pub struct Verifier {
@@ -34,67 +25,57 @@ impl Verifier {
         }
     }
 
+    /// Verify the integrity of helix.idx
+    ///
+    /// Checks:
+    /// 1. File exists
+    /// 2. Can be parsed (format valid)
+    /// 3. Checksum matches (no corruption)
+    /// 4. Repo fingerprint matches (not from different repo)
     pub fn verify(&self) -> Result<VerifyResult> {
         let reader = Reader::new(&self.repo_path);
 
+        // Check existence
         if !reader.exists() {
             return Ok(VerifyResult::Missing);
         }
 
+        // Try to read and parse (validates checksum automatically)
         let index_data = match reader.read() {
             Ok(data) => data,
             Err(_) => return Ok(VerifyResult::Corrupted),
         };
 
+        // Verify repo fingerprint
         let current_fingerprint = generate_repo_fingerprint(&self.repo_path)?;
         if index_data.header.repo_fingerprint != current_fingerprint {
             return Ok(VerifyResult::WrongRepo);
         }
 
-        // Get .git/index metadata
-        let git_index_path = self.repo_path.join(".git/index");
-        if !git_index_path.exists() {
-            // .git/index doesn't exist but helix.idx does - stale
-            return Ok(VerifyResult::MtimeMismatch);
-        }
-
-        let git_metadata =
-            fs::metadata(&git_index_path).context("Failed to read .git/index metadata")?;
-
-        let git_mtime = git_metadata
-            .modified()
-            .context("Failed to get .git/index mtime")?;
-
-        let (git_mtime_sec, git_mtime_nsec) = system_time_to_parts(git_mtime);
-
-        if git_mtime_sec != index_data.header.git_index_mtime_sec
-            || git_mtime_nsec != index_data.header.git_index_mtime_nsec
-        {
-            return Ok(VerifyResult::MtimeMismatch);
-        }
-
-        let git_size = git_metadata.len();
-        if git_size != index_data.header.git_index_size {
-            return Ok(VerifyResult::SizeMismatch);
-        }
-
-        let git_checksum = read_git_index_checksum(&git_index_path)?;
-        if git_checksum != index_data.header.git_index_checksum {
-            return Ok(VerifyResult::ChecksumMismatch);
-        }
-
         Ok(VerifyResult::Valid)
+    }
+
+    /// Quick check if index exists and is readable
+    pub fn exists(&self) -> bool {
+        Reader::new(&self.repo_path).exists()
+    }
+
+    /// Get generation number (useful for checking if index is newer than expected)
+    pub fn generation(&self) -> Result<u64> {
+        Reader::new(&self.repo_path).generation()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::helix_index::sync::SyncEngine;
+    use crate::helix_index::{
+        format::{Entry, EntryFlags, Header},
+        writer::Writer,
+    };
     use std::fs;
+    use std::path::PathBuf;
     use std::process::Command;
-    use std::thread;
-    use std::time::Duration;
     use tempfile::TempDir;
 
     fn init_test_repo(path: &Path) -> Result<()> {
@@ -104,10 +85,13 @@ mod tests {
             .current_dir(path)
             .output()?;
 
-        // Create a file and add it
-        fs::write(path.join("test.txt"), "hello")?;
         Command::new("git")
-            .args(&["add", "test.txt"])
+            .args(&["config", "user.name", "Test"])
+            .current_dir(path)
+            .output()?;
+
+        Command::new("git")
+            .args(&["config", "user.email", "test@test.com"])
             .current_dir(path)
             .output()?;
 
@@ -131,11 +115,23 @@ mod tests {
     fn test_verify_valid() -> Result<()> {
         let temp_dir = TempDir::new()?;
         init_test_repo(temp_dir.path())?;
+        fs::create_dir_all(temp_dir.path().join(".helix"))?;
 
-        // Sync to create helix.idx
-        let syncer = SyncEngine::new(temp_dir.path());
-        syncer.full_sync()?;
+        // Create valid index
+        let writer = Writer::new_canonical(temp_dir.path());
+        let header = Header::new(1, [0xaa; 16], 0);
+        let entries = vec![Entry::new_tracked(
+            PathBuf::from("test.txt"),
+            [0; 20],
+            100,
+            1000,
+            0,
+            0o100644,
+        )];
 
+        writer.write(&header, &entries)?;
+
+        // Verify should pass
         let verifier = Verifier::new(temp_dir.path());
         let result = verifier.verify()?;
 
@@ -145,32 +141,108 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_mtime_mismatch() -> Result<()> {
+    fn test_verify_corrupted() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        init_test_repo(temp_dir.path())?;
+        fs::create_dir_all(temp_dir.path().join(".helix"))?;
+
+        // Create valid index
+        let writer = Writer::new_canonical(temp_dir.path());
+        let header = Header::new(1, [0xaa; 16], 0);
+        let entries = vec![Entry::new_tracked(
+            PathBuf::from("test.txt"),
+            [0; 20],
+            100,
+            1000,
+            0,
+            0o100644,
+        )];
+
+        writer.write(&header, &entries)?;
+
+        // Corrupt the file
+        let index_path = temp_dir.path().join(".helix/helix.idx");
+        let mut contents = fs::read(&index_path)?;
+
+        // Flip some bits in the middle (corrupt entry data)
+        if contents.len() > 100 {
+            contents[100] ^= 0xFF;
+            contents[101] ^= 0xFF;
+        }
+
+        fs::write(&index_path, contents)?;
+
+        // Verify should detect corruption
+        let verifier = Verifier::new(temp_dir.path());
+        let result = verifier.verify()?;
+
+        assert_eq!(result, VerifyResult::Corrupted);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_verify_wrong_repo() -> Result<()> {
+        let temp_dir1 = TempDir::new()?;
+        let temp_dir2 = TempDir::new()?;
+
+        init_test_repo(temp_dir1.path())?;
+        init_test_repo(temp_dir2.path())?;
+
+        fs::create_dir_all(temp_dir1.path().join(".helix"))?;
+
+        // Create index for repo1
+        let writer = Writer::new_canonical(temp_dir1.path());
+        let header = Header::new(1, [0xaa; 16], 0);
+        let entries = vec![];
+        writer.write(&header, &entries)?;
+
+        // Copy index file to repo2
+        let index1 = temp_dir1.path().join(".helix/helix.idx");
+        let index2 = temp_dir2.path().join(".helix/helix.idx");
+        fs::create_dir_all(temp_dir2.path().join(".helix"))?;
+        fs::copy(&index1, &index2)?;
+
+        // Verify in repo2 should detect wrong fingerprint
+        let verifier = Verifier::new(temp_dir2.path());
+        let result = verifier.verify()?;
+
+        assert_eq!(result, VerifyResult::WrongRepo);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_exists() -> Result<()> {
         let temp_dir = TempDir::new()?;
         init_test_repo(temp_dir.path())?;
 
-        // Create helix.idx
-        let syncer = SyncEngine::new(temp_dir.path());
-        syncer.full_sync()?;
-
-        // Verify it's valid
         let verifier = Verifier::new(temp_dir.path());
-        assert_eq!(verifier.verify()?, VerifyResult::Valid);
+        assert!(!verifier.exists());
 
-        // Sleep to ensure mtime changes
-        thread::sleep(Duration::from_millis(100));
+        // Create index
+        fs::create_dir_all(temp_dir.path().join(".helix"))?;
+        let writer = Writer::new_canonical(temp_dir.path());
+        let header = Header::new(1, [0xaa; 16], 0);
+        writer.write(&header, &[])?;
 
-        // Modify .git/index (add another file)
-        fs::write(temp_dir.path().join("another.txt"), "world")?;
+        assert!(verifier.exists());
 
-        Command::new("git")
-            .args(&["add", "another.txt"])
-            .current_dir(temp_dir.path())
-            .output()?;
+        Ok(())
+    }
 
-        // Now verify should detect mismatch
-        let result = verifier.verify()?;
-        assert_eq!(result, VerifyResult::MtimeMismatch);
+    #[test]
+    fn test_generation() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        init_test_repo(temp_dir.path())?;
+        fs::create_dir_all(temp_dir.path().join(".helix"))?;
+
+        let writer = Writer::new_canonical(temp_dir.path());
+        let header = Header::new(42, [0xaa; 16], 0);
+        writer.write(&header, &[])?;
+
+        let verifier = Verifier::new(temp_dir.path());
+        assert_eq!(verifier.generation()?, 42);
 
         Ok(())
     }
