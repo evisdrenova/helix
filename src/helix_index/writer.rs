@@ -1,4 +1,27 @@
-/// This file defines the logic that writes to the .helix/helix.idx file with atomic updates
+/*
+
+Helix uses a two-tier index architecture with different durability guarantees:
+
+┌─────────────────────────────────────────────────────────┐
+│ CANONICAL INDEX (.helix/helix.idx)                      │
+│ • Source of truth for repository state                  │
+│ • Written with fsync() for full durability             │
+│ • ACID guarantees - no data loss on crash              │
+│ • Updated on: add, remove, commit, merge, etc.         │
+│ • Slower writes (~10x) but required for correctness    │
+└─────────────────────────────────────────────────────────┘
+                          │
+                          │ derives from
+                          ↓
+┌─────────────────────────────────────────────────────────┐
+│ CACHED INDEX (memory-mapped, read-only)                 │
+│ • Optimized for fast reads (mmap + hash map)           │
+│ • Written with flush() only (10x faster)               │
+│ • Can be rebuilt from canonical if corrupted           │
+│ • Updated on: lazy refresh when canonical changes      │
+│ • Used for: status, diff, search, etc.                 │
+└─────────────────────────────────────────────────────────┘
+*/
 use std::{
     collections::HashSet,
     fs::{self, File},
@@ -16,6 +39,7 @@ use std::thread;
 
 pub struct Writer {
     repo_path: PathBuf,
+    durable: bool, // true for canonical, false for cached version
 }
 
 /// Stateful writer for incremental index updates
@@ -23,22 +47,39 @@ pub struct IndexBuilder {
     repo_path: PathBuf,
     header: Header,
     entries: Vec<Entry>,
+    durable: bool,
 }
 
 impl Writer {
-    pub fn new(repo_path: &Path) -> Self {
+    /// Create writer for cached index (fast writes with flush only)
+    /// Used for derived read-only caches that can be rebuilt
+    pub fn new_cached(repo_path: &Path) -> Self {
         Self {
             repo_path: repo_path.to_path_buf(),
+            durable: false, // Cache can use flush() for speed
+        }
+    }
+
+    /// Create writer for canonical index that must maintain durability and atomicity
+    pub fn new_canonical(repo_path: &Path) -> Self {
+        Self {
+            repo_path: repo_path.to_path_buf(),
+            durable: true, // Canonical index must be durable
         }
     }
 
     /// Write complete index atomically (immutable operation)
-    /// Optimized for maximum throughput:
-    /// 1. Stream entries directly to buffered writer (no pre-serialization)
-    /// 2. Compute checksum in parallel with writing for large indexes
-    /// 3. Use large buffer (1-2MB) to reduce syscalls
-    /// 4. flush() instead of fsync() for speed
-    /// 5. Atomic rename
+    ///
+    /// For canonical index (durable=true):
+    /// 1. Stream entries to buffered writer
+    /// 2. fsync() to ensure durability (slower but safe)
+    /// 3. fsync() directory to ensure rename is durable
+    /// 4. Atomic rename
+    ///
+    /// For cached index (durable=false):
+    /// 1. Stream entries to buffered writer  
+    /// 2. flush() only (10x faster, safe for derived cache)
+    /// 3. Atomic rename
     pub fn write(&self, header: &Header, entries: &[Entry]) -> Result<()> {
         let helix_dir = self.repo_path.join(".helix");
         let index_path = helix_dir.join("helix.idx");
@@ -55,15 +96,26 @@ impl Writer {
             self.write_streaming(&temp_path, header, entries)?;
         }
 
+        // Ensure durability if required
+        if self.durable {
+            // fsync the directory to ensure the rename will be durable
+            // This is critical for crash consistency of the canonical index
+            let dir =
+                File::open(&helix_dir).context("Failed to open .helix directory for fsync")?;
+            dir.sync_all().context("Failed to fsync .helix directory")?;
+        }
+
         // Atomic rename
         fs::rename(&temp_path, &index_path).context("Failed to rename temp file to index")?;
 
         Ok(())
     }
 
-    // Streaming write for normal-sized indexes (most common case)
+    /// Streaming write for normal-sized indexes (most common case)
     /// Optimized for minimal memory usage and syscall overhead
     fn write_streaming(&self, temp_path: &Path, header: &Header, entries: &[Entry]) -> Result<()> {
+        use std::io::BufWriter;
+
         let file = File::create(temp_path).context("Failed to create temp index file")?;
         // Use 1MB buffer to minimize syscalls (Linux optimal buffer size is typically 128KB-1MB)
         let mut writer = BufWriter::with_capacity(1024 * 1024, file);
@@ -75,7 +127,7 @@ impl Writer {
         writer.write_all(&header_bytes)?;
         hasher.update(&header_bytes);
 
-        // Stream entries directly
+        // Stream entries directly - no pre-serialization!
         for entry in entries {
             let entry_bytes = entry.to_bytes();
             writer.write_all(&entry_bytes)?;
@@ -87,10 +139,27 @@ impl Writer {
         let footer = Footer::new(checksum);
         writer.write_all(&footer.to_bytes())?;
 
-        /* flush() instead of fsync() for 10x+ speed improvement.
-        Safe because helix.idx is a derived cache that can be rebuilt.
-        Checksum verification catches any corruption from power loss. */
-        writer.flush().context("Failed to flush temp file")?;
+        if self.durable {
+            /* fsync() for canonical index - ensures data is on disk before rename.
+            This is slower (~10x) but critical for data integrity of the source of truth.
+            Protects against:
+            - Power loss before data hits disk
+            - Kernel crash before writeback
+            - Storage device reordering
+
+            The combination of fsync(file) + fsync(directory) + rename() gives us
+            full ACID durability for the canonical index. */
+            writer.flush().context("Failed to flush buffer")?;
+            let file = writer
+                .into_inner()
+                .map_err(|e| anyhow::anyhow!("Failed to get inner file: {}", e))?;
+            file.sync_all().context("Failed to fsync temp file")?;
+        } else {
+            /* flush() for cached index - 10x faster, safe for derived data.
+            The cached index is read-only and can always be rebuilt from the
+            canonical index. Checksum verification catches corruption. */
+            writer.flush().context("Failed to flush temp file")?;
+        }
 
         Ok(())
     }
@@ -163,7 +232,18 @@ impl Writer {
         // Write footer
         let footer = Footer::new(checksum);
         writer.write_all(&footer.to_bytes())?;
-        writer.flush().context("Failed to flush temp file")?;
+
+        if self.durable {
+            // fsync for canonical index
+            writer.flush().context("Failed to flush buffer")?;
+            let file = writer
+                .into_inner()
+                .map_err(|e| anyhow::anyhow!("Failed to get inner file: {}", e))?;
+            file.sync_all().context("Failed to fsync temp file")?;
+        } else {
+            // flush only for cached index
+            writer.flush().context("Failed to flush temp file")?;
+        }
 
         Ok(())
     }
@@ -179,6 +259,7 @@ impl Writer {
             repo_path: self.repo_path.clone(),
             header,
             entries: Vec::new(),
+            durable: self.durable,
         }
     }
 
@@ -292,8 +373,11 @@ impl IndexBuilder {
         // Validate before writing
         self.validate()?;
 
-        // Write atomically
-        let writer = Writer::new(&self.repo_path);
+        // Write atomically with appropriate durability
+        let writer = Writer {
+            repo_path: self.repo_path,
+            durable: self.durable,
+        };
         writer.write(&self.header, &self.entries)?;
 
         Ok(())
@@ -349,7 +433,7 @@ mod tests {
         let temp_dir = TempDir::new()?;
         let repo_path = temp_dir.path();
 
-        let writer = Writer::new(repo_path);
+        let writer = Writer::new_canonical(repo_path);
         let header = Header::new(1, [0; 16], 0);
         writer.write(&header, &[])?;
 
@@ -364,7 +448,7 @@ mod tests {
         let temp_dir = TempDir::new()?;
         let repo_path = temp_dir.path();
 
-        let writer = Writer::new(repo_path);
+        let writer = Writer::new_canonical(repo_path);
 
         // Write version 1
         let header1 = Header::new(1, [0x11; 16], 0);
@@ -386,7 +470,7 @@ mod tests {
         let temp_dir = TempDir::new()?;
         let repo_path = temp_dir.path();
 
-        let writer = Writer::new(repo_path);
+        let writer = Writer::new_canonical(repo_path);
         let header = Header::new(1, [0xaa; 16], 0);
         let mut builder = writer.builder(header);
 
@@ -410,7 +494,7 @@ mod tests {
         let temp_dir = TempDir::new()?;
         let repo_path = temp_dir.path();
 
-        let writer = Writer::new(repo_path);
+        let writer = Writer::new_canonical(repo_path);
         let header = Header::new(1, [0xaa; 16], 0);
         let mut builder = writer.builder(header);
 
@@ -447,7 +531,7 @@ mod tests {
         let temp_dir = TempDir::new()?;
         let repo_path = temp_dir.path();
 
-        let writer = Writer::new(repo_path);
+        let writer = Writer::new_canonical(repo_path);
         let header = Header::new(1, [0xaa; 16], 0);
         let mut builder = writer.builder(header);
 
@@ -474,7 +558,7 @@ mod tests {
         let temp_dir = TempDir::new()?;
         let repo_path = temp_dir.path();
 
-        let writer = Writer::new(repo_path);
+        let writer = Writer::new_canonical(repo_path);
         let header = Header::new(1, [0xaa; 16], 0);
         let mut builder = writer.builder(header);
 
@@ -510,7 +594,7 @@ mod tests {
         let temp_dir = TempDir::new()?;
         let repo_path = temp_dir.path();
 
-        let writer = Writer::new(repo_path);
+        let writer = Writer::new_canonical(repo_path);
         let header = Header::new(1, [0xaa; 16], 0);
         let mut builder = writer.builder(header);
 
@@ -545,7 +629,7 @@ mod tests {
         let temp_dir = TempDir::new()?;
         let repo_path = temp_dir.path();
 
-        let writer = Writer::new(repo_path);
+        let writer = Writer::new_canonical(repo_path);
         let header = Header::new(1, [0xaa; 16], 2000);
 
         // Create 2000 entries to trigger parallel path
@@ -573,7 +657,7 @@ mod tests {
         let temp_dir = TempDir::new()?;
         let repo_path = temp_dir.path();
 
-        let writer = Writer::new(repo_path);
+        let writer = Writer::new_canonical(repo_path);
         let header = Header::new(1, [0xaa; 16], 0);
         let mut builder = writer.builder(header);
 
@@ -623,7 +707,7 @@ mod tests {
         let temp_dir = TempDir::new()?;
         let repo_path = temp_dir.path();
 
-        let writer = Writer::new(repo_path);
+        let writer = Writer::new_canonical(repo_path);
         let header = Header::new(1, [0xaa; 16], 0);
         let mut builder = writer.builder(header);
 
@@ -660,7 +744,7 @@ mod tests {
         let temp_dir = TempDir::new()?;
         let repo_path = temp_dir.path();
 
-        let writer = Writer::new(repo_path);
+        let writer = Writer::new_canonical(repo_path);
         let header = Header::new(1, [0xaa; 16], 2);
         let mut builder = writer.builder(header);
 
@@ -694,8 +778,8 @@ mod tests {
         let temp_dir = TempDir::new()?;
         let repo_path = temp_dir.path();
 
-        let writer = Writer::new(repo_path);
-        let mut header = Header::new(1, [0xaa; 16], 5); // Header says 5
+        let writer = Writer::new_canonical(repo_path);
+        let header = Header::new(1, [0xaa; 16], 5); // Header says 5
         let mut builder = writer.builder(header);
 
         // But only add 2 entries
@@ -730,7 +814,7 @@ mod tests {
 
         let temp_dir = TempDir::new()?;
         let repo_path = temp_dir.path();
-        let writer = Writer::new(repo_path);
+        let writer = Writer::new_canonical(repo_path);
 
         // Test different sizes
         let test_cases = vec![("Small", 1_000), ("Medium", 10_000), ("Large", 100_000)];

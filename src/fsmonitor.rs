@@ -1,8 +1,9 @@
 /*
 Async event system that watches for file changes and tracks:
- - files that are modified
- - staging changes
- -
+ - files that are modified in working tree
+ - canonical index changes (.helix/helix.idx)
+ - git index changes (.git/index) for interop
+ - triggers cache invalidation when needed
 */
 
 use anyhow::{Context, Result};
@@ -12,13 +13,12 @@ use notify::event::{
     AccessKind, AccessMode, CreateKind, DataChange, ModifyKind, RemoveKind, RenameMode,
 };
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use serde::Deserialize;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::Duration;
-use std::{env, thread};
+
+use crate::ignore::IgnoreRules;
 
 // file system monitor that tracks changes to files in a repository
 pub struct FSMonitor {
@@ -27,7 +27,8 @@ pub struct FSMonitor {
     repo_root: PathBuf,
     _batch_thread: thread::JoinHandle<()>,
     ignore_rules: Arc<IgnoreRules>,
-    index_dirty: Arc<DashSet<PathBuf>>, // track index changes like staging changes
+    index_dirty: Arc<DashSet<PathBuf>>, // track index changes (both helix and git)
+    cache_invalidator: Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>>, // callback when canonical index changes
 }
 
 impl FSMonitor {
@@ -46,6 +47,9 @@ impl FSMonitor {
         let index_dirty = Arc::new(DashSet::new());
         let index_dirty_clone = index_dirty.clone();
 
+        let cache_invalidator = Arc::new(Mutex::new(None));
+        let cache_invalidator_clone = cache_invalidator.clone();
+
         // channel for batching events that are given off by the OS when things happen to the files
         let (tx, rx): (Sender<Event>, Receiver<Event>) = bounded(1000);
 
@@ -57,6 +61,7 @@ impl FSMonitor {
                 repo_root_clone,
                 ignore_rules_clone,
                 index_dirty_clone,
+                cache_invalidator_clone,
             )
         });
 
@@ -77,6 +82,7 @@ impl FSMonitor {
             _batch_thread: batch_thread,
             ignore_rules,
             index_dirty,
+            cache_invalidator,
         })
     }
 
@@ -85,11 +91,19 @@ impl FSMonitor {
             .watch(&self.repo_root, RecursiveMode::Recursive)
             .context("Failed to start watching repository")?;
 
-        // watch the index specifically for staging changes
-        let index_path = self.repo_root.join(".git/index");
-        if index_path.exists() {
+        // Watch helix canonical index
+        let helix_index = self.repo_root.join(".helix/helix.idx");
+        if helix_index.exists() {
             self._watcher
-                .watch(&index_path, RecursiveMode::NonRecursive)
+                .watch(&helix_index, RecursiveMode::NonRecursive)
+                .context("Failed to watch .helix/helix.idx")?;
+        }
+
+        // Watch git index for interop
+        let git_index = self.repo_root.join(".git/index");
+        if git_index.exists() {
+            self._watcher
+                .watch(&git_index, RecursiveMode::NonRecursive)
                 .context("Failed to watch .git/index")?;
         }
 
@@ -116,12 +130,43 @@ impl FSMonitor {
         self.dirty.remove(path);
     }
 
+    /// Check if any index changed (helix or git)
     pub fn index_changed(&self) -> bool {
         !self.index_dirty.is_empty()
     }
 
+    /// Check if specifically the helix canonical index changed
+    pub fn helix_index_changed(&self) -> bool {
+        self.index_dirty
+            .iter()
+            .any(|entry| entry.key().ends_with(".helix/helix.idx"))
+    }
+
+    /// Check if specifically the git index changed
+    pub fn git_index_changed(&self) -> bool {
+        self.index_dirty
+            .iter()
+            .any(|entry| entry.key().ends_with(".git/index"))
+    }
+
     pub fn clear_index_flag(&self) {
         self.index_dirty.clear();
+    }
+
+    /// Set callback to be invoked when canonical helix index changes
+    /// This is useful for triggering cache invalidation/rebuilds
+    pub fn set_cache_invalidator<F>(&self, callback: F)
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        let mut invalidator = self.cache_invalidator.lock().unwrap();
+        *invalidator = Some(Box::new(callback));
+    }
+
+    /// Clear the cache invalidator callback
+    pub fn clear_cache_invalidator(&self) {
+        let mut invalidator = self.cache_invalidator.lock().unwrap();
+        *invalidator = None;
     }
 
     // event batching thread - processes events in 10ms windows
@@ -131,6 +176,7 @@ impl FSMonitor {
         repo_root: PathBuf,
         ignore_rules: Arc<IgnoreRules>,
         index_dirty: Arc<DashSet<PathBuf>>,
+        cache_invalidator: Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>>,
     ) {
         let batch_interval = Duration::from_millis(10);
         let mut batch = Vec::new();
@@ -155,6 +201,7 @@ impl FSMonitor {
                     &repo_root,
                     &ignore_rules,
                     &index_dirty,
+                    &cache_invalidator,
                 );
                 batch.clear();
             }
@@ -167,24 +214,43 @@ impl FSMonitor {
         repo_root: &Path,
         ignore_rules: &IgnoreRules,
         index_dirty: &DashSet<PathBuf>,
+        cache_invalidator: &Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     ) {
+        let mut helix_index_changed = false;
+
         for event in events {
             if !Self::is_relevant_event(&event.kind) {
                 continue;
             }
 
             for path in &event.paths {
+                // Check for helix canonical index changes
+                if path.ends_with(".helix/helix.idx") {
+                    index_dirty.insert(PathBuf::from(".helix/helix.idx"));
+                    helix_index_changed = true;
+                    continue;
+                }
+
+                // Check for git index changes (for interop)
                 if path.ends_with(".git/index") {
                     index_dirty.insert(PathBuf::from(".git/index"));
                     continue;
                 }
 
+                // Track working tree file changes
                 if let Ok(rel_path) = path.strip_prefix(repo_root) {
                     if ignore_rules.should_ignore(rel_path) {
                         continue;
                     }
                     dirty.insert(rel_path.to_path_buf());
                 }
+            }
+        }
+
+        // Trigger cache invalidation if helix index changed
+        if helix_index_changed {
+            if let Some(invalidator) = cache_invalidator.lock().unwrap().as_ref() {
+                invalidator();
             }
         }
     }
@@ -200,175 +266,6 @@ impl FSMonitor {
             EventKind::Access(_) => false,
             _ => true,
         }
-    }
-}
-// Ignore rules from multiple sources with clear precedence:
-/// 1. Built-in patterns (always apply)
-/// 2. .gitignore (repo-level git rules)
-/// 3. .helix/config.toml (repo-level helix rules)
-/// 4. ~/.helix.toml (user-level helix rules)
-pub struct IgnoreRules {
-    patterns: Vec<IgnorePattern>,
-}
-
-#[derive(Debug, Clone)]
-enum IgnorePattern {
-    /// Directory pattern: "target/"
-    Directory(String),
-    /// Extension pattern: "*.log"
-    Extension(String),
-    /// Exact substring match: "node_modules"
-    Substring(String),
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct HelixConfig {
-    #[serde(default)]
-    ignore: IgnoreSection,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct IgnoreSection {
-    #[serde(default)]
-    patterns: Vec<String>,
-}
-
-impl IgnoreRules {
-    pub fn load(repo_path: &Path) -> Self {
-        let mut patterns = Vec::new();
-
-        // Load in order of precedence
-        patterns.extend(Self::built_in_patterns());
-        patterns.extend(Self::load_gitignore(repo_path));
-        patterns.extend(Self::load_helix_repo_config(repo_path));
-        patterns.extend(Self::load_helix_global_config());
-
-        Self { patterns }
-    }
-
-    /// Built-in patterns that always apply
-    /// These cover common build artifacts and system files
-    fn built_in_patterns() -> Vec<IgnorePattern> {
-        vec![
-            // Git internal (except .git/index which we track explicitly)
-            IgnorePattern::Directory(".git/".to_string()),
-            // Build directories
-            IgnorePattern::Directory("target/".to_string()),
-            IgnorePattern::Directory("node_modules/".to_string()),
-            IgnorePattern::Directory("__pycache__/".to_string()),
-            IgnorePattern::Directory(".venv/".to_string()),
-            IgnorePattern::Directory("dist/".to_string()),
-            IgnorePattern::Directory("build/".to_string()),
-            // Editor temporary files
-            IgnorePattern::Extension(".swp".to_string()),
-            IgnorePattern::Extension(".swo".to_string()),
-            IgnorePattern::Extension("~".to_string()),
-            IgnorePattern::Substring(".DS_Store".to_string()),
-            // Helix's own cache (don't watch our own index!)
-            IgnorePattern::Directory(".helix/".to_string()),
-        ]
-    }
-
-    /// Load patterns from .gitignore
-    fn load_gitignore(repo_path: &Path) -> Vec<IgnorePattern> {
-        let gitignore_path = repo_path.join(".gitignore");
-        let mut patterns = Vec::new();
-
-        if let Ok(file) = File::open(gitignore_path) {
-            let reader = BufReader::new(file);
-            for line in reader.lines().flatten() {
-                let line = line.trim();
-                if line.is_empty() || line.starts_with('#') {
-                    continue;
-                }
-
-                patterns.push(Self::parse_pattern(line));
-            }
-        }
-
-        patterns
-    }
-
-    /// Load patterns from .helix/config.toml (repo-level)
-    fn load_helix_repo_config(repo_path: &Path) -> Vec<IgnorePattern> {
-        let config_path = repo_path.join(".helix/config.toml");
-        Self::load_helix_toml(&config_path)
-    }
-
-    /// Load patterns from ~/.helix.toml (global)
-    fn load_helix_global_config() -> Vec<IgnorePattern> {
-        let home = match env::var("HOME") {
-            Ok(h) => h,
-            Err(_) => return Vec::new(),
-        };
-
-        let config_path = Path::new(&home).join(".helix.toml");
-        Self::load_helix_toml(&config_path)
-    }
-
-    fn load_helix_toml(path: &Path) -> Vec<IgnorePattern> {
-        if !path.exists() {
-            return Vec::new();
-        }
-
-        let Ok(contents) = std::fs::read_to_string(path) else {
-            return Vec::new();
-        };
-
-        let Ok(cfg) = toml::from_str::<HelixConfig>(&contents) else {
-            return Vec::new();
-        };
-
-        cfg.ignore
-            .patterns
-            .into_iter()
-            .map(|p| Self::parse_pattern(&p))
-            .collect()
-    }
-
-    /// Parse a pattern string into the appropriate type
-    fn parse_pattern(s: &str) -> IgnorePattern {
-        if s.ends_with('/') {
-            IgnorePattern::Directory(s.to_string())
-        } else if s.starts_with('*') {
-            // Extract extension: "*.log" -> ".log"
-            IgnorePattern::Extension(s.strip_prefix('*').unwrap_or(s).to_string())
-        } else {
-            IgnorePattern::Substring(s.to_string())
-        }
-    }
-
-    /// Check if a path should be ignored
-    pub fn should_ignore(&self, path: &Path) -> bool {
-        let path_str = path.to_string_lossy();
-
-        for pattern in &self.patterns {
-            match pattern {
-                IgnorePattern::Directory(dir) => {
-                    // Match if path contains the directory
-                    // e.g., "target/" matches "target/debug/main"
-                    if path_str.starts_with(dir.as_str()) || path_str.contains(dir.as_str()) {
-                        return true;
-                    }
-                }
-                IgnorePattern::Extension(ext) => {
-                    // Match file extension
-                    // e.g., ".swp" matches "file.swp"
-                    if path_str.ends_with(ext.as_str()) {
-                        return true;
-                    }
-                }
-                IgnorePattern::Substring(substr) => {
-                    // Match substring anywhere in path
-                    // e.g., "node_modules" matches "lib/node_modules/pkg"
-                    if path_str.contains(substr.as_str()) {
-                        return true;
-                    }
-                }
-            }
-        }
-
-        false
     }
 }
 
@@ -407,7 +304,7 @@ mod tests {
             !dirty_files.is_empty(),
             "Should have detected file creation"
         );
-        println!("dirty fails {:?}", dirty_files);
+        println!("dirty files {:?}", dirty_files);
         let file_name = Path::new("test.txt");
         assert!(dirty_files.contains(&file_name.to_path_buf()));
 
@@ -419,12 +316,75 @@ mod tests {
     }
 
     #[test]
+    fn test_helix_index_detection() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let repo_path = temp_dir.path();
+
+        // Create .helix directory
+        fs::create_dir(repo_path.join(".helix"))?;
+
+        let mut monitor = FSMonitor::new(repo_path)?;
+        monitor.start_watching_repo()?;
+
+        thread::sleep(Duration::from_millis(100));
+
+        // Simulate index change
+        let index_path = repo_path.join(".helix/helix.idx");
+        fs::write(&index_path, b"fake index")?;
+
+        thread::sleep(Duration::from_millis(150));
+
+        assert!(
+            monitor.helix_index_changed(),
+            "Should detect helix index change"
+        );
+        assert!(monitor.index_changed(), "Should report index changed");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_cache_invalidator_callback() -> Result<()> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let temp_dir = tempfile::tempdir()?;
+        let repo_path = temp_dir.path();
+
+        fs::create_dir(repo_path.join(".helix"))?;
+
+        let mut monitor = FSMonitor::new(repo_path)?;
+
+        // Set callback
+        let called = Arc::new(AtomicBool::new(false));
+        let called_clone = called.clone();
+        monitor.set_cache_invalidator(move || {
+            called_clone.store(true, Ordering::SeqCst);
+        });
+
+        monitor.start_watching_repo()?;
+        thread::sleep(Duration::from_millis(100));
+
+        // Trigger index change
+        let index_path = repo_path.join(".helix/helix.idx");
+        fs::write(&index_path, b"fake index")?;
+
+        thread::sleep(Duration::from_millis(150));
+
+        assert!(
+            called.load(Ordering::SeqCst),
+            "Callback should have been called"
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn test_built_in_ignore_patterns() {
         let rules = IgnoreRules {
             patterns: IgnoreRules::built_in_patterns(),
         };
 
-        // Should ignore .git directory (except .git/index)
+        // Should ignore .git subdirectories
         assert!(rules.should_ignore(Path::new(".git/objects/abc123")));
         assert!(rules.should_ignore(Path::new(".git/refs/heads/main")));
 
@@ -438,8 +398,14 @@ mod tests {
         assert!(rules.should_ignore(Path::new("file.txt~")));
         assert!(rules.should_ignore(Path::new(".DS_Store")));
 
-        // Should ignore helix cache
-        assert!(rules.should_ignore(Path::new(".helix/helix.idx")));
+        // Should ignore helix cache directory
+        assert!(rules.should_ignore(Path::new(".helix/cache/data.bin")));
+
+        // Should ignore temp files during write
+        assert!(rules.should_ignore(Path::new(".helix/helix.idx.new")));
+
+        // Should NOT ignore helix.idx itself (we watch this explicitly)
+        assert!(!rules.should_ignore(Path::new(".helix/helix.idx")));
 
         // Should NOT ignore normal files
         assert!(!rules.should_ignore(Path::new("src/main.rs")));
@@ -489,105 +455,5 @@ patterns = ["*.tmp", "cache/", "ignored_file"]
         assert!(rules.should_ignore(Path::new("cache/data.db")));
         assert!(rules.should_ignore(Path::new("ignored_file")));
         assert!(!rules.should_ignore(Path::new("normal.txt")));
-    }
-
-    #[test]
-    fn test_combined_ignore_sources() {
-        let dir = tempfile::tempdir().unwrap();
-        let repo = dir.path();
-
-        // .gitignore
-        fs::write(repo.join(".gitignore"), "*.git_ignored\n").unwrap();
-
-        // .helix/config.toml
-        fs::create_dir(repo.join(".helix")).unwrap();
-        fs::write(
-            repo.join(".helix/config.toml"),
-            r#"
-[ignore]
-patterns = ["*.helix_ignored"]
-"#,
-        )
-        .unwrap();
-
-        let rules = IgnoreRules::load(repo);
-
-        // From .gitignore
-        assert!(rules.should_ignore(Path::new("file.git_ignored")));
-
-        // From .helix/config.toml
-        assert!(rules.should_ignore(Path::new("file.helix_ignored")));
-
-        // Built-in
-        assert!(rules.should_ignore(Path::new("target/debug/main")));
-
-        // Normal file
-        assert!(!rules.should_ignore(Path::new("src/main.rs")));
-    }
-
-    #[test]
-    fn test_pattern_parsing() {
-        // Directory pattern
-        let dir_pattern = IgnoreRules::parse_pattern("target/");
-        assert!(matches!(dir_pattern, IgnorePattern::Directory(_)));
-
-        // Extension pattern
-        let ext_pattern = IgnoreRules::parse_pattern("*.log");
-        assert!(matches!(ext_pattern, IgnorePattern::Extension(_)));
-
-        // Substring pattern
-        let sub_pattern = IgnoreRules::parse_pattern("node_modules");
-        assert!(matches!(sub_pattern, IgnorePattern::Substring(_)));
-    }
-
-    #[test]
-    fn test_directory_pattern_matching() {
-        let rules = IgnoreRules {
-            patterns: vec![IgnorePattern::Directory("target/".to_string())],
-        };
-
-        assert!(rules.should_ignore(Path::new("target/debug/main")));
-        assert!(rules.should_ignore(Path::new("target/release/lib.so")));
-        assert!(rules.should_ignore(Path::new("src/target/nested"))); // Contains "target/"
-        assert!(!rules.should_ignore(Path::new("src/retarget.rs"))); // "target" but not "target/"
-    }
-
-    #[test]
-    fn test_extension_pattern_matching() {
-        let rules = IgnoreRules {
-            patterns: vec![IgnorePattern::Extension(".swp".to_string())],
-        };
-
-        assert!(rules.should_ignore(Path::new(".file.swp")));
-        assert!(rules.should_ignore(Path::new("main.rs.swp")));
-        assert!(!rules.should_ignore(Path::new("swap.txt")));
-    }
-
-    #[test]
-    fn test_substring_pattern_matching() {
-        let rules = IgnoreRules {
-            patterns: vec![IgnorePattern::Substring("temp".to_string())],
-        };
-
-        assert!(rules.should_ignore(Path::new("temp")));
-        assert!(rules.should_ignore(Path::new("temp/file.txt")));
-        assert!(rules.should_ignore(Path::new("my_temp_file.txt")));
-        assert!(rules.should_ignore(Path::new("src/template.rs"))); // Contains "temp"
-        assert!(!rules.should_ignore(Path::new("src/main.rs")));
-    }
-
-    #[test]
-    fn test_git_index_not_ignored() {
-        let rules = IgnoreRules {
-            patterns: IgnoreRules::built_in_patterns(),
-        };
-
-        // .git/index should NOT be in the ignore patterns
-        // It's handled specially in the event processing
-        assert!(rules.should_ignore(Path::new(".git/objects/abc")));
-        assert!(rules.should_ignore(Path::new(".git/refs/heads/main")));
-
-        // These should be caught by the .git/ directory pattern
-        // but .git/index is explicitly excluded in process_events_in_batch
     }
 }

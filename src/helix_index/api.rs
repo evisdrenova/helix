@@ -8,12 +8,12 @@ use anyhow::Result;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-pub struct HelixIndex {
+pub struct HelixIndexData {
     repo_path: PathBuf,
     data: HelixIndex,
 }
 
-impl HelixIndex {
+impl HelixIndexData {
     /// Verify the current state of the Helix Index. If it is in a valid state, then load the index. If it is in an invalid state then rebuild it and load it.
     pub fn load_or_rebuild(repo_path: &Path) -> Result<Self> {
         let verifier = Verifier::new(repo_path);
