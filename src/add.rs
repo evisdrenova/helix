@@ -1,12 +1,8 @@
 use crate::helix_index::api::HelixIndex;
 use crate::helix_index::sync::SyncEngine;
 use anyhow::{Context, Result};
-use flate2::write::ZlibEncoder;
-use flate2::Compression;
-use sha1::{Digest, Sha1};
 use std::collections::HashSet;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
@@ -110,7 +106,7 @@ pub fn add(repo_path: &Path, paths: &[PathBuf], options: AddOptions) -> Result<(
     }
 
     // Use git only as the mechanism to update the real index
-    add_via_git(repo_path, &files_to_add, &options)?;
+    add_files(repo_path, &files_to_add, &options)?;
 
     // Then sync helix.idx to match .git/index
     update_helix_index(repo_path, &files_to_add)?;
@@ -293,8 +289,9 @@ fn collect_files_recursive(dir: &Path, repo_root: &Path) -> Result<Vec<PathBuf>>
     Ok(files)
 }
 
-/// Add files using git (ensures compatibility)
-fn add_via_git(repo_path: &Path, paths: &[PathBuf], options: &AddOptions) -> Result<()> {
+/// Add files to staging
+/// TODO: at some point just replace this with our own implementation to avoid the process creation overhead from the git CLI
+fn add_files(repo_path: &Path, paths: &[PathBuf], options: &AddOptions) -> Result<()> {
     // println!("the paths: {:?}", paths);
     if options.dry_run {
         for path in paths {
@@ -302,6 +299,8 @@ fn add_via_git(repo_path: &Path, paths: &[PathBuf], options: &AddOptions) -> Res
         }
         return Ok(());
     }
+
+    println!("the paths: {:?}", paths);
 
     // Build git add command
     let mut cmd = Command::new("git");
@@ -343,84 +342,6 @@ fn update_helix_index(repo_path: &Path, changed_paths: &[PathBuf]) -> Result<()>
 
     sync.incremental_sync(changed_paths)
         .context("Failed to update helix index")?;
-
-    Ok(())
-}
-
-// /// Add with parallel optimization (future enhancement)
-// #[allow(dead_code)]
-// fn add_parallel(repo_path: &Path, paths: &[PathBuf]) -> Result<()> {
-//     // Stage 1: Hash all files in parallel
-//     let hashes: Vec<_> = paths
-//         .par_iter()
-//         .map(|path| {
-//             let full_path = repo_path.join(path);
-//             let content = fs::read(&full_path)?;
-//             let hash = compute_git_hash(&content);
-//             Ok::<_, anyhow::Error>((path.clone(), hash, content))
-//         })
-//         .collect::<Result<Vec<_>>>()?;
-
-//     // Stage 2: Write objects in parallel
-//     hashes.par_iter().try_for_each(|(path, hash, content)| {
-//         write_git_object(repo_path, hash, content)?;
-//         Ok::<_, anyhow::Error>(())
-//     })?;
-
-//     // Stage 3: Update index (sequential - must be atomic)
-//     let mut index = GitIndex::open(repo_path)?;
-//     for (path, hash, _content) in hashes {
-//         index.add_entry(&path, &hash)?;
-//     }
-//     index.write()?;
-
-//     Ok(())
-// }
-
-/// Compute git-style SHA-1 hash
-fn compute_git_hash(content: &[u8]) -> [u8; 20] {
-    let mut hasher = Sha1::new();
-
-    // Git format: "blob <size>\0<content>"
-    hasher.update(b"blob ");
-    hasher.update(content.len().to_string().as_bytes());
-    hasher.update(b"\0");
-    hasher.update(content);
-
-    let result = hasher.finalize();
-    let mut hash = [0u8; 20];
-    hash.copy_from_slice(&result);
-    hash
-}
-
-/// Write object to .git/objects/ (git loose object format)
-fn write_git_object(repo_path: &Path, hash: &[u8; 20], content: &[u8]) -> Result<()> {
-    let hash_hex = hex::encode(hash);
-    let dir = format!("{}", &hash_hex[0..2]);
-    let file = format!("{}", &hash_hex[2..]);
-
-    let objects_dir = repo_path.join(".git/objects").join(&dir);
-    fs::create_dir_all(&objects_dir)?;
-
-    let object_path = objects_dir.join(&file);
-
-    // Don't overwrite if exists
-    if object_path.exists() {
-        return Ok(());
-    }
-
-    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
-
-    // Write header
-    write!(encoder, "blob {}\0", content.len())?;
-    encoder.write_all(content)?;
-
-    let compressed = encoder.finish()?;
-
-    // Write atomically (temp file + rename)
-    let temp_path = object_path.with_extension("tmp");
-    fs::write(&temp_path, compressed)?;
-    fs::rename(temp_path, object_path)?;
 
     Ok(())
 }

@@ -76,6 +76,28 @@ impl Writer {
     pub fn index_path(&self) -> PathBuf {
         self.repo_path.join(".helix/helix.idx")
     }
+
+    pub fn add_entry(&self, entry: Entry) -> Result<()> {
+        if let Some(existing) = self.entries.iter_mut().find(|e| e.path == entry.path) {
+            *existing = entry;
+        } else {
+            self.entries.push(entry);
+        }
+        Ok(())
+    }
+
+    /// Remove a file from the index
+    pub fn remove_entry(&mut self, path: &Path) -> Result<()> {
+        self.entries.retain(|e| e.path != path);
+        Ok(())
+    }
+
+    /// Commit changes to disk
+    pub fn commit(&mut self) -> Result<()> {
+        self.entries.sort_by(|a, b| a.path.cmp(&b.path));
+        self.write_to_disk()?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

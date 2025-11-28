@@ -12,7 +12,7 @@ Binary format for helix.idx V1.0
  │ ...                                 │
  │ Entry N                             │
  ├─────────────────────────────────────┤
- │ Reserved Metadata Zone (future)     │
+ │ Reserved Metadata                   │
  ├─────────────────────────────────────┤
  │ Footer                              │
  └─────────────────────────────────────┘
@@ -22,63 +22,38 @@ Binary format for helix.idx V1.0
 
 use std::path::PathBuf;
 
-// Magic bytes: "HLIX"
 pub const MAGIC: [u8; 4] = *b"HLIX";
-
-// Header is 140 bytes (fixed)
-pub const HEADER_SIZE: usize = 4 + 4 + 8 + 16 + 8 + 4 + 8 + 20 + 4 + 64;
-
-// Current format version
+pub const HEADER_SIZE: usize = 116;
 pub const VERSION: u32 = 1;
-
-// Footer size in bytes (fixed)
 pub const FOOTER_SIZE: usize = 32;
-
-// Reserved bytes for future Entry metadata
 pub const ENTRY_RESERVED_SIZE: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Header {
     pub magic: [u8; 4],
-    pub version: u32,
-
-    // Incremented on every successful sync
-    pub generation: u64,
-
-    // Hash of repo path + initial HEAD (prevents cross-repo reuse)
-    pub repo_fingerprint: [u8; 16],
-
-    // Git index metadata for drift detection
-    pub git_index_mtime_sec: u64,
-    pub git_index_mtime_nsec: u32,
-    pub git_index_size: u64,
-    pub git_index_checksum: [u8; 20],
-
+    pub version: u32,               // 1
+    pub generation: u64,            // Incremented on every write
+    pub repo_fingerprint: [u8; 16], // Prevents cross-repo reuse
     pub entry_count: u32,
-
-    pub reserved: [u8; 64],
+    pub created_at: u64,
+    pub last_modified: u64,
+    pub reserved: [u8; 64], // reserved for future fields
 }
 
 impl Header {
-    pub fn new(
-        generation: u64,
-        repo_fingerprint: [u8; 16],
-        git_index_mtime_sec: u64,
-        git_index_mtime_nsec: u32,
-        git_index_size: u64,
-        git_index_checksum: [u8; 20],
-        entry_count: u32,
-    ) -> Self {
+    pub fn new(generation: u64, repo_fingerprint: [u8; 16], entry_count: u32) -> Self {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         Self {
             magic: MAGIC,
             version: VERSION,
             generation,
             repo_fingerprint,
-            git_index_mtime_sec,
-            git_index_mtime_nsec,
-            git_index_size,
-            git_index_checksum,
             entry_count,
+            created_at: if generation == 1 { now } else { 0 },
+            last_modified: now,
             reserved: [0; 64],
         }
     }
@@ -87,43 +62,27 @@ impl Header {
         let mut buf = [0u8; HEADER_SIZE];
         let mut offset = 0;
 
-        // magic (4 bytes)
         buf[offset..offset + 4].copy_from_slice(&self.magic);
         offset += 4;
 
-        // version (4 bytes)
         buf[offset..offset + 4].copy_from_slice(&self.version.to_le_bytes());
         offset += 4;
 
-        // generation (8 bytes)
         buf[offset..offset + 8].copy_from_slice(&self.generation.to_le_bytes());
         offset += 8;
 
-        // repo_fingerprint (16 bytes)
         buf[offset..offset + 16].copy_from_slice(&self.repo_fingerprint);
         offset += 16;
 
-        // git_index_mtime_sec (8 bytes)
-        buf[offset..offset + 8].copy_from_slice(&self.git_index_mtime_sec.to_le_bytes());
-        offset += 8;
-
-        // git_index_mtime_nsec (4 bytes)
-        buf[offset..offset + 4].copy_from_slice(&self.git_index_mtime_nsec.to_le_bytes());
-        offset += 4;
-
-        // git_index_size (8 bytes)
-        buf[offset..offset + 8].copy_from_slice(&self.git_index_size.to_le_bytes());
-        offset += 8;
-
-        // git_index_checksum (20 bytes)
-        buf[offset..offset + 20].copy_from_slice(&self.git_index_checksum);
-        offset += 20;
-
-        // entry_count (4 bytes)
         buf[offset..offset + 4].copy_from_slice(&self.entry_count.to_le_bytes());
         offset += 4;
 
-        // reserved (64 bytes)
+        buf[offset..offset + 8].copy_from_slice(&self.created_at.to_le_bytes());
+        offset += 8;
+
+        buf[offset..offset + 8].copy_from_slice(&self.last_modified.to_le_bytes());
+        offset += 8;
+
         buf[offset..offset + 64].copy_from_slice(&self.reserved);
         offset += 64;
 
@@ -139,7 +98,6 @@ impl Header {
 
         let mut offset = 0;
 
-        // magic
         let mut magic = [0u8; 4];
         magic.copy_from_slice(&bytes[offset..offset + 4]);
         if magic != MAGIC {
@@ -147,45 +105,28 @@ impl Header {
         }
         offset += 4;
 
-        // version
         let version = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
         if version != VERSION {
             return Err(FormatError::UnsupportedVersion(version));
         }
         offset += 4;
 
-        // generation
         let generation = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
         offset += 8;
 
-        // repo_fingerprint
         let mut repo_fingerprint = [0u8; 16];
         repo_fingerprint.copy_from_slice(&bytes[offset..offset + 16]);
         offset += 16;
 
-        // git_index_mtime_sec
-        let git_index_mtime_sec = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
-        offset += 8;
-
-        // git_index_mtime_nsec
-        let git_index_mtime_nsec =
-            u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
-        offset += 4;
-
-        // git_index_size
-        let git_index_size = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
-        offset += 8;
-
-        // git_index_checksum
-        let mut git_index_checksum = [0u8; 20];
-        git_index_checksum.copy_from_slice(&bytes[offset..offset + 20]);
-        offset += 20;
-
-        // entry_count
         let entry_count = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
         offset += 4;
 
-        // reserved
+        let created_at = u64::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+        offset += 8;
+
+        let last_modified = u64::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+        offset += 8;
+
         let mut reserved = [0u8; 64];
         reserved.copy_from_slice(&bytes[offset..offset + 64]);
         offset += 64;
@@ -197,11 +138,9 @@ impl Header {
             version,
             generation,
             repo_fingerprint,
-            git_index_mtime_sec,
-            git_index_mtime_nsec,
-            git_index_size,
-            git_index_checksum,
             entry_count,
+            created_at,
+            last_modified,
             reserved,
         })
     }
@@ -215,42 +154,28 @@ pub struct Entry {
     pub mtime_nsec: u32,
     pub flags: EntryFlags,
     pub oid: [u8; 20],
-    pub reserved: [u8; ENTRY_RESERVED_SIZE],
+    pub merge_conflict_stage: u8, // (0 = normal, 1-3 = conflict stages)
+    pub file_mode: u32,           // (0o100644 = regular, 0o100755 = executable, 0o120000 = symlink)
+    pub reserved: [u8; 57],
 }
 
 impl Entry {
-    /// Serialize entry to bytes (variable length)
-    /// Format: [path_len: u16][path: bytes][size: u64][mtime_sec: u64][mtime_nsec: u32][flags: u16][oid: 20 bytes][reserved: 64 bytes]
+    /// [path_len: u16][path: bytes][size: u64][mtime_sec: u64][mtime_nsec: u32][flags: u16][oid: 20 bytes][reserved: 64 bytes]
     pub fn to_bytes(&self) -> Vec<u8> {
-        let path_binding = self.path.to_string_lossy();
-        let path_bytes = path_binding.as_bytes();
+        let path_bytes = self.path.to_string_lossy();
         let path_len = path_bytes.len() as u16;
 
-        let mut buf =
-            Vec::with_capacity(2 + path_bytes.len() + 8 + 8 + 4 + 2 + 20 + ENTRY_RESERVED_SIZE);
+        let mut buf = Vec::with_capacity(2 + path_bytes.len() + 8 + 8 + 4 + 2 + 20 + 1 + 4 + 57);
 
-        // path_len (2 bytes)
         buf.extend_from_slice(&path_len.to_le_bytes());
-
-        // path (variable)
-        buf.extend_from_slice(path_bytes);
-
-        // size (8 bytes)
+        buf.extend_from_slice(path_bytes.as_bytes());
         buf.extend_from_slice(&self.size.to_le_bytes());
-
-        // mtime_sec (8 bytes)
         buf.extend_from_slice(&self.mtime_sec.to_le_bytes());
-
-        // mtime_nsec (4 bytes)
         buf.extend_from_slice(&self.mtime_nsec.to_le_bytes());
-
-        // flags (2 bytes)
         buf.extend_from_slice(&self.flags.bits().to_le_bytes());
-
-        // oid (20 bytes)
         buf.extend_from_slice(&self.oid);
-
-        // reserved (64 bytes)
+        buf.push(self.merge_conflict_stage);
+        buf.extend_from_slice(&self.file_mode.to_le_bytes());
         buf.extend_from_slice(&self.reserved);
 
         buf
@@ -301,15 +226,23 @@ impl Entry {
             .ok_or_else(|| FormatError::InvalidEntry(format!("Invalid flags: {}", flags_bits)))?;
         offset += 2;
 
-        // oid
         let mut oid = [0u8; 20];
         oid.copy_from_slice(&bytes[offset..offset + 20]);
         offset += 20;
 
-        // reserved
         let mut reserved = [0u8; ENTRY_RESERVED_SIZE];
         reserved.copy_from_slice(&bytes[offset..offset + ENTRY_RESERVED_SIZE]);
         offset += ENTRY_RESERVED_SIZE;
+
+        let merge_conflict_stage = bytes[offset];
+        offset += 1;
+
+        let file_mode = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+        offset += 4;
+
+        let mut reserved = [0u8; 57];
+        reserved.copy_from_slice(&bytes[offset..offset + 57]);
+        offset += 57;
 
         Ok((
             Self {
@@ -319,10 +252,59 @@ impl Entry {
                 mtime_nsec,
                 flags,
                 oid,
+                merge_conflict_stage,
+                file_mode,
                 reserved,
             },
             offset,
         ))
+    }
+
+    /// Create a new tracked entry (from git index or helix add)
+    pub fn new_tracked(
+        path: PathBuf,
+        oid: [u8; 20],
+        size: u64,
+        mtime_sec: u64,
+        mtime_nsec: u32,
+        file_mode: u32,
+    ) -> Self {
+        Self {
+            path,
+            size,
+            mtime_sec,
+            mtime_nsec,
+            flags: EntryFlags::TRACKED,
+            oid,
+            merge_conflict_stage: 0,
+            file_mode,
+            reserved: [0; 57],
+        }
+    }
+
+    /// Create a new untracked entry (file exists but not added)
+    pub fn new_untracked(path: PathBuf, size: u64, mtime_sec: u64, mtime_nsec: u32) -> Self {
+        Self {
+            path,
+            size,
+            mtime_sec,
+            mtime_nsec,
+            flags: EntryFlags::UNTRACKED,
+            oid: [0; 20], // No hash yet
+            merge_conflict_stage: 0,
+            file_mode: 0o100644, // Default to regular file
+            reserved: [0; 57],
+        }
+    }
+
+    /// Mark this entry as staged
+    pub fn mark_staged(&mut self) {
+        self.flags |= EntryFlags::STAGED;
+    }
+
+    /// Mark this entry as modified
+    pub fn mark_modified(&mut self) {
+        self.flags |= EntryFlags::MODIFIED;
     }
 }
 
@@ -338,14 +320,27 @@ untracked && staged = staged (new file)
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct EntryFlags: u16 {
-        const TRACKED    = 1 << 0; // Present in .git/index
-        const STAGED     = 1 << 1; // index != HEAD
-        const MODIFIED   = 1 << 2; // working tree != index
-        const DELETED    = 1 << 3; // path missing from working tree
-        const UNTRACKED  = 1 << 4; // not in .git/index, but present in our cache
-        const CONFLICT   = 1 << 5; // merge conflict
-        const RESERVED1  = 1 << 6;
-        const RESERVED2  = 1 << 7;
+        // Core status (mutually exclusive base states)
+        const TRACKED    = 1 << 0;  // File is in the index (committed or staged)
+        const STAGED     = 1 << 1;  // File has staged changes (ready to commit)
+        const MODIFIED   = 1 << 2;  // Working tree differs from index
+        const DELETED    = 1 << 3;  // File deleted from working tree
+        const UNTRACKED  = 1 << 4;  // File exists but not in index (new file)
+
+        // Special states
+        const CONFLICT   = 1 << 5;  // Merge conflict
+        const ASSUME_UNCHANGED = 1 << 6;  // Git's "assume unchanged" bit
+        const SKIP_WORKTREE = 1 << 7;     // Git's "skip worktree" bit
+
+        // Reserved for future use
+        const RESERVED1  = 1 << 8;
+        const RESERVED2  = 1 << 9;
+        const RESERVED3  = 1 << 10;
+        const RESERVED4  = 1 << 11;
+        const RESERVED5  = 1 << 12;
+        const RESERVED6  = 1 << 13;
+        const RESERVED7  = 1 << 14;
+        const RESERVED8  = 1 << 15;
     }
 }
 
@@ -416,18 +411,22 @@ mod tests {
 
     #[test]
     fn test_header_size() {
-        assert_eq!(HEADER_SIZE, 140);
+        assert_eq!(HEADER_SIZE, 116);
     }
 
     #[test]
     fn test_header_roundtrip() {
-        let header = Header::new(42, [0xaa; 16], 1234567890, 123456, 4096, [0xbb; 20], 10);
+        let header = Header::new(42, [0xaa; 16], 10);
 
         let bytes = header.to_bytes();
         assert_eq!(bytes.len(), HEADER_SIZE);
 
         let decoded = Header::from_bytes(&bytes).unwrap();
-        assert_eq!(header, decoded);
+        assert_eq!(decoded.magic, header.magic);
+        assert_eq!(decoded.version, header.version);
+        assert_eq!(decoded.generation, header.generation);
+        assert_eq!(decoded.repo_fingerprint, header.repo_fingerprint);
+        assert_eq!(decoded.entry_count, header.entry_count);
     }
 
     #[test]
@@ -439,12 +438,201 @@ mod tests {
             mtime_nsec: 123456,
             flags: EntryFlags::TRACKED | EntryFlags::STAGED,
             oid: [0xcc; 20],
-            reserved: [0; ENTRY_RESERVED_SIZE],
+            merge_conflict_stage: 0,
+            file_mode: 0o100644,
+            reserved: [0; 57],
         };
 
         let bytes = entry.to_bytes();
         let (decoded, consumed) = Entry::from_bytes(&bytes).unwrap();
         assert_eq!(entry, decoded);
         assert_eq!(consumed, bytes.len());
+    }
+
+    #[test]
+    fn test_entry_new_tracked() {
+        let entry = Entry::new_tracked(
+            PathBuf::from("test.txt"),
+            [0xaa; 20],
+            100,
+            1234567890,
+            0,
+            0o100644,
+        );
+
+        assert_eq!(entry.path, PathBuf::from("test.txt"));
+        assert_eq!(entry.size, 100);
+        assert_eq!(entry.flags, EntryFlags::TRACKED);
+        assert_eq!(entry.merge_conflict_stage, 0);
+        assert_eq!(entry.file_mode, 0o100644);
+    }
+
+    #[test]
+    fn test_entry_new_untracked() {
+        let entry = Entry::new_untracked(PathBuf::from("new.txt"), 200, 1234567890, 0);
+
+        assert_eq!(entry.path, PathBuf::from("new.txt"));
+        assert_eq!(entry.size, 200);
+        assert_eq!(entry.flags, EntryFlags::UNTRACKED);
+        assert_eq!(entry.oid, [0; 20]);
+        assert_eq!(entry.merge_conflict_stage, 0);
+        assert_eq!(entry.file_mode, 0o100644);
+    }
+
+    #[test]
+    fn test_entry_mark_staged() {
+        let mut entry = Entry::new_tracked(
+            PathBuf::from("test.txt"),
+            [0xaa; 20],
+            100,
+            1234567890,
+            0,
+            0o100644,
+        );
+
+        entry.mark_staged();
+        assert!(entry.flags.contains(EntryFlags::STAGED));
+        assert!(entry.flags.contains(EntryFlags::TRACKED));
+    }
+
+    #[test]
+    fn test_entry_mark_modified() {
+        let mut entry = Entry::new_tracked(
+            PathBuf::from("test.txt"),
+            [0xaa; 20],
+            100,
+            1234567890,
+            0,
+            0o100644,
+        );
+
+        entry.mark_modified();
+        assert!(entry.flags.contains(EntryFlags::MODIFIED));
+        assert!(entry.flags.contains(EntryFlags::TRACKED));
+    }
+
+    #[test]
+    fn test_entry_flags_is_clean() {
+        let flags = EntryFlags::TRACKED;
+        assert!(flags.is_clean());
+
+        let flags = EntryFlags::TRACKED | EntryFlags::MODIFIED;
+        assert!(!flags.is_clean());
+
+        let flags = EntryFlags::TRACKED | EntryFlags::STAGED;
+        assert!(!flags.is_clean());
+    }
+
+    #[test]
+    fn test_entry_flags_is_partially_staged() {
+        let flags = EntryFlags::TRACKED | EntryFlags::MODIFIED | EntryFlags::STAGED;
+        assert!(flags.is_partially_staged());
+
+        let flags = EntryFlags::TRACKED | EntryFlags::STAGED;
+        assert!(!flags.is_partially_staged());
+
+        let flags = EntryFlags::TRACKED | EntryFlags::MODIFIED;
+        assert!(!flags.is_partially_staged());
+    }
+
+    #[test]
+    fn test_entry_executable_mode() {
+        let entry = Entry::new_tracked(
+            PathBuf::from("script.sh"),
+            [0xaa; 20],
+            100,
+            1234567890,
+            0,
+            0o100755, // Executable
+        );
+
+        assert_eq!(entry.file_mode, 0o100755);
+    }
+
+    #[test]
+    fn test_entry_symlink_mode() {
+        let entry = Entry::new_tracked(
+            PathBuf::from("link"),
+            [0xaa; 20],
+            100,
+            1234567890,
+            0,
+            0o120000, // Symlink
+        );
+
+        assert_eq!(entry.file_mode, 0o120000);
+    }
+
+    #[test]
+    fn test_entry_conflict_stage() {
+        let mut entry = Entry::new_tracked(
+            PathBuf::from("conflict.txt"),
+            [0xaa; 20],
+            100,
+            1234567890,
+            0,
+            0o100644,
+        );
+
+        // Simulate merge conflict
+        entry.merge_conflict_stage = 1; // Stage 1 = common ancestor
+        entry.flags |= EntryFlags::CONFLICT;
+
+        assert_eq!(entry.merge_conflict_stage, 1);
+        assert!(entry.flags.contains(EntryFlags::CONFLICT));
+    }
+
+    #[test]
+    fn test_header_generation_increment() {
+        let header1 = Header::new(1, [0xaa; 16], 10);
+        let header2 = Header::new(2, [0xaa; 16], 10);
+
+        assert_eq!(header1.generation, 1);
+        assert_eq!(header2.generation, 2);
+    }
+
+    #[test]
+    fn test_header_timestamps() {
+        let header = Header::new(1, [0xaa; 16], 10);
+
+        // Created_at should be set for generation 1
+        assert!(header.created_at > 0);
+        assert!(header.last_modified > 0);
+    }
+
+    #[test]
+    fn test_invalid_magic() {
+        let mut bytes = [0u8; HEADER_SIZE];
+        bytes[0..4].copy_from_slice(b"BAAD");
+
+        let result = Header::from_bytes(&bytes);
+        assert!(matches!(result, Err(FormatError::InvalidMagic(_))));
+    }
+
+    #[test]
+    fn test_invalid_version() {
+        let mut bytes = [0u8; HEADER_SIZE];
+        bytes[0..4].copy_from_slice(&MAGIC);
+        bytes[4..8].copy_from_slice(&999u32.to_le_bytes());
+
+        let result = Header::from_bytes(&bytes);
+        assert!(matches!(result, Err(FormatError::UnsupportedVersion(999))));
+    }
+
+    #[test]
+    fn test_entry_too_short() {
+        let bytes = [0u8; 10]; // Way too short
+        let result = Entry::from_bytes(&bytes);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_footer_roundtrip() {
+        let footer = Footer::new([0xdd; 32]);
+        let bytes = footer.to_bytes();
+        assert_eq!(bytes.len(), FOOTER_SIZE);
+
+        let decoded = Footer::from_bytes(&bytes).unwrap();
+        assert_eq!(footer, decoded);
     }
 }

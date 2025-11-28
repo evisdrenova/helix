@@ -75,8 +75,7 @@ fn test_external_git_add_detected() -> Result<()> {
         .current_dir(temp_dir.path())
         .output()?;
 
-    // Refresh should detect and resync
-    index.refresh()?;
+    index.full_refresh()?;
 
     assert_eq!(index.get_staged().len(), 2);
 
