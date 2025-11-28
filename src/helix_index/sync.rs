@@ -1,27 +1,29 @@
 /*
-This file defines the sync engine that creates the helix.index from .git/index and the HEAD commit and keeps it in sync. This is the read
-only index that the helix CLI command use to be very fast. It supports a full sync mode when the repo is first initialized and an incremental
-sync mode as the user runs commands and makes file changes.
+This file defines the sync engine that handles one-time import from .git/index during 'helix init'.
 
+After initialization, Helix operates independently:
+- .helix/helix.idx is the ONLY canonical source of truth
+- No ongoing sync with .git/index
+- All Helix operations update .helix/helix.idx only
 
 State model for EntryFlags:
 
 We model three worlds:
-- HEAD         (last committed state)
-- index        (.git/index, staging area)
+- HEAD         (last committed state from Git)
+- helix.idx    (Helix's canonical index, replaces .git/index)
 - working tree (files on disk)
 
 Bits:
 
-- TRACKED   -> this path exists in .git/index
-- STAGED    -> index differs from HEAD for this path (index != HEAD)
-- MODIFIED  -> working tree differs from index (working != index)
-- DELETED   -> tracked in index/HEAD but missing from working tree
-- UNTRACKED -> not in .git/index, but discovered via FSMonitor
+- TRACKED   -> this path exists in helix.idx (was in .git/index during import)
+- STAGED    -> helix.idx differs from HEAD for this path (index != HEAD)
+- MODIFIED  -> working tree differs from helix.idx (working != helix.idx)
+- DELETED   -> tracked in helix.idx but missing from working tree
+- UNTRACKED -> not in helix.idx, but discovered via FSMonitor
 
-This file (sync.rs) only compares **index vs HEAD**, so it is responsible
-for setting TRACKED and STAGED. MODIFIED / DELETED / UNTRACKED are set
-by the FSMonitor / working-tree side of the pipeline.
+This file (sync.rs) only handles the one-time import during 'helix init'.
+It compares **index vs HEAD** to set TRACKED and STAGED flags.
+MODIFIED / DELETED / UNTRACKED are set by FSMonitor / working-tree operations.
 */
 
 use super::fingerprint::generate_repo_fingerprint;
@@ -29,13 +31,11 @@ use super::format::{Entry, EntryFlags, Header};
 use super::reader::Reader;
 use super::writer::Writer;
 
-use crate::helix_index::utils::{read_git_index_checksum, system_time_to_parts};
 use crate::index::GitIndex;
 
 use anyhow::{Context, Result};
 use rayon::prelude::*;
 use std::collections::HashMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -50,12 +50,13 @@ impl SyncEngine {
         }
     }
 
-    /// Full sync to rebuild the entire helix index
-    /// Should only run on first run or corruption
-    pub fn full_sync(&self) -> Result<()> {
+    /// One-time import from Git to create initial Helix index
+    /// This is called during 'helix init' only
+    /// After this, Helix operates independently of .git/index
+    pub fn import_from_git(&self) -> Result<()> {
         wait_for_git_lock(&self.repo_path, Duration::from_secs(5))?;
 
-        // Read current generation, if error set it to 0 to restart generation
+        // Determine next generation
         let reader = Reader::new(&self.repo_path);
         let current_generation = if reader.exists() {
             reader
@@ -69,139 +70,38 @@ impl SyncEngine {
 
         let git_index_path = self.repo_path.join(".git/index");
 
-        println!("the git index path: {:?}", git_index_path);
-
-        // handle brand-new repo with no .git/index yet
+        // Handle brand-new repo with no .git/index yet
         if !git_index_path.exists() {
-            // Treat as an empty Git index: no entries, zeroed metadata.
             let repo_fingerprint = generate_repo_fingerprint(&self.repo_path)?;
-            let header = Header::new(
-                current_generation + 1,
-                repo_fingerprint,
-                0,       // git_mtime_sec
-                0,       // git_mtime_nsec
-                0,       // git_size
-                [0; 20], // git_checksum (no index yet)
-                0,       // entry_count
-            );
+            let header = Header::new(current_generation + 1, repo_fingerprint, 0);
 
-            let writer = Writer::new(&self.repo_path);
-            writer.write(&header, &[])?; // empty entries vec
+            let writer = Writer::new_canonical(&self.repo_path); // Durable write with fsync
+            writer.write(&header, &[])?;
 
             return Ok(());
         }
 
-        // 🔹 Existing behavior for repos that *do* have an index
-        let git_metadata = fs::metadata(&git_index_path)?;
-        let git_mtime = git_metadata.modified()?;
-        let (git_mtime_sec, git_mtime_nsec) = system_time_to_parts(git_mtime);
-        let git_size = git_metadata.len();
-        let git_checksum = read_git_index_checksum(&git_index_path)?;
-
-        let index = GitIndex::open(&self.repo_path)?;
-
-        let entries = self.build_helix_index_entries(&index)?;
+        let git_index = GitIndex::open(&self.repo_path)?;
+        let entries = self.build_helix_index_entries(&git_index)?;
 
         let repo_fingerprint = generate_repo_fingerprint(&self.repo_path)?;
         let header = Header::new(
             current_generation + 1,
             repo_fingerprint,
-            git_mtime_sec,
-            git_mtime_nsec,
-            git_size,
-            git_checksum,
             entries.len() as u32,
         );
 
-        let writer = Writer::new(&self.repo_path);
+        let writer = Writer::new_canonical(&self.repo_path); // Canonical write with fsync
         writer.write(&header, &entries)?;
 
         Ok(())
     }
 
-    /// Incremental sync to only update changed entries that are tracked bia FSMonitor in the .git/index
-    /// Takes in a list of changed paths from the user's working directory and then finds it in the .git/index
-    /// and then creates the entry and adds it to the helix.index
-    pub fn incremental_sync(&self, changed_paths: &[PathBuf]) -> Result<()> {
-        wait_for_git_lock(&self.repo_path, Duration::from_secs(5))?;
+    // ===== Helper Methods =====
 
-        let helix_index = Reader::new(&self.repo_path);
-        if !helix_index.exists() {
-            return self.full_sync();
-        };
-
-        let mut index_data = helix_index.read()?;
-        let git_index = GitIndex::open(&self.repo_path)?;
-
-        let head_tree = self.load_head_tree_for_paths(changed_paths)?;
-
-        for changed_path in changed_paths {
-            match git_index.get_entry(changed_path) {
-                Ok(git_entry) => {
-                    if let Some(existing) = index_data
-                        .entries
-                        .iter_mut()
-                        .find(|e| &e.path == changed_path)
-                    {
-                        *existing =
-                            self.build_helix_entry_from_git_entry(&git_entry, &head_tree)?;
-                    } else {
-                        let entry =
-                            self.build_helix_entry_from_git_entry(&git_entry, &head_tree)?;
-                        index_data.entries.push(entry);
-                    }
-                }
-                Err(_) => {
-                    // File removed from index
-                    index_data.entries.retain(|e| &e.path != changed_path);
-                }
-            }
-        }
-
-        let git_index_path = self.repo_path.join(".git/index");
-        let git_metadata = fs::metadata(&git_index_path)?;
-        let git_mtime = git_metadata.modified()?;
-        let (git_mtime_sec, git_mtime_nsec) = system_time_to_parts(git_mtime);
-        let git_size = git_metadata.len();
-        let git_checksum = read_git_index_checksum(&git_index_path)?;
-
-        index_data.header.generation += 1;
-        index_data.header.git_index_mtime_sec = git_mtime_sec;
-        index_data.header.git_index_mtime_nsec = git_mtime_nsec;
-        index_data.header.git_index_size = git_size;
-        index_data.header.git_index_checksum = git_checksum;
-        index_data.header.entry_count = index_data.entries.len() as u32;
-
-        let writer = Writer::new(&self.repo_path);
-        writer.write(&index_data.header, &index_data.entries)?;
-
-        Ok(())
-    }
-
-    /// Given a list of paths, create a hashmap of type Entry from the paths that are matched in the Head commit
-    fn load_head_tree_for_paths(&self, paths: &[PathBuf]) -> Result<HashMap<PathBuf, Vec<u8>>> {
-        let repo = gix::open(&self.repo_path)?;
-        let head = match repo.head()?.peel_to_commit() {
-            Ok(c) => c,
-            Err(_) => return Ok(HashMap::new()),
-        };
-
-        let tree = head.tree()?;
-
-        let mut map = HashMap::new();
-        for path in paths {
-            if let Ok(Some(entry)) = tree.lookup_entry_by_path(path) {
-                map.insert(path.clone(), entry.id().as_bytes().to_vec());
-            }
-        }
-
-        Ok(map)
-    }
-
-    fn build_helix_index_entries(&self, index: &GitIndex) -> Result<Vec<Entry>> {
+    fn build_helix_index_entries(&self, git_index: &GitIndex) -> Result<Vec<Entry>> {
         let head_tree = self.load_full_head_tree()?;
-
-        let index_entries: Vec<_> = index.entries().collect();
+        let index_entries: Vec<_> = git_index.entries().collect();
 
         let entries: Result<Vec<Entry>> = index_entries
             .into_par_iter()
@@ -222,9 +122,9 @@ impl SyncEngine {
     /// - Setting STAGED when index != HEAD (or when the path doesn't exist in HEAD)
     ///
     /// It does NOT set:
-    /// - MODIFIED  (requires working tree vs index comparison)
+    /// - MODIFIED  (requires working tree vs helix.idx comparison)
     /// - DELETED   (requires working tree presence info)
-    /// - UNTRACKED (requires FSMonitor / paths not in the index)
+    /// - UNTRACKED (requires FSMonitor / paths not in helix.idx)
     fn build_helix_entry_from_git_entry(
         &self,
         index_entry: &crate::index::IndexEntry,
@@ -235,7 +135,7 @@ impl SyncEngine {
         let mut flags = EntryFlags::TRACKED;
         let index_oid = index_entry.oid.as_bytes();
 
-        // if the page is in the head commit then it's staged
+        // Check if staged (index != HEAD)
         let is_staged = head_tree
             .get(&path)
             .map(|head_oid| head_oid.as_slice() != index_oid)
@@ -251,20 +151,20 @@ impl SyncEngine {
             mtime_sec: index_entry.mtime as u64,
             mtime_nsec: 0,
             flags,
+            merge_conflict_stage: 0,
+            file_mode: 0o100644,
             oid: *index_oid,
-            reserved: [0; 64],
+            reserved: [0; 57],
         })
     }
 
-    /// Get the current repos HEAD commit and return a hashmap of all of the paths in the tree
+    /// Get the current repo's HEAD commit and return a hashmap of all paths in the tree
     fn load_full_head_tree(&self) -> Result<HashMap<PathBuf, Vec<u8>>> {
         let repo = gix::open(&self.repo_path).context("Failed to open repository with gix")?;
 
         let commit = match repo.head()?.peel_to_commit() {
             Ok(commit) => commit,
-            Err(_) => {
-                return Ok(HashMap::new());
-            }
+            Err(_) => return Ok(HashMap::new()),
         };
 
         let tree = commit
@@ -281,7 +181,6 @@ impl SyncEngine {
             .records
             .into_iter()
             .filter_map(|record| {
-                // Only include blobs (files), ignoring other entries like submodules or trees
                 if record.mode.is_blob() {
                     let path = PathBuf::from(record.filepath.to_string());
                     let oid_bytes = record.oid.to_owned().as_bytes().to_vec();
@@ -324,7 +223,6 @@ mod tests {
             .current_dir(path)
             .output()?;
 
-        // Configure git
         Command::new("git")
             .args(&["config", "user.name", "Test"])
             .current_dir(path)
@@ -338,27 +236,23 @@ mod tests {
     }
 
     #[test]
-    fn test_sync_creates_index() -> Result<()> {
+    fn test_import_from_git() -> Result<()> {
         let temp_dir = TempDir::new()?;
         init_test_repo(temp_dir.path())?;
 
-        // Create and add a file
         fs::write(temp_dir.path().join("test.txt"), "hello")?;
         Command::new("git")
             .args(&["add", "test.txt"])
             .current_dir(temp_dir.path())
             .output()?;
 
-        // Sync
         let syncer = SyncEngine::new(temp_dir.path());
-        syncer.full_sync()?;
+        syncer.import_from_git()?;
 
-        // Verify helix.idx was created
         let reader = Reader::new(temp_dir.path());
         assert!(reader.exists());
 
         let data = reader.read()?;
-        assert_eq!(data.header.generation, 1);
         assert_eq!(data.entries.len(), 1);
         assert_eq!(data.entries[0].path, PathBuf::from("test.txt"));
         assert!(data.entries[0].flags.contains(EntryFlags::TRACKED));
@@ -368,7 +262,26 @@ mod tests {
     }
 
     #[test]
-    fn test_sync_increments_generation() -> Result<()> {
+    fn test_import_empty_repo() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        init_test_repo(temp_dir.path())?;
+
+        // No files added to Git
+        let syncer = SyncEngine::new(temp_dir.path());
+        syncer.import_from_git()?;
+
+        let reader = Reader::new(temp_dir.path());
+        let data = reader.read()?;
+
+        // Should create empty index
+        assert_eq!(data.entries.len(), 0);
+        assert_eq!(data.header.generation, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_import_increments_generation() -> Result<()> {
         let temp_dir = TempDir::new()?;
         init_test_repo(temp_dir.path())?;
 
@@ -380,14 +293,14 @@ mod tests {
 
         let syncer = SyncEngine::new(temp_dir.path());
 
-        // First sync
-        syncer.full_sync()?;
+        // First import
+        syncer.import_from_git()?;
         let reader = Reader::new(temp_dir.path());
         let data1 = reader.read()?;
         assert_eq!(data1.header.generation, 1);
 
-        // Second sync
-        syncer.full_sync()?;
+        // Second import (re-init)
+        syncer.import_from_git()?;
         let data2 = reader.read()?;
         assert_eq!(data2.header.generation, 2);
 
@@ -395,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sync_detects_staged() -> Result<()> {
+    fn test_import_detects_staged() -> Result<()> {
         let temp_dir = TempDir::new()?;
         init_test_repo(temp_dir.path())?;
 
@@ -417,15 +330,50 @@ mod tests {
             .current_dir(temp_dir.path())
             .output()?;
 
-        // Sync
+        // Import
         let syncer = SyncEngine::new(temp_dir.path());
-        syncer.full_sync()?;
+        syncer.import_from_git()?;
 
         let reader = Reader::new(temp_dir.path());
         let data = reader.read()?;
 
         assert_eq!(data.entries.len(), 1);
         assert!(data.entries[0].flags.contains(EntryFlags::STAGED));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_import_detects_unstaged() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        init_test_repo(temp_dir.path())?;
+
+        // Create, stage, and commit a file
+        fs::write(temp_dir.path().join("stable.txt"), "content")?;
+        Command::new("git")
+            .args(&["add", "stable.txt"])
+            .current_dir(temp_dir.path())
+            .output()?;
+        Command::new("git")
+            .args(&["commit", "-m", "add stable file"])
+            .current_dir(temp_dir.path())
+            .output()?;
+
+        // Import
+        let syncer = SyncEngine::new(temp_dir.path());
+        syncer.import_from_git()?;
+
+        let reader = Reader::new(temp_dir.path());
+        let data = reader.read()?;
+
+        assert_eq!(data.entries.len(), 1);
+
+        let entry = &data.entries[0];
+        assert!(entry.flags.contains(EntryFlags::TRACKED));
+        assert!(
+            !entry.flags.contains(EntryFlags::STAGED),
+            "Committed file that matches HEAD should not be staged"
+        );
 
         Ok(())
     }
