@@ -1,6 +1,9 @@
 /*
-This is the format of the .helix.idx binary file that will be the read-only optimized version of .git/index.
-This file isn't meant to replace .git/index but to sync with it and provide a read-optimized, crash-resilient cache that accelerates git workflows without altering the canonical .git/index file.
+This is the format of the helix.idx binary file - the primary index for Helix.
+
+This file is the source of truth for Helix operations.
+
+We synchronize Git's .git/index from this file for git compatibility.
 
 Binary format for helix.idx V1.0
 

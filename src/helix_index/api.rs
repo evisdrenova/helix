@@ -1,7 +1,7 @@
 use crate::index::GitIndex;
 
 use super::format::{Entry, EntryFlags};
-use super::reader::{HelixIndexData, Reader};
+use super::reader::{HelixIndex, Reader};
 use super::sync::SyncEngine;
 use super::verify::{Verifier, VerifyResult};
 use anyhow::Result;
@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 pub struct HelixIndex {
     repo_path: PathBuf,
-    data: HelixIndexData,
+    data: HelixIndex,
 }
 
 impl HelixIndex {
