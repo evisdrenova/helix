@@ -6,11 +6,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::helix_index::{format::Footer, Entry, Header};
 use anyhow::{Context, Result};
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
-
-use crate::helix_index::{format::Footer, Entry, Header};
+use std::io::BufWriter;
+use std::sync::mpsc;
+use std::thread;
 
 pub struct Writer {
     repo_path: PathBuf,
@@ -30,9 +32,13 @@ impl Writer {
         }
     }
 
-    /// 1. Write helix.idx.new
-    /// 2. flush
-    /// 3. rename -> helix.idx
+    /// Write complete index atomically (immutable operation)
+    /// Optimized for maximum throughput:
+    /// 1. Stream entries directly to buffered writer (no pre-serialization)
+    /// 2. Compute checksum in parallel with writing for large indexes
+    /// 3. Use large buffer (1-2MB) to reduce syscalls
+    /// 4. flush() instead of fsync() for speed
+    /// 5. Atomic rename
     pub fn write(&self, header: &Header, entries: &[Entry]) -> Result<()> {
         let helix_dir = self.repo_path.join(".helix");
         let index_path = helix_dir.join("helix.idx");
@@ -40,51 +46,13 @@ impl Writer {
 
         fs::create_dir_all(&helix_dir).context("Failed to create .helix directory")?;
 
-        // Serialize entries in parallel for large datasets
-        let serialized_entries = if entries.len() > 1000 {
-            self.parallel_serialize_entries(entries)?
+        // Choose strategy based on size
+        if entries.len() > 10000 {
+            // For huge indexes: parallel checksum with streaming writes
+            self.write_large_index(&temp_path, header, entries)?;
         } else {
-            self.sequential_serialize_entries(entries)
-        };
-
-        // Write to temp file
-        {
-            let mut file = File::create(&temp_path).context("Failed to create temp index file")?;
-
-            // Write header
-            let header_bytes = header.to_bytes();
-            file.write_all(&header_bytes)
-                .context("Failed to write header")?;
-
-            // Compute checksum as we write
-            let mut hasher = Sha256::new();
-            hasher.update(&header_bytes);
-
-            // Write all entries
-            for entry_bytes in &serialized_entries {
-                file.write_all(entry_bytes)
-                    .context("Failed to write entry")?;
-                hasher.update(entry_bytes);
-            }
-
-            // Compute footer
-            let checksum: [u8; 32] = hasher.finalize().into();
-            let footer = Footer::new(checksum);
-
-            // Write footer
-            file.write_all(&footer.to_bytes())
-                .context("Failed to write footer")?;
-
-            /* We use flush() here instead of fsync because helix.idx is derived and can always
-            be rebuilt from the git index. This is an optimistic sync that is 10x+ faster than
-            fsync. There is a risk of data loss in the window between flush() and actual disk
-            write during a power outage, but we have a checksum which verifies validity. If
-            corrupted, we can always rebuild. This prioritizes speed (critical for 50-100x
-            performance goals) over durability for a read-only cache.
-
-            We could make this configurable based on repo size or add a --durable flag for
-            critical operations. */
-            file.flush().context("Failed to flush temp file")?;
+            // For normal indexes: simple streaming
+            self.write_streaming(&temp_path, header, entries)?;
         }
 
         // Atomic rename
@@ -93,15 +61,111 @@ impl Writer {
         Ok(())
     }
 
-    /// Serialize entries sequentially (for small datasets)
-    fn sequential_serialize_entries(&self, entries: &[Entry]) -> Vec<Vec<u8>> {
-        entries.iter().map(|e| e.to_bytes()).collect()
+    // Streaming write for normal-sized indexes (most common case)
+    /// Optimized for minimal memory usage and syscall overhead
+    fn write_streaming(&self, temp_path: &Path, header: &Header, entries: &[Entry]) -> Result<()> {
+        let file = File::create(temp_path).context("Failed to create temp index file")?;
+        // Use 1MB buffer to minimize syscalls (Linux optimal buffer size is typically 128KB-1MB)
+        let mut writer = BufWriter::with_capacity(1024 * 1024, file);
+
+        let mut hasher = Sha256::new();
+
+        // Write and hash header
+        let header_bytes = header.to_bytes();
+        writer.write_all(&header_bytes)?;
+        hasher.update(&header_bytes);
+
+        // Stream entries directly
+        for entry in entries {
+            let entry_bytes = entry.to_bytes();
+            writer.write_all(&entry_bytes)?;
+            hasher.update(&entry_bytes);
+        }
+
+        // Write footer
+        let checksum: [u8; 32] = hasher.finalize().into();
+        let footer = Footer::new(checksum);
+        writer.write_all(&footer.to_bytes())?;
+
+        /* flush() instead of fsync() for 10x+ speed improvement.
+        Safe because helix.idx is a derived cache that can be rebuilt.
+        Checksum verification catches any corruption from power loss. */
+        writer.flush().context("Failed to flush temp file")?;
+
+        Ok(())
     }
 
-    /// Serialize entries in parallel (for large datasets)
-    fn parallel_serialize_entries(&self, entries: &[Entry]) -> Result<Vec<Vec<u8>>> {
-        // Parallel serialization maintains order
-        Ok(entries.par_iter().map(|e| e.to_bytes()).collect())
+    /// Parallel write for large indexes (>10k entries)
+    /// Computes checksum in parallel while writing
+    fn write_large_index(
+        &self,
+        temp_path: &Path,
+        header: &Header,
+        entries: &[Entry],
+    ) -> Result<()> {
+        let file = File::create(temp_path).context("Failed to create temp index file")?;
+        let mut writer = BufWriter::with_capacity(2 * 1024 * 1024, file); // 2MB buffer for large writes
+
+        // Write header
+        let header_bytes = header.to_bytes();
+        writer.write_all(&header_bytes)?;
+
+        // Channel for parallel checksum computation
+        let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(16); // Bounded to avoid memory explosion
+
+        // Spawn hasher thread
+        let hasher_handle = thread::spawn(move || {
+            let mut hasher = Sha256::new();
+
+            // Hash header (received inline)
+            if let Ok(header_data) = rx.recv() {
+                hasher.update(&header_data);
+            }
+
+            // Hash entries as they're sent
+            while let Ok(data) = rx.recv() {
+                hasher.update(&data);
+            }
+
+            let checksum: [u8; 32] = hasher.finalize().into();
+            checksum
+        });
+
+        // Send header to hasher
+        tx.send(header_bytes.to_vec()).ok();
+
+        // Stream entries with parallel hashing
+        // Serialize in chunks to balance parallelism and memory
+        const CHUNK_SIZE: usize = 100;
+
+        for chunk in entries.chunks(CHUNK_SIZE) {
+            // Serialize chunk in parallel
+            let serialized: Vec<Vec<u8>> = if chunk.len() > 10 {
+                chunk.par_iter().map(|e| e.to_bytes()).collect()
+            } else {
+                chunk.iter().map(|e| e.to_bytes()).collect()
+            };
+
+            // Write and send to hasher
+            for entry_bytes in serialized {
+                writer.write_all(&entry_bytes)?;
+                // Send copy to hasher (small overhead but enables parallelism)
+                tx.send(entry_bytes).ok();
+            }
+        }
+
+        // Close channel and wait for checksum
+        drop(tx);
+        let checksum = hasher_handle
+            .join()
+            .map_err(|_| anyhow::anyhow!("Hasher thread panicked"))?;
+
+        // Write footer
+        let footer = Footer::new(checksum);
+        writer.write_all(&footer.to_bytes())?;
+        writer.flush().context("Failed to flush temp file")?;
+
+        Ok(())
     }
 
     /// Get the expected path for helix.idx
@@ -655,6 +719,56 @@ mod tests {
         let result = builder.validate();
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("count mismatch"));
+
+        Ok(())
+    }
+
+    #[test]
+    #[ignore] // Run with: cargo test --release -- --ignored --nocapture
+    fn bench_write_performance() -> Result<()> {
+        use std::time::Instant;
+
+        let temp_dir = TempDir::new()?;
+        let repo_path = temp_dir.path();
+        let writer = Writer::new(repo_path);
+
+        // Test different sizes
+        let test_cases = vec![("Small", 1_000), ("Medium", 10_000), ("Large", 100_000)];
+
+        for (name, count) in test_cases {
+            let entries: Vec<_> = (0..count)
+                .map(|i| {
+                    Entry::new_tracked(
+                        PathBuf::from(format!("file{:06}.txt", i)),
+                        [(i % 256) as u8; 20],
+                        100,
+                        1234567890,
+                        0,
+                        0o100644,
+                    )
+                })
+                .collect();
+
+            let header = Header::new(1, [0xaa; 16], count as u32);
+
+            let start = Instant::now();
+            writer.write(&header, &entries)?;
+            let duration = start.elapsed();
+
+            let file_size = std::fs::metadata(writer.index_path())?.len();
+            let throughput = file_size as f64 / duration.as_secs_f64() / 1024.0 / 1024.0;
+
+            println!(
+                "{} index ({} entries): {:.2}ms, {:.2} MB/s",
+                name,
+                count,
+                duration.as_millis(),
+                throughput
+            );
+
+            // Clean up for next test
+            writer.delete()?;
+        }
 
         Ok(())
     }
