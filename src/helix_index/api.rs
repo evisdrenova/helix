@@ -14,7 +14,8 @@ pub struct HelixIndexData {
 }
 
 impl HelixIndexData {
-    /// Verify the current state of the Helix Index. If it is in a valid state, then load the index. If it is in an invalid state then rebuild it and load it.
+    /// Verify the current state of the Helix Index. If it is in a valid state, then load the index.
+    /// If it is in an invalid state then rebuild it and load it.
     pub fn load_or_rebuild(repo_path: &Path) -> Result<Self> {
         let verifier = Verifier::new(repo_path);
 
@@ -32,12 +33,6 @@ impl HelixIndexData {
                 eprintln!("Building helix.idx for the first time...");
                 Self::rebuild_helix_index(repo_path)
             }
-            VerifyResult::MtimeMismatch
-            | VerifyResult::SizeMismatch
-            | VerifyResult::ChecksumMismatch => {
-                eprintln!("helix.idx is stale, rebuilding...");
-                Self::rebuild_helix_index(repo_path)
-            }
             VerifyResult::WrongRepo => {
                 eprintln!("helix.idx is from a different repo, rebuilding...");
                 Self::rebuild_helix_index(repo_path)
@@ -49,10 +44,10 @@ impl HelixIndexData {
         }
     }
 
-    /// Rebuild the helix index from scratch using a full sync and return a new instance
+    /// Rebuild the helix index from Git (used for recovery or first-time init)
     pub fn rebuild_helix_index(repo_path: &Path) -> Result<Self> {
         let syncer = SyncEngine::new(repo_path);
-        syncer.full_sync()?;
+        syncer.import_from_git()?;
 
         let reader = Reader::new(repo_path);
         let data = reader.read()?;
@@ -63,53 +58,44 @@ impl HelixIndexData {
         })
     }
 
-    /// Incrementally refresh specific paths in the the helix index
-    pub fn incremental_refresh(&mut self, changed_paths: &[PathBuf]) -> Result<()> {
-        let syncer = SyncEngine::new(&self.repo_path);
-        syncer.incremental_sync(changed_paths)?;
-
+    /// Reload the helix index from disk
+    /// Use this after operations that modify .helix/helix.idx (like helix add, helix commit)
+    pub fn reload(&mut self) -> Result<()> {
         let reader = Reader::new(&self.repo_path);
         self.data = reader.read()?;
-
         Ok(())
     }
 
-    /// Full Refresh from .git/index and return existing instance
-    pub fn full_refresh(&mut self) -> Result<()> {
-        let syncer = SyncEngine::new(&self.repo_path);
-        syncer.full_sync()?;
-
-        let reader = Reader::new(&self.repo_path);
-        self.data = reader.read()?;
-
-        Ok(())
-    }
-
-    // Apply working tree changes to EntryFlags based on dirty paths from FSMonitor.
+    /// Apply working tree changes to EntryFlags based on dirty paths from FSMonitor.
     /// dirty paths have some sort of change at the path
     ///
     /// This is responsible for setting:
-    /// - MODIFIED  (working tree != index)
-    /// - DELETED   (tracked in index, missing on disk)
-    /// - UNTRACKED (not in index, exists on disk, not ignored)
+    /// - MODIFIED  (working tree != helix.idx)
+    /// - DELETED   (tracked in helix.idx, missing on disk)
+    /// - UNTRACKED (not in helix.idx, exists on disk, not ignored)
     ///
     /// It does NOT touch:
-    /// - TRACKED / STAGED (those come from SyncEngine using .git/index + HEAD)
+    /// - TRACKED / STAGED (those come from SyncEngine using .git/index + HEAD during import)
     pub fn apply_worktree_changes(&mut self, dirty_paths: &[PathBuf]) -> Result<()> {
-        // Snapshot of tracked paths from .git/index
-        let git_index = GitIndex::open(&self.repo_path)?;
-        let tracked: HashSet<PathBuf> =
-            git_index.entries().map(|e| PathBuf::from(e.path)).collect();
+        // Snapshot of tracked paths from helix.idx (not .git/index!)
+        let tracked: HashSet<PathBuf> = self
+            .data
+            .entries
+            .iter()
+            .filter(|e| e.flags.contains(EntryFlags::TRACKED))
+            .map(|e| e.path.clone())
+            .collect();
 
         for rel_path in dirty_paths {
             let full_path = self.repo_path.join(rel_path);
             let exists = full_path.exists();
-            // path is in the .git/index therefore it is TRACKED
+
+            // path is tracked in helix.idx
             if tracked.contains(rel_path) {
                 // Tracked file: adjust MODIFIED / DELETED bits
                 if let Some(entry) = self.find_entry_mut(rel_path) {
                     // Clear working-tree-related bits before recomputing
-                    // now just TRACKED and/or STAGED/UNSTAGED
+                    // now just TRACKED and/or STAGED
                     entry
                         .flags
                         .remove(EntryFlags::MODIFIED | EntryFlags::DELETED | EntryFlags::UNTRACKED);
@@ -125,7 +111,7 @@ impl HelixIndexData {
                     }
                 }
             } else {
-                // exists in the working directory but Not in .git/index => candidate for UNTRACKED
+                // exists in the working directory but Not in helix.idx => candidate for UNTRACKED
                 if exists {
                     let entry = self.ensure_untracked_entry(rel_path);
                     // For untracked entries, we explicitly mark them as untracked & modified.
@@ -276,7 +262,9 @@ impl HelixIndexData {
             mtime_nsec: 0,
             flags: EntryFlags::empty(),
             oid: [0; 20], // we don't need a real OID for untracked entries
-            reserved: [0; 64],
+            merge_conflict_stage: 0,
+            file_mode: 0o100644,
+            reserved: [0; 57],
         });
 
         let len = self.data.entries.len();
@@ -319,7 +307,7 @@ mod tests {
             .current_dir(temp_dir.path())
             .output()?;
 
-        let index = HelixIndex::load_or_rebuild(temp_dir.path())?;
+        let index = HelixIndexData::load_or_rebuild(temp_dir.path())?;
 
         assert_eq!(index.generation(), 1);
         assert_eq!(index.entries().len(), 1);
@@ -339,11 +327,11 @@ mod tests {
             .output()?;
 
         // First load - builds index
-        let index1 = HelixIndex::load_or_rebuild(temp_dir.path())?;
+        let index1 = HelixIndexData::load_or_rebuild(temp_dir.path())?;
         assert_eq!(index1.generation(), 1);
 
-        // Second load - uses cached index
-        let index2 = HelixIndex::load_or_rebuild(temp_dir.path())?;
+        // Second load - uses existing index (no rebuild needed)
+        let index2 = HelixIndexData::load_or_rebuild(temp_dir.path())?;
         assert_eq!(index2.generation(), 1); // Same generation
 
         Ok(())
@@ -360,7 +348,7 @@ mod tests {
             .current_dir(temp_dir.path())
             .output()?;
 
-        let index = HelixIndex::load_or_rebuild(temp_dir.path())?;
+        let index = HelixIndexData::load_or_rebuild(temp_dir.path())?;
         let staged = index.get_staged();
 
         assert_eq!(staged.len(), 1);
@@ -370,7 +358,7 @@ mod tests {
     }
 
     #[test]
-    fn test_refresh() -> Result<()> {
+    fn test_reload() -> Result<()> {
         let temp_dir = TempDir::new()?;
         init_test_repo(temp_dir.path())?;
 
@@ -380,23 +368,82 @@ mod tests {
             .current_dir(temp_dir.path())
             .output()?;
 
-        let mut index = HelixIndex::load_or_rebuild(temp_dir.path())?;
+        let mut index = HelixIndexData::load_or_rebuild(temp_dir.path())?;
         assert_eq!(index.entries().len(), 1);
         assert_eq!(index.generation(), 1);
 
-        // Add another file
+        // Simulate external update to helix.idx (e.g., another helix command)
         std::thread::sleep(std::time::Duration::from_millis(10));
+
+        // Add another file via Git (simulating helix add)
         fs::write(temp_dir.path().join("file2.txt"), "content")?;
         Command::new("git")
             .args(&["add", "file2.txt"])
             .current_dir(temp_dir.path())
             .output()?;
 
-        // Refresh
-        index.full_refresh()?;
+        // Import again (simulating what helix add would do)
+        let syncer = SyncEngine::new(temp_dir.path());
+        syncer.import_from_git()?;
+
+        // Reload to see the changes
+        index.reload()?;
 
         assert_eq!(index.entries().len(), 2);
         assert_eq!(index.generation(), 2);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_apply_worktree_changes_tracked() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        init_test_repo(temp_dir.path())?;
+
+        // Create and commit a file
+        fs::write(temp_dir.path().join("tracked.txt"), "v1")?;
+        Command::new("git")
+            .args(&["add", "tracked.txt"])
+            .current_dir(temp_dir.path())
+            .output()?;
+        Command::new("git")
+            .args(&["commit", "-m", "initial"])
+            .current_dir(temp_dir.path())
+            .output()?;
+
+        let mut index = HelixIndexData::load_or_rebuild(temp_dir.path())?;
+
+        // Modify the file in working tree
+        fs::write(temp_dir.path().join("tracked.txt"), "v2")?;
+
+        // Apply worktree changes
+        index.apply_worktree_changes(&[PathBuf::from("tracked.txt")])?;
+
+        // Should be marked as MODIFIED
+        let modified = index.get_modified();
+        assert_eq!(modified.len(), 1);
+        assert!(modified.contains(&PathBuf::from("tracked.txt")));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_apply_worktree_changes_untracked() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        init_test_repo(temp_dir.path())?;
+
+        let mut index = HelixIndexData::load_or_rebuild(temp_dir.path())?;
+
+        // Create untracked file
+        fs::write(temp_dir.path().join("untracked.txt"), "content")?;
+
+        // Apply worktree changes
+        index.apply_worktree_changes(&[PathBuf::from("untracked.txt")])?;
+
+        // Should be marked as UNTRACKED
+        let untracked = index.get_untracked();
+        assert_eq!(untracked.len(), 1);
+        assert!(untracked.contains(&PathBuf::from("untracked.txt")));
 
         Ok(())
     }

@@ -70,7 +70,7 @@ impl Verifier {
 mod tests {
     use super::*;
     use crate::helix_index::{
-        format::{Entry, EntryFlags, Header},
+        format::{Entry, Header},
         writer::Writer,
     };
     use std::fs;
