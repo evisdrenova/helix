@@ -1,3 +1,4 @@
+/// Defines functions and methods to read from the helix.index canonical file and the cached, memory-mapped representation of the helix.index file
 use crate::helix_index::EntryFlags;
 
 use super::format::{Entry, Footer, FormatError, Header, FOOTER_SIZE, HEADER_SIZE};
