@@ -15,7 +15,7 @@ pub struct Reader {
     repo_path: PathBuf,
 }
 
-/// In-memory representation of the helix index
+/// Canonical helix index
 #[derive(Debug, Clone)]
 pub struct HelixIndex {
     pub header: Header,

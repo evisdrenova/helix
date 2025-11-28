@@ -13,7 +13,7 @@ pub fn init_helix_repo(repo_path: &Path) -> Result<()> {
     ensure_git_repo(repo_path)?;
     verify_git_config(repo_path)?;
     create_helix_directory(repo_path)?;
-    build_initial_index(repo_path)?;
+    import_from_git_if_needed(repo_path)?;
     create_repo_config(repo_path)?;
     print_success_message(repo_path)?;
 
@@ -120,32 +120,48 @@ fn create_helix_directory(repo_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn build_initial_index(repo_path: &Path) -> Result<()> {
-    let index_path = repo_path.join(".helix/helix.idx");
+/// Import from Git index if it exists, otherwise create empty Helix index
+/// This is a ONE-TIME operation - after this, Helix operates independently
+fn import_from_git_if_needed(repo_path: &Path) -> Result<()> {
+    let helix_index_path = repo_path.join(".helix/helix.idx");
+    let git_index_path = repo_path.join(".git/index");
 
-    if index_path.exists() {
-        println!("○ helix.idx already exists, rebuilding...");
+    // Check if helix.idx already exists
+    if helix_index_path.exists() {
+        println!("○ helix.idx already exists, rebuilding from Git...");
+    } else if git_index_path.exists() {
+        println!("○ Importing from .git/index...");
     } else {
-        println!("○ Building helix.idx...");
+        println!("○ Creating empty helix.idx (no .git/index found)...");
     }
 
     let start = Instant::now();
 
-    // Create sync engine and do full sync
+    // Use SyncEngine to import from Git (one-time operation)
+    // This reads .git/index if it exists, otherwise creates empty index
     let sync = SyncEngine::new(repo_path);
-    sync.full_sync().context("Failed to build helix index")?;
+    sync.import_from_git()
+        .context("Failed to import Git index")?;
 
     let elapsed = start.elapsed();
 
     // Read back to get stats
     let reader = helix_index::Reader::new(repo_path);
-    let index_data = reader.read()?;
+    let index_data = reader
+        .read()
+        .context("Failed to read newly created helix index")?;
     let file_count = index_data.entries.len();
 
-    println!(
-        "✓ Built helix.idx ({} tracked files in {:.0?})",
-        file_count, elapsed
-    );
+    if file_count > 0 {
+        println!(
+            "✓ Imported {} tracked files from Git in {:.0?}",
+            file_count, elapsed
+        );
+        println!("  → Helix is now independent of .git/index");
+    } else {
+        println!("✓ Created empty helix.idx in {:.0?}", elapsed);
+        println!("  → Add files with 'helix add <path>'");
+    }
 
     Ok(())
 }
@@ -166,7 +182,13 @@ fn create_repo_config(repo_path: &Path) -> Result<()> {
 # This file configures Helix behavior for this repository.
 # Settings here override global settings in ~/.helix.toml
 
+# Helix operates independently of Git by default
+# The .git/index is only read once during 'helix init'
+# After that, Helix maintains its own index at .helix/helix.idx
 
+[core]
+# Automatically stage modified files on commit
+auto_stage = false
 
 [ignore]
 # Additional patterns to ignore (beyond .gitignore)
@@ -176,6 +198,13 @@ patterns = [
     "*.swp",
     ".DS_Store",
 ]
+
+# Note: Helix does not sync with .git/index
+# Use native Helix commands for all operations:
+#   helix add     - Stage files
+#   helix status  - View status
+#   helix commit  - Commit changes
+#   helix diff    - View changes
 "#;
 
     fs::write(&config_path, default_config).context("Failed to write .helix/config.toml")?;
@@ -194,14 +223,17 @@ fn print_success_message(repo_path: &Path) -> Result<()> {
     println!("  Config: {}/.helix/config.toml", repo_path.display());
     println!("  Index:  {}/.helix/helix.idx", repo_path.display());
     println!();
-    println!("Next steps:");
+    println!("Quick start:");
     println!("  helix status           # View working directory status");
-    println!("  helix log              # View git history");
-    println!("  helix commit <files>   # Add, generate message, and commit");
+    println!("  helix add <files>      # Stage files for commit");
+    println!("  helix commit           # Commit staged changes");
+    println!("  helix diff             # View changes");
     println!();
-    println!("Tips:");
-    println!("  • Edit .helix/config.toml to customize settings");
-    println!("  • Run 'helix init' again to rebuild the index");
+    println!("Notes:");
+    println!("  • Helix operates independently of Git after initialization");
+    println!("  • Use Helix commands (not git commands) for version control");
+    println!("  • Edit .helix/config.toml to customize behavior");
+    println!("  • Run 'helix init' again to re-import from Git if needed");
     println!();
 
     Ok(())
@@ -265,10 +297,42 @@ mod tests {
 
         init_helix_repo(repo_path)?;
 
-        // Verify helix index built
+        // Verify helix index built with imported file
         let reader = helix_index::Reader::new(repo_path);
         let data = reader.read()?;
         assert_eq!(data.entries.len(), 1);
+        assert_eq!(data.entries[0].path.to_str().unwrap(), "test.txt");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_init_no_git_index() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo_path = temp_dir.path();
+
+        // Initialize git but don't add any files
+        Command::new("git")
+            .args(&["init"])
+            .current_dir(repo_path)
+            .output()?;
+
+        Command::new("git")
+            .args(&["config", "user.name", "Test User"])
+            .current_dir(repo_path)
+            .output()?;
+
+        Command::new("git")
+            .args(&["config", "user.email", "test@test.com"])
+            .current_dir(repo_path)
+            .output()?;
+
+        init_helix_repo(repo_path)?;
+
+        // Verify empty helix index created
+        let reader = helix_index::Reader::new(repo_path);
+        let data = reader.read()?;
+        assert_eq!(data.entries.len(), 0);
 
         Ok(())
     }
@@ -280,10 +344,69 @@ mod tests {
 
         // Init twice
         init_helix_repo(repo_path)?;
+
+        // Read generation after first init
+        let reader = helix_index::Reader::new(repo_path);
+        let data1 = reader.read()?;
+        let gen1 = data1.header.generation;
+
         init_helix_repo(repo_path)?;
+
+        // Generation should increment on re-init
+        let data2 = reader.read()?;
+        let gen2 = data2.header.generation;
+
+        assert_eq!(gen2, gen1 + 1, "Generation should increment on re-init");
 
         // Should still work
         assert!(repo_path.join(".helix/helix.idx").exists());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_init_preserves_git_repo() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo_path = temp_dir.path();
+
+        // Create git repo with commits
+        Command::new("git")
+            .args(&["init"])
+            .current_dir(repo_path)
+            .output()?;
+
+        Command::new("git")
+            .args(&["config", "user.name", "Test User"])
+            .current_dir(repo_path)
+            .output()?;
+
+        Command::new("git")
+            .args(&["config", "user.email", "test@test.com"])
+            .current_dir(repo_path)
+            .output()?;
+
+        fs::write(repo_path.join("file.txt"), "content")?;
+        Command::new("git")
+            .args(&["add", "file.txt"])
+            .current_dir(repo_path)
+            .output()?;
+
+        Command::new("git")
+            .args(&["commit", "-m", "initial"])
+            .current_dir(repo_path)
+            .output()?;
+
+        // Init Helix
+        init_helix_repo(repo_path)?;
+
+        // Verify git history preserved
+        let log_output = Command::new("git")
+            .args(&["log", "--oneline"])
+            .current_dir(repo_path)
+            .output()?;
+
+        assert!(log_output.status.success());
+        assert!(String::from_utf8_lossy(&log_output.stdout).contains("initial"));
 
         Ok(())
     }

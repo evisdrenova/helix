@@ -223,6 +223,7 @@ impl FSMonitor {
                 continue;
             }
 
+            // TODO: probably update this to just one-time sync on helix initwith the git index and not actually watch it moving forward.
             for path in &event.paths {
                 // Check for helix canonical index changes
                 if path.ends_with(".helix/helix.idx") {

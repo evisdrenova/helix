@@ -89,7 +89,7 @@ pub fn add(repo_path: &Path, paths: &[PathBuf], options: AddOptions) -> Result<(
             println!("No files to add");
         }
         return Ok(());
-    }
+    };
 
     if options.verbose {
         println!("Adding {} files...", files_to_add.len());
