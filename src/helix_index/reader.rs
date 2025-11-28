@@ -211,7 +211,7 @@ impl CachedHelixIndex {
             .filter(|e| e.flags.contains(EntryFlags::STAGED))
     }
 
-    /// Get all modified files (parallel iterator)
+    /// Get all modified files
     pub fn modified_files(&self) -> impl ParallelIterator<Item = &Entry> {
         self.data
             .entries
@@ -219,7 +219,7 @@ impl CachedHelixIndex {
             .filter(|e| e.flags.contains(EntryFlags::MODIFIED))
     }
 
-    /// Get all untracked files (parallel iterator)
+    /// Get all untracked files
     pub fn untracked_files(&self) -> impl ParallelIterator<Item = &Entry> {
         self.data
             .entries
@@ -227,7 +227,7 @@ impl CachedHelixIndex {
             .filter(|e| e.flags.contains(EntryFlags::UNTRACKED))
     }
 
-    /// Get all tracked files (parallel iterator)
+    /// Get all tracked files
     pub fn tracked_files(&self) -> impl ParallelIterator<Item = &Entry> {
         self.data
             .entries
@@ -235,7 +235,7 @@ impl CachedHelixIndex {
             .filter(|e| e.flags.contains(EntryFlags::TRACKED))
     }
 
-    /// Get all files with conflicts (parallel iterator)
+    /// Get all files with conflicts
     pub fn conflict_files(&self) -> impl ParallelIterator<Item = &Entry> {
         self.data
             .entries
@@ -243,7 +243,7 @@ impl CachedHelixIndex {
             .filter(|e| e.flags.contains(EntryFlags::CONFLICT))
     }
 
-    /// Get entries in a specific directory (parallel iterator)
+    /// Get entries in a specific directory
     pub fn entries_in_dir(&self, dir: &Path) -> impl ParallelIterator<Item = &Entry> {
         let dir = dir.to_path_buf();
         self.data
@@ -252,19 +252,17 @@ impl CachedHelixIndex {
             .filter(move |e| e.path.starts_with(&dir))
     }
 
-    // ==================== Bulk Operations (Parallel) ====================
-
-    /// Collect staged paths (parallel collection)
+    /// Collect staged paths
     pub fn collect_staged_paths(&self) -> Vec<PathBuf> {
         self.staged_files().map(|e| e.path.clone()).collect()
     }
 
-    /// Collect modified paths (parallel collection)
+    /// Collect modified paths
     pub fn collect_modified_paths(&self) -> Vec<PathBuf> {
         self.modified_files().map(|e| e.path.clone()).collect()
     }
 
-    /// Count entries matching a predicate (parallel)
+    /// Count entries matching a predicate
     pub fn count_matching<F>(&self, predicate: F) -> usize
     where
         F: Fn(&Entry) -> bool + Sync + Send,
@@ -276,7 +274,7 @@ impl CachedHelixIndex {
             .count()
     }
 
-    /// Find first entry matching predicate (parallel)
+    /// Find first entry matching predicate
     pub fn find_entry<F>(&self, predicate: F) -> Option<&Entry>
     where
         F: Fn(&Entry) -> bool + Sync + Send,
@@ -284,7 +282,7 @@ impl CachedHelixIndex {
         self.data.entries.par_iter().find_any(|e| predicate(e))
     }
 
-    /// Check if any entry matches predicate (parallel, early exit)
+    /// Check if any entry matches predicate
     pub fn any_matching<F>(&self, predicate: F) -> bool
     where
         F: Fn(&Entry) -> bool + Sync + Send,
