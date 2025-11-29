@@ -4,6 +4,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use helix::helix_index::commit::Commit;
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
 use std::path::Path;
@@ -37,7 +38,10 @@ pub struct App {
 
 impl App {
     pub fn new(repo_path: &Path) -> Result<Self> {
-        let loader = CommitLoader::open_repo_at_path(repo_path)?;
+        let loader = 
+        
+        
+        // CommitLoader::open_repo_at_path(repo_path)?;
         let get_current_branch_name = loader.get_current_branch_name()?;
 
         let initial_limit = 50;

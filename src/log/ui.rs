@@ -1,3 +1,5 @@
+use helix::helix_index::commit::{format_timestamp, Commit};
+use helix::helix_index::hash::hash_to_hex;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -164,13 +166,13 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
 
 fn create_timeline_item(commit: &Commit, is_selected: bool) -> ListItem {
     let current_user_email = std::env::var("USER").unwrap_or_default();
-    let is_current_user = commit.author_email.contains(&current_user_email)
+    let is_current_user = commit.author.contains(&current_user_email)
         || commit
-            .author_name
+            .author
             .to_lowercase()
             .contains(&current_user_email.to_lowercase());
 
-    let time_str = commit.formatted_time();
+    let time_str = format_timestamp(commit.commit_time);
     let author_indicator = if is_current_user { "●" } else { "○" };
     let author_color = if is_current_user {
         Color::Cyan
@@ -192,23 +194,17 @@ fn create_timeline_item(commit: &Commit, is_selected: bool) -> ListItem {
 
     let line2 = Line::from(vec![
         Span::raw("   "),
-        Span::styled(&commit.author_name, Style::default().fg(author_color)),
+        Span::styled(&commit.author, Style::default().fg(author_color)),
         Span::raw(" · "),
-        Span::styled(
-            format!("+{} ", commit.insertions),
-            Style::default().fg(Color::Green),
-        ),
-        Span::styled(
-            format!("-{} ", commit.deletions),
-            Style::default().fg(Color::Red),
-        ),
+        Span::styled(commit.short_hash(), Style::default().fg(Color::Green)),
     ]);
 
     let max_len = 45;
-    let summary = if commit.summary.len() > max_len {
-        format!("{}...", &commit.summary[..max_len])
+    let summary = commit.summary();
+    let summary_display = if summary.len() > max_len {
+        format!("{}...", &summary[..max_len])
     } else {
-        commit.summary.clone()
+        summary.to_string()
     };
 
     let summary_style = if is_selected {
@@ -219,7 +215,10 @@ fn create_timeline_item(commit: &Commit, is_selected: bool) -> ListItem {
         Style::default().fg(Color::White)
     };
 
-    let line3 = Line::from(vec![Span::raw("   "), Span::styled(summary, summary_style)]);
+    let line3 = Line::from(vec![
+        Span::raw("   "),
+        Span::styled(summary_display, summary_style),
+    ]);
     let line4 = Line::from(vec![Span::raw("")]);
     let lines = vec![line1, line2, line3, line4];
 
@@ -258,10 +257,11 @@ fn draw_details(f: &mut Frame, area: Rect, app: &App) {
 fn format_commit_details(commit: &Commit) -> Text<'static> {
     let mut lines = vec![];
 
+    // Title (commit summary)
     lines.push(Line::from(vec![
         Span::raw(" "),
         Span::styled(
-            commit.summary.clone(),
+            commit.summary().to_string(),
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
@@ -269,9 +269,10 @@ fn format_commit_details(commit: &Commit) -> Text<'static> {
     ]));
     lines.push(Line::from(""));
 
+    // Message body (if exists)
     let message_body = commit
         .message
-        .strip_prefix(&commit.summary)
+        .strip_prefix(commit.summary())
         .unwrap_or("")
         .trim();
 
@@ -285,6 +286,7 @@ fn format_commit_details(commit: &Commit) -> Text<'static> {
         lines.push(Line::from(""));
     }
 
+    // Commit hash
     lines.push(Line::from(vec![
         Span::raw(" "),
         Span::styled(
@@ -294,9 +296,16 @@ fn format_commit_details(commit: &Commit) -> Text<'static> {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
-        Span::styled(commit.short_hash.clone(), Style::default().fg(Color::Green)),
+        Span::styled(commit.short_hash(), Style::default().fg(Color::Green)),
+        Span::raw(" ("),
+        Span::styled(
+            hash_to_hex(&commit.hash),
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::raw(")"),
     ]));
 
+    // Author
     lines.push(Line::from(vec![
         Span::raw(" "),
         Span::styled(
@@ -306,12 +315,10 @@ fn format_commit_details(commit: &Commit) -> Text<'static> {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" "),
-        Span::styled(
-            commit.author_name.clone(),
-            Style::default().fg(Color::White),
-        ),
+        Span::styled(commit.author.clone(), Style::default().fg(Color::White)),
     ]));
 
+    // Date
     lines.push(Line::from(vec![
         Span::raw(" "),
         Span::styled(
@@ -322,57 +329,80 @@ fn format_commit_details(commit: &Commit) -> Text<'static> {
         ),
         Span::raw("   "),
         Span::styled(
-            commit.timestamp.format("%Y-%m-%d %H:%M:%S").to_string(),
+            format_timestamp(commit.commit_time),
             Style::default().fg(Color::White),
         ),
+        Span::raw(" ("),
+        Span::styled(commit.relative_time(), Style::default().fg(Color::DarkGray)),
+        Span::raw(")"),
     ]));
 
     lines.push(Line::from(""));
 
+    // Tree hash
     lines.push(Line::from(vec![
         Span::raw(" "),
         Span::styled(
-            "Changes:",
+            "Tree:",
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         ),
+        Span::raw("   "),
+        Span::styled(
+            hash_to_hex(&commit.tree)[..8].to_string(),
+            Style::default().fg(Color::Magenta),
+        ),
     ]));
 
-    let max_path_len = commit
-        .file_changes
-        .iter()
-        .map(|f| f.path.len())
-        .max()
-        .unwrap_or(0);
-
-    for file_change in &commit.file_changes {
-        let padding = " ".repeat(max_path_len - file_change.path.len());
-
+    // Parents (if any)
+    if !commit.parents.is_empty() {
         lines.push(Line::from(vec![
-            Span::raw("   "),
+            Span::raw(" "),
             Span::styled(
-                format!("{}{}", file_change.path, padding),
-                Style::default().fg(Color::White),
+                "Parents:",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::raw("  "),
+        ]));
+
+        for parent in &commit.parents {
+            lines.push(Line::from(vec![
+                Span::raw("   "),
+                Span::styled(
+                    hash_to_hex(parent)[..8].to_string(),
+                    Style::default().fg(Color::Blue),
+                ),
+            ]));
+        }
+    }
+
+    // Merge commit indicator
+    if commit.is_merge() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::raw(" "),
             Span::styled(
-                format!("{:>3}", file_change.insertions),
-                Style::default().fg(Color::Green),
-            ),
-            Span::raw("  "),
-            Span::styled(
-                format!("-{}", file_change.deletions),
-                Style::default().fg(Color::Red),
+                "⚠ Merge commit",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             ),
         ]));
     }
 
-    if commit.is_merge {
+    // Initial commit indicator
+    if commit.is_initial() {
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
             Span::raw(" "),
-            Span::styled("⚠ Merge commit", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                "✨ Initial commit",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]));
     }
 

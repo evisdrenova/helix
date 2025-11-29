@@ -20,13 +20,29 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Commit - represents a snapshot in history
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Commit {
-    pub tree: Hash,         // Root tree hash (BLAKE3)
-    pub parents: Vec<Hash>, // Parent commit hash(es) - empty for initial commit, 1 for normal, 2+ for merge
-    pub author: String,     // Author name and email
-    pub author_time: u64,   // Author timestamp (seconds since Unix epoch)
-    pub committer: String,  // Committer name and email (usually same as author)
-    pub commit_time: u64,   // Committer timestamp (seconds since Unix epoch)
-    pub message: String,    // Commit message
+    /// Commit hash (BLAKE3) - computed from content
+    pub hash: Hash,
+
+    /// Root tree hash (BLAKE3)
+    pub tree: Hash,
+
+    /// Parent commit hash(es) - empty for initial commit, 1 for normal, 2+ for merge
+    pub parents: Vec<Hash>,
+
+    /// Author name and email
+    pub author: String,
+
+    /// Author timestamp (seconds since Unix epoch)
+    pub author_time: u64,
+
+    /// Committer name and email (usually same as author)
+    pub committer: String,
+
+    /// Committer timestamp (seconds since Unix epoch)
+    pub commit_time: u64,
+
+    /// Commit message
+    pub message: String,
 }
 
 impl Commit {
@@ -43,7 +59,8 @@ impl Commit {
             .unwrap()
             .as_secs();
 
-        Self {
+        let mut commit = Self {
+            hash: [0u8; 32], // Temporary, will be computed
             tree,
             parents,
             author,
@@ -51,43 +68,21 @@ impl Commit {
             committer,
             commit_time: now,
             message,
-        }
+        };
+
+        // Compute hash from content (excluding hash field)
+        commit.hash = commit.compute_hash();
+        commit
     }
 
-    /// Create initial commit (no parents)
-    pub fn initial(tree: Hash, author: String, message: String) -> Self {
-        Self::new(tree, vec![], author.clone(), author, message)
-    }
-
-    /// Create commit with one parent
-    pub fn with_parent(tree: Hash, parent: Hash, author: String, message: String) -> Self {
-        Self::new(tree, vec![parent], author.clone(), author, message)
-    }
-
-    /// Create merge commit (2+ parents)
-    pub fn merge(tree: Hash, parents: Vec<Hash>, author: String, message: String) -> Self {
-        assert!(parents.len() >= 2, "Merge commit needs 2+ parents");
-        Self::new(tree, parents, author.clone(), author, message)
-    }
-
-    /// Check if this is the initial commit
-    pub fn is_initial(&self) -> bool {
-        self.parents.is_empty()
-    }
-
-    /// Check if this is a merge commit
-    pub fn is_merge(&self) -> bool {
-        self.parents.len() >= 2
-    }
-
-    /// Compute commit hash (BLAKE3)
-    pub fn hash(&self) -> Hash {
-        let bytes = self.to_bytes();
+    /// Compute hash from commit content (for internal use)
+    fn compute_hash(&self) -> Hash {
+        let bytes = self.to_bytes_without_hash();
         hash_bytes(&bytes)
     }
 
-    /// Serialize commit to bytes
-    pub fn to_bytes(&self) -> Vec<u8> {
+    /// Serialize commit to bytes (excluding hash field)
+    fn to_bytes_without_hash(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
 
         // Tree hash (32 bytes)
@@ -123,6 +118,49 @@ impl Commit {
         bytes.extend_from_slice(self.message.as_bytes());
 
         bytes
+    }
+
+    /// Create initial commit (no parents)
+    pub fn initial(tree: Hash, author: String, message: String) -> Self {
+        Self::new(tree, vec![], author.clone(), author, message)
+    }
+
+    /// Create commit with one parent
+    pub fn with_parent(tree: Hash, parent: Hash, author: String, message: String) -> Self {
+        Self::new(tree, vec![parent], author.clone(), author, message)
+    }
+
+    /// Create merge commit (2+ parents)
+    pub fn merge(tree: Hash, parents: Vec<Hash>, author: String, message: String) -> Self {
+        assert!(parents.len() >= 2, "Merge commit needs 2+ parents");
+        Self::new(tree, parents, author.clone(), author, message)
+    }
+
+    /// Check if this is the initial commit
+    pub fn is_initial(&self) -> bool {
+        self.parents.is_empty()
+    }
+
+    /// Check if this is a merge commit
+    pub fn is_merge(&self) -> bool {
+        self.parents.len() >= 2
+    }
+
+    /// Get commit hash (already computed)
+    pub fn hash(&self) -> Hash {
+        self.hash
+    }
+
+    /// Get short hash (first 8 hex characters)
+    pub fn short_hash(&self) -> String {
+        let hex = crate::helix_index::hash::hash_to_hex(&self.hash);
+        hex[..8].to_string()
+    }
+
+    /// Serialize commit to bytes (for storage)
+    pub fn to_bytes(&self) -> Vec<u8> {
+        // Note: We don't serialize the hash field since it's computed from the content
+        self.to_bytes_without_hash()
     }
 
     /// Deserialize commit from bytes
@@ -209,7 +247,9 @@ impl Commit {
         }
         let message = String::from_utf8(bytes[offset..offset + message_len].to_vec())?;
 
-        Ok(Self {
+        // Create commit and compute hash
+        let mut commit = Self {
+            hash: [0u8; 32], // Temporary
             tree,
             parents,
             author,
@@ -217,12 +257,55 @@ impl Commit {
             committer,
             commit_time,
             message,
-        })
+        };
+
+        // Compute hash from the content
+        commit.hash = hash_bytes(bytes);
+
+        Ok(commit)
     }
 
     /// Get short commit message (first line)
     pub fn summary(&self) -> &str {
         self.message.lines().next().unwrap_or("")
+    }
+
+    /// Get relative time (e.g., "2 hours ago")
+    pub fn relative_time(&self) -> String {
+        use time::OffsetDateTime;
+
+        let now = OffsetDateTime::now_utc();
+        let commit_time = OffsetDateTime::from_unix_timestamp(self.commit_time as i64)
+            .unwrap_or(OffsetDateTime::UNIX_EPOCH);
+
+        let duration = now - commit_time;
+        let seconds = duration.whole_seconds();
+
+        if seconds < 60 {
+            format!("{} seconds ago", seconds)
+        } else if seconds < 3600 {
+            let minutes = seconds / 60;
+            format!(
+                "{} minute{} ago",
+                minutes,
+                if minutes == 1 { "" } else { "s" }
+            )
+        } else if seconds < 86400 {
+            let hours = seconds / 3600;
+            format!("{} hour{} ago", hours, if hours == 1 { "" } else { "s" })
+        } else if seconds < 604800 {
+            let days = seconds / 86400;
+            format!("{} day{} ago", days, if days == 1 { "" } else { "s" })
+        } else if seconds < 2592000 {
+            let weeks = seconds / 604800;
+            format!("{} week{} ago", weeks, if weeks == 1 { "" } else { "s" })
+        } else if seconds < 31536000 {
+            let months = seconds / 2592000;
+            format!("{} month{} ago", months, if months == 1 { "" } else { "s" })
+        } else {
+            let years = seconds / 31536000;
+            format!("{} year{} ago", years, if years == 1 { "" } else { "s" })
+        }
     }
 
     /// Format commit for display
@@ -240,8 +323,9 @@ impl Commit {
     }
 }
 
+/// Format Unix timestamp as UTC in RFC3339 format
 /// Format Unix timestamp for display
-fn format_timestamp(timestamp: u64) -> String {
+pub fn format_timestamp(timestamp: u64) -> String {
     use std::time::{Duration, UNIX_EPOCH};
 
     let duration = Duration::from_secs(timestamp);
@@ -471,6 +555,7 @@ mod tests {
     #[test]
     fn test_commit_hash_deterministic() {
         let commit1 = Commit {
+            hash: [2u8; 32],
             tree: [1u8; 32],
             parents: vec![[2u8; 32]],
             author: "John Doe <john@example.com>".to_string(),
