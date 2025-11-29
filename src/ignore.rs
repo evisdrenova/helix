@@ -14,7 +14,7 @@ pub struct IgnoreRules {
 }
 
 #[derive(Debug, Clone)]
-enum IgnorePattern {
+pub enum IgnorePattern {
     /// Directory pattern: "target/"
     Directory(String),
     /// Extension pattern: "*.log"
@@ -30,7 +30,7 @@ struct HelixConfig {
 }
 
 #[derive(Debug, Default, Deserialize)]
-struct IgnoreSection {
+pub struct IgnoreSection {
     #[serde(default)]
     patterns: Vec<String>,
 }
