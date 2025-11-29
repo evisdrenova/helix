@@ -9,7 +9,6 @@ use std::io;
 use std::path::Path;
 
 use super::actions::Action;
-use super::commits::{Commit, CommitLoader};
 use super::ui;
 
 pub struct App {

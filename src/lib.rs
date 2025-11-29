@@ -1,4 +1,5 @@
 pub mod add;
+pub mod commit;
 pub mod fsmonitor;
 pub mod helix_index;
 pub mod ignore;

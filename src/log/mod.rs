@@ -1,6 +1,5 @@
 pub mod actions;
 pub mod app;
-pub mod commits;
 pub mod ui;
 
 use anyhow::Result;

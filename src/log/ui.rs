@@ -7,7 +7,6 @@ use ratatui::{
 };
 
 use super::app::App;
-use super::commits::Commit;
 
 pub fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
