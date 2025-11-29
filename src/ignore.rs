@@ -50,27 +50,14 @@ impl IgnoreRules {
 
     /// Built-in patterns that always apply
     /// These cover common build artifacts and system files
+    /// TODO: remove these and let the user decide
     pub fn built_in_patterns() -> Vec<IgnorePattern> {
         vec![
-            // Git internal (except .git/index which we track explicitly)
-            IgnorePattern::Directory(".git/objects/".to_string()),
-            IgnorePattern::Directory(".git/refs/".to_string()),
-            IgnorePattern::Directory(".git/logs/".to_string()),
-            // Build directories
-            IgnorePattern::Directory("target/".to_string()),
-            IgnorePattern::Directory("node_modules/".to_string()),
-            IgnorePattern::Directory("__pycache__/".to_string()),
-            IgnorePattern::Directory(".venv/".to_string()),
-            IgnorePattern::Directory("dist/".to_string()),
-            IgnorePattern::Directory("build/".to_string()),
-            // Editor temporary files
-            IgnorePattern::Extension(".swp".to_string()),
-            IgnorePattern::Extension(".swo".to_string()),
-            IgnorePattern::Extension("~".to_string()),
-            IgnorePattern::Substring(".DS_Store".to_string()),
+            // Git internal
+            IgnorePattern::Directory(".git/*/".to_string()),
             // Helix's own cache directory (but NOT helix.idx which we watch)
             IgnorePattern::Directory(".helix/cache/".to_string()),
-            IgnorePattern::Substring(".helix.idx.new".to_string()), // Temp file during write
+            IgnorePattern::Substring(".helix.idx.new".to_string()),
         ]
     }
 

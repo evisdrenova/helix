@@ -4,7 +4,7 @@ use super::sync::SyncEngine;
 use super::verify::{Verifier, VerifyResult};
 use anyhow::Result;
 use rayon::prelude::*;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 pub struct HelixIndexData {
@@ -76,57 +76,48 @@ impl HelixIndexData {
     /// It does NOT touch:
     /// - TRACKED / STAGED (those come from SyncEngine using .git/index + HEAD during import)
     pub fn apply_worktree_changes(&mut self, dirty_paths: &[PathBuf]) -> Result<()> {
-        // Snapshot of tracked paths from helix.idx (not .git/index!)
-
-        let mut tracked: HashSet<PathBuf> = HashSet::new();
-
-        if self.data.entries.len() > 1000 {
-            tracked = self
-                .data
+        // Build map of tracked paths -> entry index
+        let index_by_path: HashMap<PathBuf, usize> = if self.data.entries.len() > 1000 {
+            self.data
                 .entries
                 .par_iter()
-                .filter(|e| e.flags.contains(EntryFlags::TRACKED))
-                .map(|e| e.path.clone())
-                .collect();
+                .enumerate()
+                .filter(|(_, e)| e.flags.contains(EntryFlags::TRACKED))
+                .map(|(i, e)| (e.path.clone(), i))
+                .collect()
         } else {
-            tracked = self
-                .data
+            self.data
                 .entries
                 .iter()
-                .filter(|e| e.flags.contains(EntryFlags::TRACKED))
-                .map(|e| e.path.clone())
-                .collect();
-        }
+                .enumerate()
+                .filter(|(_, e)| e.flags.contains(EntryFlags::TRACKED))
+                .map(|(i, e)| (e.path.clone(), i))
+                .collect()
+        };
 
         for rel_path in dirty_paths {
             let full_path = self.repo_path.join(rel_path);
             let exists = full_path.exists();
 
-            // path is tracked in helix.idx
-            if tracked.contains(rel_path) {
-                // Tracked file: adjust MODIFIED / DELETED bits
-                if let Some(entry) = self.find_entry_mut(rel_path) {
-                    // Clear working-tree-related bits before recomputing
-                    // now just TRACKED and/or STAGED
+            if let Some(&idx) = index_by_path.get(rel_path) {
+                // Tracked file: adjust MODIFIED / DELETED bits on a single indexed entry
+                let entry = &mut self.data.entries[idx];
+
+                entry
+                    .flags
+                    .remove(EntryFlags::MODIFIED | EntryFlags::DELETED | EntryFlags::UNTRACKED);
+
+                if exists {
+                    entry.flags.insert(EntryFlags::MODIFIED);
+                } else {
                     entry
                         .flags
-                        .remove(EntryFlags::MODIFIED | EntryFlags::DELETED | EntryFlags::UNTRACKED);
-
-                    if exists {
-                        // tracked + exists in the working directory + dirty => modified (unstaged)
-                        entry.flags.insert(EntryFlags::MODIFIED);
-                    } else {
-                        // tracked + missing in working directory => deleted (unstaged)
-                        entry
-                            .flags
-                            .insert(EntryFlags::DELETED | EntryFlags::MODIFIED);
-                    }
+                        .insert(EntryFlags::DELETED | EntryFlags::MODIFIED);
                 }
             } else {
-                // exists in the working directory but Not in helix.idx => candidate for UNTRACKED
+                // Not in helix.idx → candidate UNTRACKED
                 if exists {
                     let entry = self.ensure_untracked_entry(rel_path);
-                    // For untracked entries, we explicitly mark them as untracked & modified.
                     entry
                         .flags
                         .remove(EntryFlags::TRACKED | EntryFlags::STAGED | EntryFlags::DELETED);
@@ -134,7 +125,7 @@ impl HelixIndexData {
                         .flags
                         .insert(EntryFlags::UNTRACKED | EntryFlags::MODIFIED);
                 } else {
-                    // Not tracked and missing on disk => nothing to keep
+                    // Not tracked and missing → nothing to keep
                     self.remove_entry_if_exists(rel_path);
                 }
             }
