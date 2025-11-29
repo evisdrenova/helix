@@ -1,3 +1,6 @@
+use crate::helix_index::hash::{self, hash_bytes};
+use crate::helix_index::Writer;
+
 use super::format::{Entry, EntryFlags};
 use super::reader::{HelixIndex, Reader};
 use super::sync::SyncEngine;
@@ -62,6 +65,34 @@ impl HelixIndexData {
     pub fn reload(&mut self) -> Result<()> {
         let reader = Reader::new(&self.repo_path);
         self.data = reader.read()?;
+        Ok(())
+    }
+
+    /// Persist changes to disk
+    ///
+    /// This writes the index to .helix/helix.idx with:
+    /// - Incremented generation counter
+    /// - Updated entry count
+    /// - Computed checksum
+    /// - fsync for durability
+    pub fn persist(&mut self) -> Result<()> {
+        // Increment generation
+        self.data.header.generation += 1;
+
+        // Update entry count
+        self.data.header.entry_count = self.data.entries.len() as u32;
+
+        // Compute repo fingerprint (if not already set)
+        if self.data.header.repo_fingerprint == [0u8; 32] {
+            let repo_path_str = self.repo_path.to_string_lossy();
+            let repo_path_bytes = repo_path_str.as_bytes();
+            self.data.header.repo_fingerprint = hash_bytes(repo_path_bytes);
+        }
+
+        // Write to disk
+        let writer = Writer::new_canonical(&self.repo_path);
+        writer.write(&self.data.header, &self.data.entries)?;
+
         Ok(())
     }
 
@@ -336,6 +367,10 @@ impl HelixIndexData {
         &self.data.entries
     }
 
+    pub fn entries_mut(&mut self) -> &mut Vec<Entry> {
+        &mut self.data.entries
+    }
+
     fn find_entry_mut(&mut self, path: &Path) -> Option<&mut Entry> {
         self.data.entries.iter_mut().find(|e| e.path == path)
     }
@@ -356,10 +391,10 @@ impl HelixIndexData {
             mtime_sec: 0,
             mtime_nsec: 0,
             flags: EntryFlags::empty(),
-            oid: [0; 20], // we don't need a real OID for untracked entries
+            oid: hash::ZERO_HASH,
             merge_conflict_stage: 0,
             file_mode: 0o100644,
-            reserved: [0; 57],
+            reserved: [0; 33],
         });
 
         let len = self.data.entries.len();
@@ -539,6 +574,152 @@ mod tests {
         let untracked = index.get_untracked();
         assert_eq!(untracked.len(), 1);
         assert!(untracked.contains(&PathBuf::from("untracked.txt")));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_entries_mut() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo_path = temp_dir.path();
+
+        init_test_repo(repo_path)?;
+
+        let mut index = HelixIndexData::load_or_rebuild(repo_path)?;
+
+        // Initially empty
+        assert_eq!(index.entries_mut().len(), 0);
+
+        // Add an entry
+        index.entries_mut().push(Entry {
+            path: PathBuf::from("test.txt"),
+            size: 100,
+            mtime_sec: 1234567890,
+            mtime_nsec: 0,
+            flags: EntryFlags::TRACKED | EntryFlags::STAGED,
+            oid: hash_bytes(b"test"),
+            file_mode: 0o100644,
+            merge_conflict_stage: 0,
+            reserved: [0u8; 33],
+        });
+
+        assert_eq!(index.entries_mut().len(), 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_persist() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo_path = temp_dir.path();
+
+        init_test_repo(repo_path)?;
+
+        let mut index = HelixIndexData::load_or_rebuild(repo_path)?;
+        let gen1 = index.generation();
+
+        // Add an entry
+        index.entries_mut().push(Entry {
+            path: PathBuf::from("test.txt"),
+            size: 100,
+            mtime_sec: 1234567890,
+            mtime_nsec: 0,
+            flags: EntryFlags::TRACKED | EntryFlags::STAGED,
+            oid: hash_bytes(b"test"),
+            file_mode: 0o100644,
+            merge_conflict_stage: 0,
+            reserved: [0u8; 33],
+        });
+
+        // Persist
+        index.persist()?;
+
+        // Reload
+        let reader = Reader::new(repo_path);
+        let data = reader.read()?;
+
+        // Generation should have incremented
+        assert_eq!(data.header.generation, gen1 + 1);
+
+        // Entry should be there
+        assert_eq!(data.entries.len(), 1);
+        assert_eq!(data.entries[0].path, PathBuf::from("test.txt"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_persist_increments_generation() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo_path = temp_dir.path();
+
+        init_test_repo(repo_path)?;
+
+        let mut index = HelixIndexData::load_or_rebuild(repo_path)?;
+        let gen1 = index.generation();
+
+        // Persist without changes
+        index.persist()?;
+
+        let gen2 = index.generation();
+        assert_eq!(gen2, gen1 + 1);
+
+        // Persist again
+        index.persist()?;
+
+        let gen3 = index.generation();
+        assert_eq!(gen3, gen2 + 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_persist_updates_entry_count() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo_path = temp_dir.path();
+
+        init_test_repo(repo_path)?;
+
+        let mut index = HelixIndexData::load_or_rebuild(repo_path)?;
+
+        // Add entries
+        for i in 0..5 {
+            index.entries_mut().push(Entry {
+                path: PathBuf::from(format!("file{}.txt", i)),
+                size: 100,
+                mtime_sec: 1234567890,
+                mtime_nsec: 0,
+                flags: EntryFlags::TRACKED,
+                oid: hash_bytes(format!("content{}", i).as_bytes()),
+                file_mode: 0o100644,
+                merge_conflict_stage: 0,
+                reserved: [0u8; 33],
+            });
+        }
+
+        // Persist
+        index.persist()?;
+
+        // Reload and check
+        let reader = Reader::new(repo_path);
+        let data = reader.read()?;
+
+        assert_eq!(data.header.entry_count, 5);
+        assert_eq!(data.entries.len(), 5);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_repo_path() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo_path = temp_dir.path();
+
+        init_test_repo(repo_path)?;
+
+        let index = HelixIndexData::load_or_rebuild(repo_path)?;
+
+        assert_eq!(index.repo_path, repo_path);
 
         Ok(())
     }

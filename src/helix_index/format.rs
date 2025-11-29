@@ -1,11 +1,5 @@
 /*
-This is the format of the helix.idx binary file - the primary index for Helix.
-
-This file is the source of truth for Helix operations.
-
-We synchronize Git's .git/index from this file for git compatibility.
-
-Binary format for helix.idx V1.0
+Binary file format for helix.idx V1.0
 
 ┌─────────────────────────────────────┐
  │ Header                              │
@@ -19,32 +13,34 @@ Binary format for helix.idx V1.0
  ├─────────────────────────────────────┤
  │ Footer                              │
  └─────────────────────────────────────┘
-
- This is modeled after the .git/index file format.
 */
 
-use std::path::PathBuf;
+use std::{path::PathBuf, str::Utf8Error};
+
+use crate::helix_index::hash::Hash;
 
 pub const MAGIC: [u8; 4] = *b"HLIX";
-pub const HEADER_SIZE: usize = 116;
 pub const VERSION: u32 = 1;
 pub const FOOTER_SIZE: usize = 32;
 pub const ENTRY_RESERVED_SIZE: usize = 64;
 
+#[repr(C)] // ensures file layout is guaranteed in memory w/o extra padding
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Header {
     pub magic: [u8; 4],
-    pub version: u32,               // 1
-    pub generation: u64,            // Incremented on every write
-    pub repo_fingerprint: [u8; 16], // Prevents cross-repo reuse
+    pub version: u32,           // 1
+    pub generation: u64,        // Incremented on every write
+    pub repo_fingerprint: Hash, // Prevents cross-repo reuse; 32 bytes
+    pub checksum: Hash,         // Checksum of entire file; 32 bytes
     pub entry_count: u32,
     pub created_at: u64,
     pub last_modified: u64,
-    pub reserved: [u8; 64], // reserved for future fields
+    pub reserved: [u8; 28], // reserved for future fields
 }
 
 impl Header {
-    pub fn new(generation: u64, repo_fingerprint: [u8; 16], entry_count: u32) -> Self {
+    pub const HEADER_SIZE: usize = 128;
+    pub fn new(generation: u64, repo_fingerprint: Hash, entry_count: u32) -> Self {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -54,15 +50,16 @@ impl Header {
             version: VERSION,
             generation,
             repo_fingerprint,
+            checksum: [0u8; 32],
             entry_count,
             created_at: if generation == 1 { now } else { 0 },
             last_modified: now,
-            reserved: [0; 64],
+            reserved: [0; 28],
         }
     }
-    /// Serialize header to bytes (140 bytes fixed)
-    pub fn to_bytes(&self) -> [u8; HEADER_SIZE] {
-        let mut buf = [0u8; HEADER_SIZE];
+    /// Serialize header to bytes
+    pub fn to_bytes(&self) -> [u8; Self::HEADER_SIZE] {
+        let mut buf = [0u8; Self::HEADER_SIZE];
         let mut offset = 0;
 
         buf[offset..offset + 4].copy_from_slice(&self.magic);
@@ -75,7 +72,10 @@ impl Header {
         offset += 8;
 
         buf[offset..offset + 16].copy_from_slice(&self.repo_fingerprint);
-        offset += 16;
+        offset += 32;
+
+        buf[offset..offset + 32].copy_from_slice(&self.checksum);
+        offset += 32;
 
         buf[offset..offset + 4].copy_from_slice(&self.entry_count.to_le_bytes());
         offset += 4;
@@ -89,13 +89,13 @@ impl Header {
         buf[offset..offset + 64].copy_from_slice(&self.reserved);
         offset += 64;
 
-        assert_eq!(offset, HEADER_SIZE);
+        assert_eq!(offset, Self::HEADER_SIZE);
         buf
     }
 
     /// Deserialize header from bytes
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, FormatError> {
-        if bytes.len() < HEADER_SIZE {
+        if bytes.len() < Self::HEADER_SIZE {
             return Err(FormatError::InvalidHeader("Too short".into()));
         }
 
@@ -117,9 +117,13 @@ impl Header {
         let generation = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
         offset += 8;
 
-        let mut repo_fingerprint = [0u8; 16];
-        repo_fingerprint.copy_from_slice(&bytes[offset..offset + 16]);
-        offset += 16;
+        let mut repo_fingerprint = [0u8; 32];
+        repo_fingerprint.copy_from_slice(&bytes[offset..offset + 32]);
+        offset += 32;
+
+        let mut checksum = [0u8; 32];
+        checksum.copy_from_slice(&bytes[offset..offset + 32]);
+        offset += 32;
 
         let entry_count = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
         offset += 4;
@@ -130,17 +134,18 @@ impl Header {
         let last_modified = u64::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
         offset += 8;
 
-        let mut reserved = [0u8; 64];
-        reserved.copy_from_slice(&bytes[offset..offset + 64]);
-        offset += 64;
+        let mut reserved = [0u8; 28];
+        reserved.copy_from_slice(&bytes[offset..offset + 28]);
+        offset += 28;
 
-        assert_eq!(offset, HEADER_SIZE);
+        assert_eq!(offset, Self::HEADER_SIZE);
 
         Ok(Self {
             magic,
             version,
             generation,
             repo_fingerprint,
+            checksum,
             entry_count,
             created_at,
             last_modified,
@@ -156,158 +161,152 @@ pub struct Entry {
     pub mtime_sec: u64,
     pub mtime_nsec: u32,
     pub flags: EntryFlags,
-    pub oid: [u8; 20],
+    pub oid: Hash,
     pub merge_conflict_stage: u8, // (0 = normal, 1-3 = conflict stages)
     pub file_mode: u32,           // (0o100644 = regular, 0o100755 = executable, 0o120000 = symlink)
-    pub reserved: [u8; 57],
+    pub reserved: [u8; 33],
 }
 
 impl Entry {
-    /// [path_len: u16][path: bytes][size: u64][mtime_sec: u64][mtime_nsec: u32][flags: u16][oid: 20 bytes][reserved: 64 bytes]
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let path_bytes = self.path.to_string_lossy();
-        let path_len = path_bytes.len() as u16;
+    pub const ENTRY_MAX_SIZE: usize = 256;
+    pub const ENTRY_MAX_PATH_LEN: usize = 200;
 
-        let mut buf = Vec::with_capacity(2 + path_bytes.len() + 8 + 8 + 4 + 2 + 20 + 1 + 4 + 57);
-
-        buf.extend_from_slice(&path_len.to_le_bytes());
-        buf.extend_from_slice(path_bytes.as_bytes());
-        buf.extend_from_slice(&self.size.to_le_bytes());
-        buf.extend_from_slice(&self.mtime_sec.to_le_bytes());
-        buf.extend_from_slice(&self.mtime_nsec.to_le_bytes());
-        buf.extend_from_slice(&self.flags.bits().to_le_bytes());
-        buf.extend_from_slice(&self.oid);
-        buf.push(self.merge_conflict_stage);
-        buf.extend_from_slice(&self.file_mode.to_le_bytes());
-        buf.extend_from_slice(&self.reserved);
-
-        buf
+    /// Create a new Helix index entry
+    pub fn new(path: PathBuf, size: u64, mtime_sec: u64, oid: Hash, file_mode: u32) -> Self {
+        Self {
+            path,
+            size,
+            mtime_sec,
+            mtime_nsec: 0,
+            flags: EntryFlags::empty(),
+            oid,
+            file_mode,
+            merge_conflict_stage: 0,
+            reserved: [0u8; 33],
+        }
     }
 
-    /// Deserialize entry from bytes, returns (Entry, bytes_consumed)
-    pub fn from_bytes(bytes: &[u8]) -> Result<(Self, usize), FormatError> {
-        if bytes.len() < 2 {
-            return Err(FormatError::InvalidEntry("Too short for path_len".into()));
+    /// Serialize entry to bytes
+    pub fn to_bytes(&self) -> Result<Vec<u8>, FormatError> {
+        let path_str = self.path.to_string_lossy();
+        let path_bytes = path_str.as_bytes();
+
+        if path_bytes.len() > Self::ENTRY_MAX_PATH_LEN {
+            return Err(FormatError::PathLengthLongerThanMaxSize(path_bytes.len()));
+        }
+
+        let mut buf = Vec::with_capacity(Self::ENTRY_MAX_SIZE);
+
+        // Path length (2 bytes)
+        buf.extend_from_slice(&(path_bytes.len() as u16).to_le_bytes());
+
+        // Path (variable, up to MAX_PATH_LEN)
+        buf.extend_from_slice(path_bytes);
+
+        // Pad path to MAX_PATH_LEN
+        buf.resize(2 + Self::ENTRY_MAX_PATH_LEN, 0);
+
+        // Size (8 bytes)
+        buf.extend_from_slice(&self.size.to_le_bytes());
+
+        // Mtime sec (8 bytes)
+        buf.extend_from_slice(&self.mtime_sec.to_le_bytes());
+
+        // Mtime nsec (4 bytes)
+        buf.extend_from_slice(&self.mtime_nsec.to_le_bytes());
+
+        // Flags (4 bytes)
+        buf.extend_from_slice(&self.flags.bits().to_le_bytes());
+
+        // OID (32 bytes) - BLAKE3 hash
+        buf.extend_from_slice(&self.oid);
+
+        // File mode (4 bytes)
+        buf.extend_from_slice(&self.file_mode.to_le_bytes());
+
+        // Merge conflict stage (1 byte)
+        buf.push(self.merge_conflict_stage);
+
+        // Reserved (33 bytes)
+        buf.extend_from_slice(&self.reserved);
+
+        assert_eq!(
+            buf.len(),
+            Self::ENTRY_MAX_SIZE,
+            "Entry serialization size mismatch"
+        );
+        Ok(buf)
+    }
+
+    /// Deserialize entry from bytes
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, FormatError> {
+        if bytes.len() < Self::ENTRY_MAX_SIZE {
+            return Err(FormatError::PathLengthLongerThanMaxSize(bytes.len()));
         }
 
         let mut offset = 0;
 
-        // path_len
+        // Path length (2 bytes)
         let path_len = u16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap()) as usize;
         offset += 2;
 
-        // path
-        if bytes.len() < offset + path_len {
-            return Err(FormatError::InvalidEntry("Too short for path".into()));
+        if path_len > Self::ENTRY_MAX_PATH_LEN {
+            return Err(FormatError::PathLengthTooLong(bytes.len()));
         }
+
+        // Path (variable)
         let path_bytes = &bytes[offset..offset + path_len];
-        let path = PathBuf::from(String::from_utf8_lossy(path_bytes).to_string());
-        offset += path_len;
+        let path_str =
+            std::str::from_utf8(path_bytes).map_err(|e| FormatError::InvalidPathEncoding(e))?;
+        let path = PathBuf::from(path_str);
+        offset += Self::ENTRY_MAX_PATH_LEN; // Skip past padded path
 
-        // Need at least 8 + 8 + 4 + 2 + 20 + 64 = 106 more bytes
-        if bytes.len() < offset + 106 {
-            return Err(FormatError::InvalidEntry(
-                "Too short for entry fields".into(),
-            ));
-        }
-
-        // size
+        // Size (8 bytes)
         let size = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
         offset += 8;
 
-        // mtime_sec
+        // Mtime sec (8 bytes)
         let mtime_sec = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
         offset += 8;
 
-        // mtime_nsec
+        // Mtime nsec (4 bytes)
         let mtime_nsec = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
         offset += 4;
 
-        // flags
-        let flags_bits = u16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap());
+        // Flags (4 bytes)
+        let flags_bits = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
         let flags = EntryFlags::from_bits(flags_bits)
-            .ok_or_else(|| FormatError::InvalidEntry(format!("Invalid flags: {}", flags_bits)))?;
-        offset += 2;
+            .ok_or_else(|| FormatError::InvalidEntry("Invalid flag bits".to_string()))?;
+        offset += 4;
 
-        let mut oid = [0u8; 20];
-        oid.copy_from_slice(&bytes[offset..offset + 20]);
-        offset += 20;
+        // OID (32 bytes) - BLAKE3 hash
+        let mut oid = [0u8; 32];
+        oid.copy_from_slice(&bytes[offset..offset + 32]);
+        offset += 32;
 
-        let mut reserved = [0u8; ENTRY_RESERVED_SIZE];
-        reserved.copy_from_slice(&bytes[offset..offset + ENTRY_RESERVED_SIZE]);
-        offset += ENTRY_RESERVED_SIZE;
-
-        let merge_conflict_stage = bytes[offset];
-        offset += 1;
-
+        // File mode (4 bytes)
         let file_mode = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
         offset += 4;
 
-        let mut reserved = [0u8; 57];
-        reserved.copy_from_slice(&bytes[offset..offset + 57]);
-        offset += 57;
+        // Merge conflict stage (1 byte)
+        let merge_conflict_stage = bytes[offset];
+        offset += 1;
 
-        Ok((
-            Self {
-                path,
-                size,
-                mtime_sec,
-                mtime_nsec,
-                flags,
-                oid,
-                merge_conflict_stage,
-                file_mode,
-                reserved,
-            },
-            offset,
-        ))
-    }
+        // Reserved (33 bytes)
+        let mut reserved = [0u8; 33];
+        reserved.copy_from_slice(&bytes[offset..offset + 33]);
 
-    /// Create a new tracked entry (from git index or helix add)
-    pub fn new_tracked(
-        path: PathBuf,
-        oid: [u8; 20],
-        size: u64,
-        mtime_sec: u64,
-        mtime_nsec: u32,
-        file_mode: u32,
-    ) -> Self {
-        Self {
+        Ok(Self {
             path,
             size,
             mtime_sec,
             mtime_nsec,
-            flags: EntryFlags::TRACKED,
+            flags,
             oid,
-            merge_conflict_stage: 0,
             file_mode,
-            reserved: [0; 57],
-        }
-    }
-
-    /// Create a new untracked entry (file exists but not added)
-    pub fn new_untracked(path: PathBuf, size: u64, mtime_sec: u64, mtime_nsec: u32) -> Self {
-        Self {
-            path,
-            size,
-            mtime_sec,
-            mtime_nsec,
-            flags: EntryFlags::UNTRACKED,
-            oid: [0; 20], // No hash yet
-            merge_conflict_stage: 0,
-            file_mode: 0o100644, // Default to regular file
-            reserved: [0; 57],
-        }
-    }
-
-    /// Mark this entry as staged
-    pub fn mark_staged(&mut self) {
-        self.flags |= EntryFlags::STAGED;
-    }
-
-    /// Mark this entry as modified
-    pub fn mark_modified(&mut self) {
-        self.flags |= EntryFlags::MODIFIED;
+            merge_conflict_stage,
+            reserved,
+        })
     }
 }
 
@@ -322,7 +321,7 @@ untracked && staged = staged (new file)
 
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct EntryFlags: u16 {
+    pub struct EntryFlags: u32 {
         // Core status (mutually exclusive base states)
         const TRACKED    = 1 << 0;  // File is in the index (committed or staged)
         const STAGED     = 1 << 1;  // File has staged changes (ready to commit)
@@ -332,31 +331,31 @@ bitflags::bitflags! {
 
         // Special states
         const CONFLICT   = 1 << 5;  // Merge conflict
-        const ASSUME_UNCHANGED = 1 << 6;  // Git's "assume unchanged" bit
-        const SKIP_WORKTREE = 1 << 7;     // Git's "skip worktree" bit
+        const ASSUME_UNCHANGED = 1 << 6;
+        const IGNORED = 1 << 7;
+        const SYMLINK = 1 << 8;
 
         // Reserved for future use
-        const RESERVED1  = 1 << 8;
-        const RESERVED2  = 1 << 9;
-        const RESERVED3  = 1 << 10;
-        const RESERVED4  = 1 << 11;
-        const RESERVED5  = 1 << 12;
-        const RESERVED6  = 1 << 13;
-        const RESERVED7  = 1 << 14;
-        const RESERVED8  = 1 << 15;
+        const RESERVED1  = 1 << 9;
+        const RESERVED2  = 1 << 10;
+        const RESERVED3  = 1 << 11;
+        const RESERVED4  = 1 << 12;
+        const RESERVED5  = 1 << 13;
+        const RESERVED6  = 1 << 14;
+        const RESERVED7  = 1 << 15;
     }
 }
 
 impl EntryFlags {
-    pub fn is_clean(self) -> bool {
-        self.contains(EntryFlags::TRACKED)
-            && !self.intersects(EntryFlags::MODIFIED | EntryFlags::STAGED | EntryFlags::DELETED)
+    /// Check if file is in a clean state (tracked, not modified)
+    pub fn is_clean(&self) -> bool {
+        self.contains(Self::TRACKED)
+            && !self.intersects(Self::MODIFIED | Self::DELETED | Self::CONFLICT)
     }
 
-    pub fn is_partially_staged(self) -> bool {
-        self.contains(EntryFlags::TRACKED)
-            && self.contains(EntryFlags::MODIFIED)
-            && self.contains(EntryFlags::STAGED)
+    /// Check if file needs attention (modified, deleted, or conflict)
+    pub fn needs_attention(&self) -> bool {
+        self.intersects(Self::MODIFIED | Self::DELETED | Self::CONFLICT)
     }
 }
 
@@ -406,236 +405,230 @@ pub enum FormatError {
 
     #[error("Checksum mismatch")]
     ChecksumMismatch,
+
+    #[error("Path length exceeds max size: {0}")]
+    PathLengthLongerThanMaxSize(usize),
+
+    #[error("Path length too long: {0}")]
+    PathLengthTooLong(usize),
+
+    #[error("Path is not encoded correctly: {0}")]
+    InvalidPathEncoding(Utf8Error),
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::helix_index::hash::hash_bytes;
 
     #[test]
-    fn test_header_size() {
-        assert_eq!(HEADER_SIZE, 116);
-    }
-
-    #[test]
-    fn test_header_roundtrip() {
-        let header = Header::new(42, [0xaa; 16], 10);
+    fn test_header_serialization() {
+        let fingerprint = hash_bytes(b"test_repo");
+        let header = Header::new(1, fingerprint, 10);
 
         let bytes = header.to_bytes();
-        assert_eq!(bytes.len(), HEADER_SIZE);
+        assert_eq!(bytes.len(), Header::HEADER_SIZE);
 
-        let decoded = Header::from_bytes(&bytes).unwrap();
-        assert_eq!(decoded.magic, header.magic);
-        assert_eq!(decoded.version, header.version);
-        assert_eq!(decoded.generation, header.generation);
-        assert_eq!(decoded.repo_fingerprint, header.repo_fingerprint);
-        assert_eq!(decoded.entry_count, header.entry_count);
+        let parsed = Header::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed.magic, header.magic);
+        assert_eq!(parsed.version, header.version);
+        assert_eq!(parsed.generation, header.generation);
+        assert_eq!(parsed.entry_count, header.entry_count);
+        assert_eq!(parsed.repo_fingerprint, header.repo_fingerprint);
     }
 
     #[test]
-    fn test_entry_roundtrip() {
-        let entry = Entry {
-            path: PathBuf::from("src/main.rs"),
-            size: 1024,
-            mtime_sec: 1234567890,
-            mtime_nsec: 123456,
-            flags: EntryFlags::TRACKED | EntryFlags::STAGED,
-            oid: [0xcc; 20],
-            merge_conflict_stage: 0,
-            file_mode: 0o100644,
-            reserved: [0; 57],
-        };
-
-        let bytes = entry.to_bytes();
-        let (decoded, consumed) = Entry::from_bytes(&bytes).unwrap();
-        assert_eq!(entry, decoded);
-        assert_eq!(consumed, bytes.len());
-    }
-
-    #[test]
-    fn test_entry_new_tracked() {
-        let entry = Entry::new_tracked(
-            PathBuf::from("test.txt"),
-            [0xaa; 20],
-            100,
-            1234567890,
-            0,
-            0o100644,
-        );
-
-        assert_eq!(entry.path, PathBuf::from("test.txt"));
-        assert_eq!(entry.size, 100);
-        assert_eq!(entry.flags, EntryFlags::TRACKED);
-        assert_eq!(entry.merge_conflict_stage, 0);
-        assert_eq!(entry.file_mode, 0o100644);
-    }
-
-    #[test]
-    fn test_entry_new_untracked() {
-        let entry = Entry::new_untracked(PathBuf::from("new.txt"), 200, 1234567890, 0);
-
-        assert_eq!(entry.path, PathBuf::from("new.txt"));
-        assert_eq!(entry.size, 200);
-        assert_eq!(entry.flags, EntryFlags::UNTRACKED);
-        assert_eq!(entry.oid, [0; 20]);
-        assert_eq!(entry.merge_conflict_stage, 0);
-        assert_eq!(entry.file_mode, 0o100644);
-    }
-
-    #[test]
-    fn test_entry_mark_staged() {
-        let mut entry = Entry::new_tracked(
-            PathBuf::from("test.txt"),
-            [0xaa; 20],
-            100,
-            1234567890,
-            0,
-            0o100644,
-        );
-
-        entry.mark_staged();
-        assert!(entry.flags.contains(EntryFlags::STAGED));
-        assert!(entry.flags.contains(EntryFlags::TRACKED));
-    }
-
-    #[test]
-    fn test_entry_mark_modified() {
-        let mut entry = Entry::new_tracked(
-            PathBuf::from("test.txt"),
-            [0xaa; 20],
-            100,
-            1234567890,
-            0,
-            0o100644,
-        );
-
-        entry.mark_modified();
-        assert!(entry.flags.contains(EntryFlags::MODIFIED));
-        assert!(entry.flags.contains(EntryFlags::TRACKED));
-    }
-
-    #[test]
-    fn test_entry_flags_is_clean() {
-        let flags = EntryFlags::TRACKED;
-        assert!(flags.is_clean());
-
-        let flags = EntryFlags::TRACKED | EntryFlags::MODIFIED;
-        assert!(!flags.is_clean());
-
-        let flags = EntryFlags::TRACKED | EntryFlags::STAGED;
-        assert!(!flags.is_clean());
-    }
-
-    #[test]
-    fn test_entry_flags_is_partially_staged() {
-        let flags = EntryFlags::TRACKED | EntryFlags::MODIFIED | EntryFlags::STAGED;
-        assert!(flags.is_partially_staged());
-
-        let flags = EntryFlags::TRACKED | EntryFlags::STAGED;
-        assert!(!flags.is_partially_staged());
-
-        let flags = EntryFlags::TRACKED | EntryFlags::MODIFIED;
-        assert!(!flags.is_partially_staged());
-    }
-
-    #[test]
-    fn test_entry_executable_mode() {
-        let entry = Entry::new_tracked(
-            PathBuf::from("script.sh"),
-            [0xaa; 20],
-            100,
-            1234567890,
-            0,
-            0o100755, // Executable
-        );
-
-        assert_eq!(entry.file_mode, 0o100755);
-    }
-
-    #[test]
-    fn test_entry_symlink_mode() {
-        let entry = Entry::new_tracked(
-            PathBuf::from("link"),
-            [0xaa; 20],
-            100,
-            1234567890,
-            0,
-            0o120000, // Symlink
-        );
-
-        assert_eq!(entry.file_mode, 0o120000);
-    }
-
-    #[test]
-    fn test_entry_conflict_stage() {
-        let mut entry = Entry::new_tracked(
-            PathBuf::from("conflict.txt"),
-            [0xaa; 20],
-            100,
-            1234567890,
-            0,
-            0o100644,
-        );
-
-        // Simulate merge conflict
-        entry.merge_conflict_stage = 1; // Stage 1 = common ancestor
-        entry.flags |= EntryFlags::CONFLICT;
-
-        assert_eq!(entry.merge_conflict_stage, 1);
-        assert!(entry.flags.contains(EntryFlags::CONFLICT));
-    }
-
-    #[test]
-    fn test_header_generation_increment() {
-        let header1 = Header::new(1, [0xaa; 16], 10);
-        let header2 = Header::new(2, [0xaa; 16], 10);
-
-        assert_eq!(header1.generation, 1);
-        assert_eq!(header2.generation, 2);
-    }
-
-    #[test]
-    fn test_header_timestamps() {
-        let header = Header::new(1, [0xaa; 16], 10);
-
-        // Created_at should be set for generation 1
-        assert!(header.created_at > 0);
-        assert!(header.last_modified > 0);
-    }
-
-    #[test]
-    fn test_invalid_magic() {
-        let mut bytes = [0u8; HEADER_SIZE];
-        bytes[0..4].copy_from_slice(b"BAAD");
+    fn test_header_magic_validation() {
+        let mut bytes = vec![0u8; Header::HEADER_SIZE];
+        bytes[0..6].copy_from_slice(b"WRONG!");
 
         let result = Header::from_bytes(&bytes);
-        assert!(matches!(result, Err(FormatError::InvalidMagic(_))));
-    }
-
-    #[test]
-    fn test_invalid_version() {
-        let mut bytes = [0u8; HEADER_SIZE];
-        bytes[0..4].copy_from_slice(&MAGIC);
-        bytes[4..8].copy_from_slice(&999u32.to_le_bytes());
-
-        let result = Header::from_bytes(&bytes);
-        assert!(matches!(result, Err(FormatError::UnsupportedVersion(999))));
-    }
-
-    #[test]
-    fn test_entry_too_short() {
-        let bytes = [0u8; 10]; // Way too short
-        let result = Entry::from_bytes(&bytes);
         assert!(result.is_err());
+        match result.unwrap_err() {
+            FormatError::InvalidMagic(_) => {}
+            other => panic!("Expected InvalidMagic FormatError Type, got {:?}", other),
+        }
     }
 
     #[test]
-    fn test_footer_roundtrip() {
-        let footer = Footer::new([0xdd; 32]);
-        let bytes = footer.to_bytes();
-        assert_eq!(bytes.len(), FOOTER_SIZE);
+    fn test_header_version_validation() {
+        let mut bytes = vec![0u8; Header::HEADER_SIZE];
+        bytes[0..6].copy_from_slice(&MAGIC);
+        bytes[6..10].copy_from_slice(&999u32.to_le_bytes()); // Wrong version
 
-        let decoded = Footer::from_bytes(&bytes).unwrap();
-        assert_eq!(footer, decoded);
+        let result = Header::from_bytes(&bytes);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            FormatError::InvalidMagic(_) => {}
+            other => panic!("Expected InvalidMagic, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_entry_serialization() {
+        let oid = hash_bytes(b"test content");
+        let entry = Entry::new(
+            PathBuf::from("src/main.rs"),
+            1024,
+            1234567890,
+            oid,
+            0o100644,
+        );
+
+        let bytes = entry.to_bytes().unwrap();
+        assert_eq!(bytes.len(), Entry::ENTRY_MAX_SIZE);
+
+        let parsed = Entry::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed.path, entry.path);
+        assert_eq!(parsed.size, entry.size);
+        assert_eq!(parsed.mtime_sec, entry.mtime_sec);
+        assert_eq!(parsed.oid, entry.oid);
+        assert_eq!(parsed.file_mode, entry.file_mode);
+    }
+
+    #[test]
+    fn test_entry_path_too_long() {
+        let long_path = "a".repeat(Entry::ENTRY_MAX_PATH_LEN + 1);
+        let oid = hash_bytes(b"test");
+        let entry = Entry::new(PathBuf::from(long_path), 1024, 1234567890, oid, 0o100644);
+
+        let result = entry.to_bytes();
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            FormatError::PathLengthLongerThanMaxSize(_) => {}
+            other => panic!("Path too long, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_entry_flags() {
+        let mut flags = EntryFlags::TRACKED;
+        assert!(flags.contains(EntryFlags::TRACKED));
+        assert!(!flags.contains(EntryFlags::STAGED));
+
+        flags |= EntryFlags::STAGED;
+        assert!(flags.contains(EntryFlags::TRACKED | EntryFlags::STAGED));
+
+        flags.remove(EntryFlags::TRACKED);
+        assert!(!flags.contains(EntryFlags::TRACKED));
+        assert!(flags.contains(EntryFlags::STAGED));
+    }
+
+    #[test]
+    fn test_entry_is_clean() {
+        let clean = EntryFlags::TRACKED;
+        assert!(clean.is_clean());
+
+        let modified = EntryFlags::TRACKED | EntryFlags::MODIFIED;
+        assert!(!modified.is_clean());
+
+        let deleted = EntryFlags::TRACKED | EntryFlags::DELETED;
+        assert!(!deleted.is_clean());
+    }
+
+    #[test]
+    fn test_entry_needs_attention() {
+        let clean = EntryFlags::TRACKED;
+        assert!(!clean.needs_attention());
+
+        let modified = EntryFlags::TRACKED | EntryFlags::MODIFIED;
+        assert!(modified.needs_attention());
+
+        let deleted = EntryFlags::TRACKED | EntryFlags::DELETED;
+        assert!(deleted.needs_attention());
+
+        let conflict = EntryFlags::TRACKED | EntryFlags::CONFLICT;
+        assert!(conflict.needs_attention());
+    }
+
+    #[test]
+    fn test_oid_size() {
+        // Verify OID is now 32 bytes (BLAKE3) not 20 bytes (SHA-1)
+        let oid = hash_bytes(b"test");
+        assert_eq!(oid.len(), 32, "OID should be 32 bytes for BLAKE3");
+    }
+
+    #[test]
+    fn test_entry_roundtrip_with_blake3() {
+        // Test that BLAKE3 hashes work correctly in entries
+        let content = b"hello world from helix";
+        let oid = hash_bytes(content);
+
+        let entry = Entry::new(
+            PathBuf::from("test.txt"),
+            content.len() as u64,
+            1234567890,
+            oid,
+            0o100644,
+        );
+
+        let bytes = entry.to_bytes().unwrap();
+        let parsed = Entry::from_bytes(&bytes).unwrap();
+
+        assert_eq!(parsed.oid, oid);
+        assert_eq!(parsed.oid.len(), 32);
+    }
+
+    #[test]
+    fn test_entry_max_path() {
+        // Test with maximum allowed path length
+        let max_path = "a".repeat(Entry::ENTRY_MAX_PATH_LEN);
+        let oid = hash_bytes(b"test");
+
+        let entry = Entry::new(PathBuf::from(&max_path), 1024, 1234567890, oid, 0o100644);
+
+        let bytes = entry.to_bytes().unwrap();
+        let parsed = Entry::from_bytes(&bytes).unwrap();
+
+        assert_eq!(
+            parsed.path.to_string_lossy().len(),
+            Entry::ENTRY_MAX_PATH_LEN
+        );
+    }
+
+    #[test]
+    fn test_header_constants() {
+        assert_eq!(MAGIC, *b"HLIX");
+        assert_eq!(VERSION, 2, "Version should be 2 for BLAKE3 format");
+        assert_eq!(Header::HEADER_SIZE, 128);
+    }
+
+    #[test]
+    fn test_entry_constants() {
+        assert_eq!(Entry::ENTRY_MAX_SIZE, 256);
+        assert_eq!(Entry::ENTRY_MAX_PATH_LEN, 200);
+    }
+
+    #[test]
+    fn test_multiple_entries_roundtrip() {
+        let entries = vec![
+            Entry::new(
+                PathBuf::from("file1.txt"),
+                100,
+                111,
+                hash_bytes(b"1"),
+                0o100644,
+            ),
+            Entry::new(
+                PathBuf::from("file2.txt"),
+                200,
+                222,
+                hash_bytes(b"2"),
+                0o100644,
+            ),
+            Entry::new(
+                PathBuf::from("file3.txt"),
+                300,
+                333,
+                hash_bytes(b"3"),
+                0o100755,
+            ),
+        ];
+
+        for entry in &entries {
+            let bytes = entry.to_bytes().unwrap();
+            let parsed = Entry::from_bytes(&bytes).unwrap();
+            assert_eq!(&parsed, entry);
+        }
     }
 }

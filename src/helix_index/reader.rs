@@ -1,7 +1,7 @@
 /// Defines functions and methods to read from the helix.index canonical file and the cached, memory-mapped representation of the helix.index file
 use crate::helix_index::EntryFlags;
 
-use super::format::{Entry, Footer, FormatError, Header, FOOTER_SIZE, HEADER_SIZE};
+use super::format::{Entry, Footer, FormatError, Header, FOOTER_SIZE};
 use anyhow::{Context, Result};
 use memmap2::Mmap;
 use rayon::prelude::*;
@@ -52,16 +52,17 @@ impl Reader {
     }
 
     fn parse(&self, data: &[u8]) -> Result<HelixIndex> {
-        if data.len() < HEADER_SIZE + FOOTER_SIZE {
+        if data.len() < Header::HEADER_SIZE + FOOTER_SIZE {
             anyhow::bail!("Index file too small");
         }
 
         // Parse header
-        let header = Header::from_bytes(&data[0..HEADER_SIZE]).context("Failed to parse header")?;
+        let header =
+            Header::from_bytes(&data[0..Header::HEADER_SIZE]).context("Failed to parse header")?;
 
         // Parse entries (sequential - entries are variable length)
         let mut entries = Vec::with_capacity(header.entry_count as usize);
-        let mut offset = HEADER_SIZE;
+        let mut offset = Header::HEADER_SIZE;
         let entries_end = data.len() - FOOTER_SIZE;
 
         for i in 0..header.entry_count {
@@ -69,11 +70,11 @@ impl Reader {
                 anyhow::bail!("Unexpected end of entries at entry {}", i);
             }
 
-            let (entry, consumed) = Entry::from_bytes(&data[offset..])
+            let (entry) = Entry::from_bytes(&data[offset..])
                 .with_context(|| format!("Failed to parse entry {}", i))?;
 
             entries.push(entry);
-            offset += consumed;
+            offset += Entry::ENTRY_MAX_SIZE;
         }
 
         // Parse footer
@@ -164,7 +165,7 @@ impl Reader {
         let index_path = self.repo_path.join(".helix/helix.idx");
         let mut file = File::open(&index_path).context("Failed to open helix.idx")?;
 
-        let mut header_bytes = [0u8; HEADER_SIZE];
+        let mut header_bytes = [0u8; Header::HEADER_SIZE];
         file.read_exact(&mut header_bytes)
             .context("Failed to read header")?;
 
@@ -335,7 +336,7 @@ impl HelixIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::helix_index::writer::Writer;
+    use crate::helix_index::{hash, writer::Writer};
     use std::fs;
     use tempfile::TempDir;
 
@@ -346,7 +347,7 @@ mod tests {
         fs::create_dir_all(repo_path.join(".helix"))?;
 
         let writer = Writer::new_cached(repo_path);
-        let header = Header::new(1, [0xaa; 16], 1000);
+        let header = Header::new(1, [0xaa; 32], 1000);
 
         // Create 1000 entries with different flags
         let entries: Vec<_> = (0..1000)
@@ -362,10 +363,10 @@ mod tests {
                 } else {
                     EntryFlags::UNTRACKED
                 },
-                oid: [i as u8; 20],
+                oid: hash::ZERO_HASH,
                 merge_conflict_stage: 0,
                 file_mode: 0o100644,
-                reserved: [0; 57],
+                reserved: [0; 33],
             })
             .collect();
 
@@ -394,7 +395,7 @@ mod tests {
         fs::create_dir_all(repo_path.join(".helix"))?;
 
         let writer = Writer::new_cached(repo_path);
-        let header = Header::new(1, [0xaa; 16], 100);
+        let header = Header::new(1, [0xaa; 32], 100);
 
         let entries: Vec<_> = (0..100)
             .map(|i| Entry {
@@ -403,10 +404,10 @@ mod tests {
                 mtime_sec: 1000,
                 mtime_nsec: 0,
                 flags: EntryFlags::TRACKED,
-                oid: [0; 20],
+                oid: hash::ZERO_HASH,
                 merge_conflict_stage: 0,
                 file_mode: 0o100644,
-                reserved: [0; 57],
+                reserved: [0; 33],
             })
             .collect();
 
@@ -429,17 +430,16 @@ mod tests {
         fs::create_dir_all(repo_path.join(".helix"))?;
 
         let writer = Writer::new_cached(repo_path);
-        let header = Header::new(1, [0xaa; 16], 10);
+        let header = Header::new(1, [0xaa; 32], 10);
 
         let entries: Vec<_> = (0..10)
             .map(|i| {
-                Entry::new_tracked(
+                Entry::new(
                     PathBuf::from(format!("file{}.txt", i)),
-                    [i as u8; 20],
-                    100,
+                    1024,
                     1000,
+                    hash::ZERO_HASH,
                     0,
-                    0o100644,
                 )
             })
             .collect();

@@ -129,7 +129,7 @@ impl Writer {
 
         // Stream entries directly - no pre-serialization!
         for entry in entries {
-            let entry_bytes = entry.to_bytes();
+            let entry_bytes = entry.to_bytes()?;
             writer.write_all(&entry_bytes)?;
             hasher.update(&entry_bytes);
         }
@@ -210,15 +210,21 @@ impl Writer {
         for chunk in entries.chunks(CHUNK_SIZE) {
             // Serialize chunk in parallel
             let serialized: Vec<Vec<u8>> = if chunk.len() > 10 {
-                chunk.par_iter().map(|e| e.to_bytes()).collect()
+                chunk
+                    .par_iter()
+                    .map(|e| e.to_bytes())
+                    .collect::<Result<Vec<_>, _>>()?
             } else {
-                chunk.iter().map(|e| e.to_bytes()).collect()
+                // `iter` → serial iterator
+                chunk
+                    .iter()
+                    .map(|e| e.to_bytes())
+                    .collect::<Result<Vec<_>, _>>()?
             };
 
             // Write and send to hasher
             for entry_bytes in serialized {
                 writer.write_all(&entry_bytes)?;
-                // Send copy to hasher (small overhead but enables parallelism)
                 tx.send(entry_bytes).ok();
             }
         }
@@ -425,7 +431,10 @@ impl IndexBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::helix_index::format::EntryFlags;
+    use crate::helix_index::{
+        format::EntryFlags,
+        hash::{self, hash_bytes},
+    };
     use tempfile::TempDir;
 
     #[test]
@@ -434,7 +443,7 @@ mod tests {
         let repo_path = temp_dir.path();
 
         let writer = Writer::new_canonical(repo_path);
-        let header = Header::new(1, [0; 16], 0);
+        let header = Header::new(1, [0; 32], 0);
         writer.write(&header, &[])?;
 
         assert!(repo_path.join(".helix").exists());
@@ -451,11 +460,11 @@ mod tests {
         let writer = Writer::new_canonical(repo_path);
 
         // Write version 1
-        let header1 = Header::new(1, [0x11; 16], 0);
+        let header1 = Header::new(1, [0x11; 32], 0);
         writer.write(&header1, &[])?;
 
         // Write version 2
-        let header2 = Header::new(2, [0x22; 16], 0);
+        let header2 = Header::new(2, [0x22; 32], 0);
         writer.write(&header2, &[])?;
 
         // Temp file should not exist
@@ -471,17 +480,10 @@ mod tests {
         let repo_path = temp_dir.path();
 
         let writer = Writer::new_canonical(repo_path);
-        let header = Header::new(1, [0xaa; 16], 0);
+        let header = Header::new(1, [0xaa; 32], 0);
         let mut builder = writer.builder(header);
 
-        let entry = Entry::new_tracked(
-            PathBuf::from("test.txt"),
-            [0xbb; 20],
-            100,
-            1234567890,
-            0,
-            0o100644,
-        );
+        let entry = Entry::new(PathBuf::from("test.txt"), 1024, 100, hash::ZERO_HASH, 0);
 
         builder.add_entry(entry);
         assert_eq!(builder.entry_count(), 1);
@@ -495,24 +497,22 @@ mod tests {
         let repo_path = temp_dir.path();
 
         let writer = Writer::new_canonical(repo_path);
-        let header = Header::new(1, [0xaa; 16], 0);
+        let header = Header::new(1, [0xaa; 32], 0);
         let mut builder = writer.builder(header);
 
-        let entry1 = Entry::new_tracked(
+        let entry1 = Entry::new(
             PathBuf::from("test.txt"),
-            [0xbb; 20],
+            1024,
             100,
-            1234567890,
-            0,
+            hash_bytes(b"b"),
             0o100644,
         );
 
-        let entry2 = Entry::new_tracked(
+        let entry2 = Entry::new(
             PathBuf::from("test.txt"),
-            [0xcc; 20],
+            1024,
             200,
-            1234567891,
-            0,
+            hash_bytes(b"b"),
             0o100644,
         );
 
@@ -520,7 +520,7 @@ mod tests {
         builder.add_entry(entry2);
 
         assert_eq!(builder.entry_count(), 1);
-        assert_eq!(builder.entries()[0].oid, [0xcc; 20]);
+        assert_eq!(builder.entries()[0].oid, hash_bytes(b"b"));
         assert_eq!(builder.entries()[0].size, 200);
 
         Ok(())
@@ -532,15 +532,14 @@ mod tests {
         let repo_path = temp_dir.path();
 
         let writer = Writer::new_canonical(repo_path);
-        let header = Header::new(1, [0xaa; 16], 0);
+        let header = Header::new(1, [0xaa; 32], 0);
         let mut builder = writer.builder(header);
 
-        let entry = Entry::new_tracked(
+        let entry = Entry::new(
             PathBuf::from("test.txt"),
-            [0xbb; 20],
-            100,
-            1234567890,
-            0,
+            1024,
+            200,
+            hash_bytes(b"c"),
             0o100644,
         );
 
@@ -559,24 +558,22 @@ mod tests {
         let repo_path = temp_dir.path();
 
         let writer = Writer::new_canonical(repo_path);
-        let header = Header::new(1, [0xaa; 16], 0);
+        let header = Header::new(1, [0xaa; 32], 0);
         let mut builder = writer.builder(header);
 
         let entries = vec![
-            Entry::new_tracked(
-                PathBuf::from("a.txt"),
-                [0xbb; 20],
+            Entry::new(
+                PathBuf::from("b.txt"),
+                1024,
                 100,
-                1234567890,
-                0,
+                hash_bytes(b"e"),
                 0o100644,
             ),
-            Entry::new_tracked(
-                PathBuf::from("b.txt"),
-                [0xcc; 20],
+            Entry::new(
+                PathBuf::from("a.txt"),
+                1024,
                 200,
-                1234567891,
-                0,
+                hash_bytes(b"c"),
                 0o100644,
             ),
         ];
@@ -595,24 +592,22 @@ mod tests {
         let repo_path = temp_dir.path();
 
         let writer = Writer::new_canonical(repo_path);
-        let header = Header::new(1, [0xaa; 16], 0);
+        let header = Header::new(1, [0xaa; 32], 0);
         let mut builder = writer.builder(header);
 
         // Add in reverse order
-        builder.add_entry(Entry::new_tracked(
+        builder.add_entry(Entry::new(
             PathBuf::from("z.txt"),
-            [0xbb; 20],
+            1024,
             100,
-            1234567890,
-            0,
+            hash_bytes(b"b"),
             0o100644,
         ));
-        builder.add_entry(Entry::new_tracked(
+        builder.add_entry(Entry::new(
             PathBuf::from("a.txt"),
-            [0xcc; 20],
+            1024,
             200,
-            1234567891,
-            0,
+            hash_bytes(b"c"),
             0o100644,
         ));
 
@@ -630,17 +625,16 @@ mod tests {
         let repo_path = temp_dir.path();
 
         let writer = Writer::new_canonical(repo_path);
-        let header = Header::new(1, [0xaa; 16], 2000);
+        let header = Header::new(1, [0xaa; 32], 2000);
 
         // Create 2000 entries to trigger parallel path
         let entries: Vec<_> = (0..2000)
             .map(|i| {
-                Entry::new_tracked(
+                Entry::new(
                     PathBuf::from(format!("file{}.txt", i)),
-                    [i as u8; 20],
+                    i as u64,
                     100,
-                    1234567890,
-                    0,
+                    hash_bytes(b"g"),
                     0o100644,
                 )
             })
@@ -658,32 +652,23 @@ mod tests {
         let repo_path = temp_dir.path();
 
         let writer = Writer::new_canonical(repo_path);
-        let header = Header::new(1, [0xaa; 16], 0);
+        let header = Header::new(1, [0xaa; 32], 0);
         let mut builder = writer.builder(header);
 
         let entries = vec![
-            Entry::new_tracked(
+            Entry::new(
                 PathBuf::from("a.txt"),
-                [0xbb; 20],
+                1024,
                 100,
-                1234567890,
-                0,
+                hash_bytes(b"f"),
                 0o100644,
             ),
-            Entry::new_tracked(
-                PathBuf::from("b.rs"),
-                [0xcc; 20],
-                200,
-                1234567891,
-                0,
-                0o100644,
-            ),
-            Entry::new_tracked(
+            Entry::new(PathBuf::from("b.rs"), 1024, 200, hash_bytes(b"f"), 0o100644),
+            Entry::new(
                 PathBuf::from("c.txt"),
-                [0xdd; 20],
+                1024,
                 300,
-                1234567892,
-                0,
+                hash_bytes(b"f"),
                 0o100644,
             ),
         ];
@@ -708,28 +693,22 @@ mod tests {
         let repo_path = temp_dir.path();
 
         let writer = Writer::new_canonical(repo_path);
-        let header = Header::new(1, [0xaa; 16], 0);
+        let header = Header::new(1, [0xaa; 32], 0);
         let mut builder = writer.builder(header);
 
         let entries: Vec<_> = (0..1500)
             .map(|i| {
-                Entry::new_tracked(
+                Entry::new(
                     PathBuf::from(format!("file{}.txt", i)),
-                    [0xbb; 20],
+                    1024,
                     100,
-                    1234567890,
-                    0,
+                    hash_bytes(b"f"),
                     0o100644,
                 )
             })
             .collect();
 
         builder.add_entries(entries);
-
-        // Mark all as staged in parallel
-        builder.update_entries_parallel(|e| {
-            e.mark_staged();
-        });
 
         assert!(builder
             .entries()
@@ -745,24 +724,22 @@ mod tests {
         let repo_path = temp_dir.path();
 
         let writer = Writer::new_canonical(repo_path);
-        let header = Header::new(1, [0xaa; 16], 2);
+        let header = Header::new(1, [0xaa; 32], 2);
         let mut builder = writer.builder(header);
 
         // Manually add duplicates (bypassing add_entry which prevents this)
-        builder.entries_mut().push(Entry::new_tracked(
+        builder.entries_mut().push(Entry::new(
             PathBuf::from("test.txt"),
-            [0xbb; 20],
+            1024,
             100,
-            1234567890,
-            0,
+            hash_bytes(b"q"),
             0o100644,
         ));
-        builder.entries_mut().push(Entry::new_tracked(
+        builder.entries_mut().push(Entry::new(
             PathBuf::from("test.txt"),
-            [0xcc; 20],
+            1024,
             200,
-            1234567891,
-            0,
+            hash_bytes(b"q"),
             0o100644,
         ));
 
@@ -779,25 +756,23 @@ mod tests {
         let repo_path = temp_dir.path();
 
         let writer = Writer::new_canonical(repo_path);
-        let header = Header::new(1, [0xaa; 16], 5); // Header says 5
+        let header = Header::new(1, [0xaa; 32], 5); // Header says 5
         let mut builder = writer.builder(header);
 
         // But only add 2 entries
-        builder.add_entry(Entry::new_tracked(
+        builder.add_entry(Entry::new(
             PathBuf::from("a.txt"),
-            [0xbb; 20],
-            100,
-            1234567890,
-            0,
-            0o100644,
-        ));
-        builder.add_entry(Entry::new_tracked(
-            PathBuf::from("b.txt"),
-            [0xcc; 20],
+            1024,
             200,
-            1234567891,
+            hash::ZERO_HASH,
             0,
-            0o100644,
+        ));
+        builder.add_entry(Entry::new(
+            PathBuf::from("b.txt"),
+            1024,
+            200,
+            hash::ZERO_HASH,
+            0,
         ));
 
         let result = builder.validate();
@@ -822,18 +797,17 @@ mod tests {
         for (name, count) in test_cases {
             let entries: Vec<_> = (0..count)
                 .map(|i| {
-                    Entry::new_tracked(
+                    Entry::new(
                         PathBuf::from(format!("file{:06}.txt", i)),
-                        [(i % 256) as u8; 20],
+                        i as u64,
                         100,
-                        1234567890,
-                        0,
+                        hash_bytes(b"1"),
                         0o100644,
                     )
                 })
                 .collect();
 
-            let header = Header::new(1, [0xaa; 16], count as u32);
+            let header = Header::new(1, [0xaa; 32], count as u32);
 
             let start = Instant::now();
             writer.write(&header, &entries)?;

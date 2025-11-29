@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::helix_index::{fingerprint::generate_repo_fingerprint, Reader};
+use crate::helix_index::{hash, Reader};
 use anyhow::Result;
 
 /// Verification result for helix.idx integrity
@@ -47,7 +47,7 @@ impl Verifier {
         };
 
         // Verify repo fingerprint
-        let current_fingerprint = generate_repo_fingerprint(&self.repo_path)?;
+        let current_fingerprint = hash::hash_file(&self.repo_path)?;
         if index_data.header.repo_fingerprint != current_fingerprint {
             return Ok(VerifyResult::WrongRepo);
         }
@@ -119,14 +119,13 @@ mod tests {
 
         // Create valid index
         let writer = Writer::new_canonical(temp_dir.path());
-        let header = Header::new(1, [0xaa; 16], 0);
-        let entries = vec![Entry::new_tracked(
+        let header = Header::new(1, [0xaa; 32], 0);
+        let entries = vec![Entry::new(
             PathBuf::from("test.txt"),
-            [0; 20],
+            1024,
             100,
-            1000,
+            hash::ZERO_HASH,
             0,
-            0o100644,
         )];
 
         writer.write(&header, &entries)?;
@@ -148,14 +147,13 @@ mod tests {
 
         // Create valid index
         let writer = Writer::new_canonical(temp_dir.path());
-        let header = Header::new(1, [0xaa; 16], 0);
-        let entries = vec![Entry::new_tracked(
+        let header = Header::new(1, [0xaa; 32], 0);
+        let entries = vec![Entry::new(
             PathBuf::from("test.txt"),
-            [0; 20],
+            1024,
             100,
-            1000,
+            hash::ZERO_HASH,
             0,
-            0o100644,
         )];
 
         writer.write(&header, &entries)?;
@@ -193,7 +191,7 @@ mod tests {
 
         // Create index for repo1
         let writer = Writer::new_canonical(temp_dir1.path());
-        let header = Header::new(1, [0xaa; 16], 0);
+        let header = Header::new(1, [0xaa; 32], 0);
         let entries = vec![];
         writer.write(&header, &entries)?;
 
@@ -223,7 +221,7 @@ mod tests {
         // Create index
         fs::create_dir_all(temp_dir.path().join(".helix"))?;
         let writer = Writer::new_canonical(temp_dir.path());
-        let header = Header::new(1, [0xaa; 16], 0);
+        let header = Header::new(1, [0xaa; 32], 0);
         writer.write(&header, &[])?;
 
         assert!(verifier.exists());
@@ -238,7 +236,7 @@ mod tests {
         fs::create_dir_all(temp_dir.path().join(".helix"))?;
 
         let writer = Writer::new_canonical(temp_dir.path());
-        let header = Header::new(42, [0xaa; 16], 0);
+        let header = Header::new(42, [0xaa; 32], 0);
         writer.write(&header, &[])?;
 
         let verifier = Verifier::new(temp_dir.path());

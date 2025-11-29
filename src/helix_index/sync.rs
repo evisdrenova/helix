@@ -26,11 +26,11 @@ It compares **index vs HEAD** to set TRACKED and STAGED flags.
 MODIFIED / DELETED / UNTRACKED are set by FSMonitor / working-tree operations.
 */
 
-use super::fingerprint::generate_repo_fingerprint;
 use super::format::{Entry, EntryFlags, Header};
 use super::reader::Reader;
 use super::writer::Writer;
 
+use crate::helix_index::hash;
 use crate::index::GitIndex;
 
 use anyhow::{Context, Result};
@@ -72,7 +72,7 @@ impl SyncEngine {
 
         // Handle brand-new repo with no .git/index yet
         if !git_index_path.exists() {
-            let repo_fingerprint = generate_repo_fingerprint(&self.repo_path)?;
+            let repo_fingerprint = hash::hash_file(&self.repo_path)?;
             let header = Header::new(current_generation + 1, repo_fingerprint, 0);
 
             let writer = Writer::new_canonical(&self.repo_path); // Durable write with fsync
@@ -84,7 +84,7 @@ impl SyncEngine {
         let git_index = GitIndex::open(&self.repo_path)?;
         let entries = self.build_helix_index_entries(&git_index)?;
 
-        let repo_fingerprint = generate_repo_fingerprint(&self.repo_path)?;
+        let repo_fingerprint = hash::hash_file(&self.repo_path)?;
         let header = Header::new(
             current_generation + 1,
             repo_fingerprint,
@@ -133,7 +133,7 @@ impl SyncEngine {
         let path = PathBuf::from(&index_entry.path);
 
         let mut flags = EntryFlags::TRACKED;
-        let index_oid = index_entry.oid.as_bytes();
+        let index_oid = hash::hash_bytes(index_entry.oid.as_bytes());
 
         // Check if staged (index != HEAD)
         let is_staged = head_tree
@@ -153,8 +153,8 @@ impl SyncEngine {
             flags,
             merge_conflict_stage: 0,
             file_mode: 0o100644,
-            oid: *index_oid,
-            reserved: [0; 57],
+            oid: index_oid,
+            reserved: [0; 33],
         })
     }
 

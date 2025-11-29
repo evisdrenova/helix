@@ -1,6 +1,5 @@
 pub mod api;
 pub mod blob_storage;
-pub mod fingerprint;
 pub mod format;
 pub mod hash;
 pub mod reader;
