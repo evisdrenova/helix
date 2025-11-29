@@ -4,6 +4,7 @@ pub mod format;
 pub mod hash;
 pub mod reader;
 pub mod sync;
+pub mod tree;
 pub mod verify;
 pub mod writer;
 
