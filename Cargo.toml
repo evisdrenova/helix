@@ -46,6 +46,7 @@ tokio = { version = "1.0", features = ["full"] }
 toml = "0.8.23"
 unicode-width = "0.2.0"
 walkdir = "2.5.0"
+zstd = "0.13.3"
 
 
 [[bench]]
