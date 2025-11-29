@@ -1,5 +1,7 @@
-use crate::helix_index::api::HelixIndex;
+/// will be updated to not use git at all
+use crate::helix_index::api::HelixIndexData;
 use crate::helix_index::sync::SyncEngine;
+use crate::helix_index::Reader;
 use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::fs;
@@ -24,51 +26,6 @@ impl Default for AddOptions {
     }
 }
 
-// pub fn add(repo_path: &Path, paths: &[PathBuf], options: AddOptions) -> Result<()> {
-//     let start = Instant::now();
-
-//     if paths.is_empty() {
-//         anyhow::bail!("No paths specified. Use 'helix add <files>' or 'helix add .'");
-//     }
-
-//     let helix_index = HelixIndex::load_or_rebuild(repo_path)?;
-
-//     let files_to_add = resolve_files_to_add(repo_path, &helix_index, &paths, &options)?;
-
-//     if files_to_add.is_empty() {
-//         if options.verbose {
-//             println!("No files to add (everything up-to-date)");
-//         }
-//         return Ok(());
-//     }
-
-//     if options.verbose {
-//         println!("Adding {} files...", files_to_add.len());
-//         for file in &files_to_add {
-//             println!("  add '{}'", file.display());
-//         }
-//     }
-
-//     if options.dry_run {
-//         for path in &files_to_add {
-//             println!("Would add: {}", path.display());
-//         }
-//         return Ok(());
-//     }
-
-//     add_via_git(repo_path, &files_to_add, &options)?;
-
-//     update_helix_index(repo_path, &files_to_add)?;
-
-//     let elapsed = start.elapsed();
-
-//     if options.verbose {
-//         println!("Added {} files in {:?}", files_to_add.len(), elapsed);
-//     }
-
-//     Ok(())
-// }
-
 /// Add files to staging area
 pub fn add(repo_path: &Path, paths: &[PathBuf], options: AddOptions) -> Result<()> {
     let start = Instant::now();
@@ -77,9 +34,10 @@ pub fn add(repo_path: &Path, paths: &[PathBuf], options: AddOptions) -> Result<(
         anyhow::bail!("No paths specified. Use 'helix add <files>' or 'helix add .'");
     }
 
-    // Use our own index + filesystem to decide what needs adding
-    let helix_index = HelixIndex::load_or_rebuild(repo_path)?;
+    // Load helix index
+    let helix_index = HelixIndexData::load_or_rebuild(repo_path)?;
 
+    // Determine which files need adding
     let files_to_add = resolve_files_to_add(repo_path, &helix_index, paths, &options)?;
 
     if files_to_add.is_empty() {
@@ -89,7 +47,7 @@ pub fn add(repo_path: &Path, paths: &[PathBuf], options: AddOptions) -> Result<(
             println!("No files to add");
         }
         return Ok(());
-    };
+    }
 
     if options.verbose {
         println!("Adding {} files...", files_to_add.len());
@@ -105,10 +63,10 @@ pub fn add(repo_path: &Path, paths: &[PathBuf], options: AddOptions) -> Result<(
         return Ok(());
     }
 
-    // Use git only as the mechanism to update the real index
-    add_files(repo_path, &files_to_add, &options)?;
+    // Add files via git (updates .git/index and Git objects)
+    add_files_via_git(repo_path, &files_to_add, &options)?;
 
-    // Then sync helix.idx to match .git/index
+    // Update helix.idx to reflect the staging
     update_helix_index(repo_path, &files_to_add)?;
 
     let elapsed = start.elapsed();
@@ -121,22 +79,17 @@ pub fn add(repo_path: &Path, paths: &[PathBuf], options: AddOptions) -> Result<(
 
 fn resolve_files_to_add(
     repo_path: &Path,
-    helix_index: &HelixIndex,
+    helix_index: &HelixIndexData,
     paths: &[PathBuf],
     options: &AddOptions,
 ) -> Result<Vec<PathBuf>> {
-    let tracked_files: HashSet<PathBuf> = helix_index
-        .entries()
-        .into_iter()
-        .map(|entry| entry.path.clone())
-        .collect();
-
+    let tracked_files = helix_index.get_tracked();
     let staged_files = helix_index.get_staged();
 
-    let unstaged_files = helix_index.get_untracked();
-
-    println!("staged files: {:?}", staged_files);
-    println!("unstaged files: {:?}", unstaged_files);
+    if options.verbose {
+        println!("Tracked files: {}", tracked_files.len());
+        println!("Staged files: {}", staged_files.len());
+    }
 
     let candidate_files = expand_paths(repo_path, paths)?;
 
@@ -173,7 +126,7 @@ fn should_add_file(
     full_path: &Path,
     tracked_files: &HashSet<PathBuf>,
     staged_files: &HashSet<PathBuf>,
-    helix_index: &HelixIndex,
+    helix_index: &HelixIndexData,
     _options: &AddOptions,
 ) -> Result<bool> {
     // If file is untracked, always add it
@@ -187,7 +140,7 @@ fn should_add_file(
         // Check if it's been modified since staging
         let entry = helix_index
             .entries()
-            .into_iter()
+            .iter()
             .find(|e| e.path == relative_path)
             .ok_or_else(|| anyhow::anyhow!("Entry not found"))?;
 
@@ -195,9 +148,9 @@ fn should_add_file(
         let disk_mtime = metadata
             .modified()?
             .duration_since(std::time::UNIX_EPOCH)?
-            .as_nanos();
+            .as_secs();
 
-        if disk_mtime == entry.mtime_nsec as u128 {
+        if disk_mtime == entry.mtime_sec {
             // File hasn't changed since staging - skip
             return Ok(false);
         }
@@ -210,7 +163,7 @@ fn should_add_file(
     // Check if it's modified compared to index
     let entry = helix_index
         .entries()
-        .into_iter()
+        .iter()
         .find(|e| e.path == relative_path)
         .ok_or_else(|| anyhow::anyhow!("Entry not found"))?;
 
@@ -218,10 +171,10 @@ fn should_add_file(
     let disk_mtime = metadata
         .modified()?
         .duration_since(std::time::UNIX_EPOCH)?
-        .as_nanos();
+        .as_secs();
 
     // If mtime different, file is modified
-    if disk_mtime != entry.mtime_sec as u128 {
+    if disk_mtime != entry.mtime_sec {
         return Ok(true);
     }
 
@@ -272,8 +225,10 @@ fn collect_files_recursive(dir: &Path, repo_root: &Path) -> Result<Vec<PathBuf>>
         .follow_links(false)
         .into_iter()
         .filter_entry(|e| {
-            // Skip .git directory
-            !e.path().components().any(|c| c.as_os_str() == ".git")
+            // Skip .git and .helix directories
+            !e.path()
+                .components()
+                .any(|c| c.as_os_str() == ".git" || c.as_os_str() == ".helix")
         })
     {
         let entry = entry?;
@@ -289,10 +244,8 @@ fn collect_files_recursive(dir: &Path, repo_root: &Path) -> Result<Vec<PathBuf>>
     Ok(files)
 }
 
-/// Add files to staging
-/// TODO: at some point just replace this with our own implementation to avoid the process creation overhead from the git CLI
-fn add_files(repo_path: &Path, paths: &[PathBuf], options: &AddOptions) -> Result<()> {
-    // println!("the paths: {:?}", paths);
+/// Add files via git add (updates .git/index and Git objects)
+fn add_files_via_git(repo_path: &Path, paths: &[PathBuf], options: &AddOptions) -> Result<()> {
     if options.dry_run {
         for path in paths {
             println!("Would add: {}", path.display());
@@ -300,7 +253,9 @@ fn add_files(repo_path: &Path, paths: &[PathBuf], options: &AddOptions) -> Resul
         return Ok(());
     }
 
-    println!("the paths: {:?}", paths);
+    if options.verbose {
+        println!("Running git add for {} files...", paths.len());
+    }
 
     // Build git add command
     let mut cmd = Command::new("git");
@@ -336,21 +291,34 @@ fn add_files(repo_path: &Path, paths: &[PathBuf], options: &AddOptions) -> Resul
     Ok(())
 }
 
-/// Update helix.idx incrementally after git add
+/// Update helix.idx after git add
+/// Since git add updated .git/index, we re-import to get the staged state
 fn update_helix_index(repo_path: &Path, changed_paths: &[PathBuf]) -> Result<()> {
     let sync = SyncEngine::new(repo_path);
+    sync.import_from_git()
+        .context("Failed to update helix index after git add")?;
 
-    sync.incremental_sync(changed_paths)
-        .context("Failed to update helix index")?;
+    if let Some(first_path) = changed_paths.first() {
+        // Verify the file was actually staged
+        let reader = Reader::new(repo_path);
+        let data = reader.read()?;
+
+        let staged = data.entries.iter().any(|e| {
+            &e.path == first_path && e.flags.contains(crate::helix_index::EntryFlags::STAGED)
+        });
+
+        if !staged {
+            eprintln!("Warning: File may not have been staged correctly");
+        }
+    }
 
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::helix_index::{self, Reader};
-
     use super::*;
+    use crate::helix_index::{self, EntryFlags, Reader};
     use std::process::Command;
     use tempfile::TempDir;
 
@@ -375,30 +343,16 @@ mod tests {
     fn test_add_single_file() -> Result<()> {
         let temp_dir = TempDir::new()?;
         let repo_path = temp_dir.path();
-        println!("\n[TEST] repo_path = {}", repo_path.display());
 
         init_test_repo(repo_path)?;
-        println!("[TEST] Initialized git repo");
+
+        // Initialize helix
+        crate::init::init_helix_repo(repo_path)?;
 
         // Create a file
-        let file_path = repo_path.join("test.txt");
-        fs::write(&file_path, "hello")?;
-        println!("[TEST] Created file {}", file_path.display());
-
-        // Sanity check: what does git status say before helix add?
-        let pre_output = Command::new("git")
-            .args(&["status", "--porcelain"])
-            .current_dir(repo_path)
-            .output()
-            .context("failed to run git status (pre-add)")?;
-        let pre_status = String::from_utf8_lossy(&pre_output.stdout);
-        println!(
-            "[TEST] git status --porcelain (before helix add):\n{}",
-            pre_status
-        );
+        fs::write(repo_path.join("test.txt"), "hello")?;
 
         // Add it via helix
-        println!("[TEST] Calling helix add ...");
         add(
             repo_path,
             &[PathBuf::from("test.txt")],
@@ -408,89 +362,67 @@ mod tests {
             },
         )?;
 
-        // Check git status exit code and stderr as well
+        // Verify it's staged in Git
         let output = Command::new("git")
             .args(&["status", "--porcelain"])
             .current_dir(repo_path)
-            .output()
-            .context("failed to run git status (post-add)")?;
-
-        println!("[TEST] git status exit code: {:?}", output.status.code());
-        if !output.stderr.is_empty() {
-            println!(
-                "[TEST] git status stderr:\n{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
+            .output()?;
 
         let status = String::from_utf8_lossy(&output.stdout);
-        println!(
-            "[TEST] git status --porcelain (after helix add):\n{}",
+        assert!(
+            status.contains("A  test.txt") || status.contains("A test.txt"),
+            "Expected file to be staged in Git, got: {}",
             status
         );
 
-        // Assert with a more helpful message if it fails
+        // Verify it's staged in helix.idx
+        let reader = Reader::new(repo_path);
+        let data = reader.read()?;
+
+        let staged_entry = data
+            .entries
+            .iter()
+            .find(|e| e.path == PathBuf::from("test.txt"));
+
+        assert!(staged_entry.is_some(), "File should be in helix.idx");
         assert!(
-            status.contains("A  test.txt") || status.contains("A test.txt"),
-            "[TEST] expected 'A  test.txt' or 'A test.txt' in git status output, got:\n{}",
-            status
+            staged_entry.unwrap().flags.contains(EntryFlags::STAGED),
+            "File should be marked as STAGED in helix.idx"
         );
 
         Ok(())
     }
 
-    // fn test_add_single_file() -> Result<()> {
-    //     let temp_dir = TempDir::new()?;
-    //     init_test_repo(temp_dir.path())?;
-
-    //     // Create a file
-    //     fs::write(temp_dir.path().join("test.txt"), "hello")?;
-
-    //     // Add it
-    //     add(
-    //         temp_dir.path(),
-    //         &[PathBuf::from("test.txt")],
-    //         AddOptions::default(),
-    //     )?;
-
-    //     // Verify it's staged
-    //     let output = Command::new("git")
-    //         .args(&["status", "--porcelain"])
-    //         .current_dir(temp_dir.path())
-    //         .output()?;
-
-    //     let status = String::from_utf8_lossy(&output.stdout);
-    //     assert!(status.contains("A  test.txt") || status.contains("A test.txt"));
-
-    //     Ok(())
-    // }
-
     #[test]
     fn test_add_directory() -> Result<()> {
         let temp_dir = TempDir::new()?;
-        init_test_repo(temp_dir.path())?;
+        let repo_path = temp_dir.path();
+
+        init_test_repo(repo_path)?;
+        crate::init::init_helix_repo(repo_path)?;
 
         // Create files in a directory
-        fs::create_dir_all(temp_dir.path().join("src"))?;
-        fs::write(temp_dir.path().join("src/main.rs"), "fn main() {}")?;
-        fs::write(temp_dir.path().join("src/lib.rs"), "pub fn test() {}")?;
+        fs::create_dir_all(repo_path.join("src"))?;
+        fs::write(repo_path.join("src/main.rs"), "fn main() {}")?;
+        fs::write(repo_path.join("src/lib.rs"), "pub fn test() {}")?;
 
         // Add directory
-        add(
-            temp_dir.path(),
-            &[PathBuf::from("src")],
-            AddOptions::default(),
-        )?;
+        add(repo_path, &[PathBuf::from("src")], AddOptions::default())?;
 
-        // Verify both files staged
+        // Verify both files staged in Git
         let output = Command::new("git")
             .args(&["status", "--porcelain"])
-            .current_dir(temp_dir.path())
+            .current_dir(repo_path)
             .output()?;
 
         let status = String::from_utf8_lossy(&output.stdout);
         assert!(status.contains("main.rs"));
         assert!(status.contains("lib.rs"));
+
+        // Verify in helix.idx
+        let reader = Reader::new(repo_path);
+        let data = reader.read()?;
+        assert_eq!(data.entries.len(), 2);
 
         Ok(())
     }
@@ -498,25 +430,24 @@ mod tests {
     #[test]
     fn test_add_all() -> Result<()> {
         let temp_dir = TempDir::new()?;
-        init_test_repo(temp_dir.path())?;
+        let repo_path = temp_dir.path();
+
+        init_test_repo(repo_path)?;
+        crate::init::init_helix_repo(repo_path)?;
 
         // Create multiple files
-        fs::write(temp_dir.path().join("file1.txt"), "one")?;
-        fs::write(temp_dir.path().join("file2.txt"), "two")?;
-        fs::create_dir_all(temp_dir.path().join("dir"))?;
-        fs::write(temp_dir.path().join("dir/file3.txt"), "three")?;
+        fs::write(repo_path.join("file1.txt"), "one")?;
+        fs::write(repo_path.join("file2.txt"), "two")?;
+        fs::create_dir_all(repo_path.join("dir"))?;
+        fs::write(repo_path.join("dir/file3.txt"), "three")?;
 
         // Add all
-        add(
-            temp_dir.path(),
-            &[PathBuf::from(".")],
-            AddOptions::default(),
-        )?;
+        add(repo_path, &[PathBuf::from(".")], AddOptions::default())?;
 
-        // Verify all staged
+        // Verify all staged in Git
         let output = Command::new("git")
             .args(&["status", "--porcelain"])
-            .current_dir(temp_dir.path())
+            .current_dir(repo_path)
             .output()?;
 
         let status = String::from_utf8_lossy(&output.stdout);
@@ -524,36 +455,87 @@ mod tests {
         assert!(status.contains("file2.txt"));
         assert!(status.contains("file3.txt"));
 
+        // Verify in helix.idx
+        let reader = Reader::new(repo_path);
+        let data = reader.read()?;
+        assert_eq!(data.entries.len(), 3);
+
         Ok(())
     }
 
     #[test]
     fn test_helix_index_updated() -> Result<()> {
         let temp_dir = TempDir::new()?;
-        init_test_repo(temp_dir.path())?;
+        let repo_path = temp_dir.path();
 
-        // Initialize helix
-        crate::init::init_helix_repo(temp_dir.path())?;
+        init_test_repo(repo_path)?;
+        crate::init::init_helix_repo(repo_path)?;
 
         // Create and add a file
-        fs::write(temp_dir.path().join("test.txt"), "hello")?;
+        fs::write(repo_path.join("test.txt"), "hello")?;
         add(
-            temp_dir.path(),
+            repo_path,
             &[PathBuf::from("test.txt")],
             AddOptions::default(),
         )?;
 
-        let reader = Reader::new(temp_dir.path());
+        let reader = Reader::new(repo_path);
         let data = reader.read()?;
 
         // Should have the file staged
         let staged = data
             .entries
             .iter()
-            .filter(|e| e.flags.contains(helix_index::EntryFlags::STAGED))
+            .filter(|e| e.flags.contains(EntryFlags::STAGED))
             .count();
 
-        assert_eq!(staged, 1);
+        assert_eq!(staged, 1, "Should have exactly 1 staged file");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_add_modified_file() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo_path = temp_dir.path();
+
+        init_test_repo(repo_path)?;
+        crate::init::init_helix_repo(repo_path)?;
+
+        // Create, add, and commit a file
+        fs::write(repo_path.join("test.txt"), "v1")?;
+        add(
+            repo_path,
+            &[PathBuf::from("test.txt")],
+            AddOptions::default(),
+        )?;
+
+        Command::new("git")
+            .args(&["commit", "-m", "initial"])
+            .current_dir(repo_path)
+            .output()?;
+
+        // Modify the file
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        fs::write(repo_path.join("test.txt"), "v2")?;
+
+        // Add again
+        add(
+            repo_path,
+            &[PathBuf::from("test.txt")],
+            AddOptions::default(),
+        )?;
+
+        // Should be staged
+        let reader = Reader::new(repo_path);
+        let data = reader.read()?;
+
+        let entry = data
+            .entries
+            .iter()
+            .find(|e| e.path == PathBuf::from("test.txt"));
+        assert!(entry.is_some());
+        assert!(entry.unwrap().flags.contains(EntryFlags::STAGED));
 
         Ok(())
     }

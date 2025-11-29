@@ -1,10 +1,9 @@
-use crate::index::GitIndex;
-
 use super::format::{Entry, EntryFlags};
 use super::reader::{HelixIndex, Reader};
 use super::sync::SyncEngine;
 use super::verify::{Verifier, VerifyResult};
 use anyhow::Result;
+use rayon::prelude::*;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -78,13 +77,26 @@ impl HelixIndexData {
     /// - TRACKED / STAGED (those come from SyncEngine using .git/index + HEAD during import)
     pub fn apply_worktree_changes(&mut self, dirty_paths: &[PathBuf]) -> Result<()> {
         // Snapshot of tracked paths from helix.idx (not .git/index!)
-        let tracked: HashSet<PathBuf> = self
-            .data
-            .entries
-            .iter()
-            .filter(|e| e.flags.contains(EntryFlags::TRACKED))
-            .map(|e| e.path.clone())
-            .collect();
+
+        let mut tracked: HashSet<PathBuf> = HashSet::new();
+
+        if self.data.entries.len() > 1000 {
+            tracked = self
+                .data
+                .entries
+                .par_iter()
+                .filter(|e| e.flags.contains(EntryFlags::TRACKED))
+                .map(|e| e.path.clone())
+                .collect();
+        } else {
+            tracked = self
+                .data
+                .entries
+                .iter()
+                .filter(|e| e.flags.contains(EntryFlags::TRACKED))
+                .map(|e| e.path.clone())
+                .collect();
+        }
 
         for rel_path in dirty_paths {
             let full_path = self.repo_path.join(rel_path);
@@ -133,89 +145,160 @@ impl HelixIndexData {
 
     /// Get all staged files. This can include tracked and untracked files.
     pub fn get_staged(&self) -> HashSet<PathBuf> {
-        self.data
-            .entries
-            .iter()
-            .filter(|e| {
-                e.flags.contains(EntryFlags::STAGED) && e.flags.contains(EntryFlags::TRACKED)
-            })
-            .map(|e| e.path.clone())
-            .collect()
+        if self.data.entries.len() > 1000 {
+            self.data
+                .entries
+                .par_iter()
+                .filter(|e| {
+                    e.flags.contains(EntryFlags::STAGED) && e.flags.contains(EntryFlags::TRACKED)
+                })
+                .map(|e| e.path.clone())
+                .collect()
+        } else {
+            self.data
+                .entries
+                .iter()
+                .filter(|e| {
+                    e.flags.contains(EntryFlags::STAGED) && e.flags.contains(EntryFlags::TRACKED)
+                })
+                .map(|e| e.path.clone())
+                .collect()
+        }
     }
 
     /// Get all modified files. This can include both tracked and untracked files.
     pub fn get_modified(&self) -> HashSet<PathBuf> {
-        self.data
-            .entries
-            .iter()
-            .filter(|e| e.flags.contains(EntryFlags::MODIFIED))
-            .map(|e| e.path.clone())
-            .collect()
+        if self.data.entries.len() > 1000 {
+            self.data
+                .entries
+                .par_iter()
+                .filter(|e| e.flags.contains(EntryFlags::MODIFIED))
+                .map(|e| e.path.clone())
+                .collect()
+        } else {
+            self.data
+                .entries
+                .iter()
+                .filter(|e| e.flags.contains(EntryFlags::MODIFIED))
+                .map(|e| e.path.clone())
+                .collect()
+        }
     }
 
     /// Get all deleted files
     pub fn get_deleted(&self) -> HashSet<PathBuf> {
-        self.data
-            .entries
-            .iter()
-            .filter(|e| {
-                e.flags.contains(EntryFlags::DELETED) && e.flags.contains(EntryFlags::TRACKED)
-            })
-            .map(|e| e.path.clone())
-            .collect()
+        if self.data.entries.len() > 1000 {
+            self.data
+                .entries
+                .par_iter()
+                .filter(|e| {
+                    e.flags.contains(EntryFlags::DELETED) && e.flags.contains(EntryFlags::TRACKED)
+                })
+                .map(|e| e.path.clone())
+                .collect()
+        } else {
+            self.data
+                .entries
+                .iter()
+                .filter(|e| {
+                    e.flags.contains(EntryFlags::DELETED) && e.flags.contains(EntryFlags::TRACKED)
+                })
+                .map(|e| e.path.clone())
+                .collect()
+        }
     }
 
     /// Get all tracked files
     pub fn get_tracked(&self) -> HashSet<PathBuf> {
-        self.data
-            .entries
-            .iter()
-            .filter(|e| e.flags.contains(EntryFlags::TRACKED))
-            .map(|e| e.path.clone())
-            .collect()
+        if self.data.entries.len() > 1000 {
+            self.data
+                .entries
+                .par_iter()
+                .filter(|e| e.flags.contains(EntryFlags::TRACKED))
+                .map(|e| e.path.clone())
+                .collect()
+        } else {
+            self.data
+                .entries
+                .iter()
+                .filter(|e| e.flags.contains(EntryFlags::TRACKED))
+                .map(|e| e.path.clone())
+                .collect()
+        }
     }
 
     /// Get all untracked files
     pub fn get_untracked(&self) -> HashSet<PathBuf> {
-        self.data
-            .entries
-            .iter()
-            .filter(|e| e.flags.contains(EntryFlags::UNTRACKED))
-            .map(|e| e.path.clone())
-            .collect()
+        if self.data.entries.len() > 1000 {
+            self.data
+                .entries
+                .par_iter()
+                .filter(|e| e.flags.contains(EntryFlags::UNTRACKED))
+                .map(|e| e.path.clone())
+                .collect()
+        } else {
+            self.data
+                .entries
+                .iter()
+                .filter(|e| e.flags.contains(EntryFlags::UNTRACKED))
+                .map(|e| e.path.clone())
+                .collect()
+        }
     }
 
     /// Check if a file is staged
     pub fn is_staged(&self, path: &Path) -> bool {
-        self.data.entries.iter().any(|e| {
-            e.path == path
-                && e.flags.contains(EntryFlags::STAGED)
-                && e.flags.contains(EntryFlags::TRACKED)
-        })
+        if self.data.entries.len() > 1000 {
+            self.data.entries.par_iter().any(|e| {
+                e.path == path
+                    && e.flags.contains(EntryFlags::STAGED)
+                    && e.flags.contains(EntryFlags::TRACKED)
+            })
+        } else {
+            self.data.entries.iter().any(|e| {
+                e.path == path
+                    && e.flags.contains(EntryFlags::STAGED)
+                    && e.flags.contains(EntryFlags::TRACKED)
+            })
+        }
     }
 
     /// Returns unstaged files
     pub fn get_unstaged(&self) -> HashSet<PathBuf> {
-        self.data
-            .entries
-            .iter()
-            .filter(|e| {
-                e.flags.contains(EntryFlags::TRACKED)
-                    && e.flags.contains(EntryFlags::MODIFIED)
-                    && !e.flags.contains(EntryFlags::STAGED)
-            })
-            .map(|e| e.path.clone())
-            .collect()
+        if self.data.entries.len() > 1000 {
+            self.data
+                .entries
+                .par_iter()
+                .filter(|e| {
+                    e.flags.contains(EntryFlags::TRACKED)
+                        && e.flags.contains(EntryFlags::MODIFIED)
+                        && !e.flags.contains(EntryFlags::STAGED)
+                })
+                .map(|e| e.path.clone())
+                .collect()
+        } else {
+            self.data
+                .entries
+                .iter()
+                .filter(|e| {
+                    e.flags.contains(EntryFlags::TRACKED)
+                        && e.flags.contains(EntryFlags::MODIFIED)
+                        && !e.flags.contains(EntryFlags::STAGED)
+                })
+                .map(|e| e.path.clone())
+                .collect()
+        }
     }
 
     /// Get all files that need staging
     pub fn get_files_to_add(&self) -> HashSet<PathBuf> {
-        self.data
-            .entries
-            .iter()
-            .filter(|e| {
-                // New file not tracked yet
-                e.flags.contains(EntryFlags::UNTRACKED)
+        if self.data.entries.len() > 1000 {
+            self.data
+                .entries
+                .par_iter()
+                .filter(|e| {
+                    // New file not tracked yet
+                    e.flags.contains(EntryFlags::UNTRACKED)
 
             // Modified tracked file not staged
             || (e.flags.contains(EntryFlags::TRACKED)
@@ -226,9 +309,30 @@ impl HelixIndexData {
             || (e.flags.contains(EntryFlags::TRACKED)
                 && e.flags.contains(EntryFlags::DELETED)
                 && !e.flags.contains(EntryFlags::STAGED))
-            })
-            .map(|e| e.path.clone())
-            .collect()
+                })
+                .map(|e| e.path.clone())
+                .collect()
+        } else {
+            self.data
+                .entries
+                .iter()
+                .filter(|e| {
+                    // New file not tracked yet
+                    e.flags.contains(EntryFlags::UNTRACKED)
+
+            // Modified tracked file not staged
+            || (e.flags.contains(EntryFlags::TRACKED)
+                && e.flags.contains(EntryFlags::MODIFIED)
+                && !e.flags.contains(EntryFlags::STAGED))
+
+            // Deleted tracked file not staged
+            || (e.flags.contains(EntryFlags::TRACKED)
+                && e.flags.contains(EntryFlags::DELETED)
+                && !e.flags.contains(EntryFlags::STAGED))
+                })
+                .map(|e| e.path.clone())
+                .collect()
+        }
     }
 
     /// Get current generation

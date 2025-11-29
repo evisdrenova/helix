@@ -4,7 +4,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use helix::{fsmonitor::FSMonitor, helix_index::api::HelixIndex};
+use helix::{fsmonitor::FSMonitor, helix_index::api::HelixIndexData};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::{collections::HashSet, path::Path, process::Command};
 use std::{io, path::PathBuf};
@@ -91,7 +91,7 @@ pub struct App {
     pub current_section: Section,
     pub sections_collapsed: HashSet<Section>,
     pub current_branch: Option<String>,
-    pub helix_index: HelixIndex,
+    pub helix_index: HelixIndexData,
 }
 
 impl App {
@@ -105,7 +105,7 @@ impl App {
         let current_branch = get_current_branch(&repo_path).ok();
 
         let helix_index =
-            HelixIndex::load_or_rebuild(&repo_path).context("Failed to load Helix index")?;
+            HelixIndexData::load_or_rebuild(&repo_path).context("Failed to load Helix index")?;
 
         let mut fsmonitor = FSMonitor::new(&repo_path)?;
         fsmonitor.start_watching_repo()?;
