@@ -68,28 +68,24 @@ impl SyncEngine {
             0
         };
 
+        println!("the path {:?}", self.repo_path);
+
         let git_index_path = self.repo_path.join(".git/index");
 
         // Handle brand-new repo with no .git/index yet
         if !git_index_path.exists() {
-            let repo_fingerprint = hash::hash_file(&self.repo_path)?;
-            let header = Header::new(current_generation + 1, repo_fingerprint, 0);
-
+            let header = Header::new(current_generation + 1, 0);
             let writer = Writer::new_canonical(&self.repo_path); // Durable write with fsync
             writer.write(&header, &[])?;
 
             return Ok(());
         }
 
+        println!("after repo");
+
         let git_index = GitIndex::open(&self.repo_path)?;
         let entries = self.build_helix_index_entries(&git_index)?;
-
-        let repo_fingerprint = hash::hash_file(&self.repo_path)?;
-        let header = Header::new(
-            current_generation + 1,
-            repo_fingerprint,
-            entries.len() as u32,
-        );
+        let header = Header::new(current_generation + 1, entries.len() as u32);
 
         let writer = Writer::new_canonical(&self.repo_path); // Canonical write with fsync
         writer.write(&header, &entries)?;

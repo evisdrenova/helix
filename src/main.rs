@@ -112,7 +112,7 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Init { path }) => {
             let repo_path = resolve_repo_path(path.as_deref())?;
-            init_helix_repo(&repo_path)?;
+            init_helix_repo(&repo_path, None)?;
             return Ok(());
         }
 

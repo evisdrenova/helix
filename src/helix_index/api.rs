@@ -83,13 +83,6 @@ impl HelixIndexData {
         // Update entry count
         self.data.header.entry_count = self.data.entries.len() as u32;
 
-        // Compute repo fingerprint (if not already set)
-        if self.data.header.repo_fingerprint == [0u8; 32] {
-            let repo_path_str = self.repo_path.to_string_lossy();
-            let repo_path_bytes = repo_path_str.as_bytes();
-            self.data.header.repo_fingerprint = hash_bytes(repo_path_bytes);
-        }
-
         // Write to disk
         let writer = Writer::new_canonical(&self.repo_path);
         writer.write(&self.data.header, &self.data.entries)?;

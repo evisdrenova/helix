@@ -143,7 +143,7 @@ fn create_empty_index(repo_path: &Path) -> Result<()> {
 
     // Create empty index with generation 1
     let writer = Writer::new_canonical(repo_path);
-    let empty_header = Header::new(1, ZERO_HASH, 0);
+    let empty_header = Header::new(1, 0);
 
     writer
         .write(&empty_header, &[])

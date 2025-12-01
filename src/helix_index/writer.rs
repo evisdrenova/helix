@@ -445,7 +445,7 @@ mod tests {
         let repo_path = temp_dir.path();
 
         let writer = Writer::new_canonical(repo_path);
-        let header = Header::new(1, [0; 32], 0);
+        let header = Header::new(1, 0);
         writer.write(&header, &[])?;
 
         assert!(repo_path.join(".helix").exists());
@@ -462,11 +462,11 @@ mod tests {
         let writer = Writer::new_canonical(repo_path);
 
         // Write version 1
-        let header1 = Header::new(1, [0x11; 32], 0);
+        let header1 = Header::new(1, 0);
         writer.write(&header1, &[])?;
 
         // Write version 2
-        let header2 = Header::new(2, [0x22; 32], 0);
+        let header2 = Header::new(2, 0);
         writer.write(&header2, &[])?;
 
         // Temp file should not exist
@@ -482,7 +482,7 @@ mod tests {
         let repo_path = temp_dir.path();
 
         let writer = Writer::new_canonical(repo_path);
-        let header = Header::new(1, [0xaa; 32], 0);
+        let header = Header::new(1, 0);
         let mut builder = writer.builder(header);
 
         let entry = Entry::new(PathBuf::from("test.txt"), 1024, 100, hash::ZERO_HASH, 0);
@@ -499,7 +499,7 @@ mod tests {
         let repo_path = temp_dir.path();
 
         let writer = Writer::new_canonical(repo_path);
-        let header = Header::new(1, [0xaa; 32], 0);
+        let header = Header::new(1, 0);
         let mut builder = writer.builder(header);
 
         let entry1 = Entry::new(
@@ -534,7 +534,7 @@ mod tests {
         let repo_path = temp_dir.path();
 
         let writer = Writer::new_canonical(repo_path);
-        let header = Header::new(1, [0xaa; 32], 0);
+        let header = Header::new(1, 0);
         let mut builder = writer.builder(header);
 
         let entry = Entry::new(
@@ -560,7 +560,7 @@ mod tests {
         let repo_path = temp_dir.path();
 
         let writer = Writer::new_canonical(repo_path);
-        let header = Header::new(1, [0xaa; 32], 0);
+        let header = Header::new(1, 0);
         let mut builder = writer.builder(header);
 
         let entries = vec![
@@ -594,7 +594,7 @@ mod tests {
         let repo_path = temp_dir.path();
 
         let writer = Writer::new_canonical(repo_path);
-        let header = Header::new(1, [0xaa; 32], 0);
+        let header = Header::new(1, 0);
         let mut builder = writer.builder(header);
 
         // Add in reverse order
@@ -627,7 +627,7 @@ mod tests {
         let repo_path = temp_dir.path();
 
         let writer = Writer::new_canonical(repo_path);
-        let header = Header::new(1, [0xaa; 32], 2000);
+        let header = Header::new(1, 2000);
 
         // Create 2000 entries to trigger parallel path
         let entries: Vec<_> = (0..2000)
@@ -654,7 +654,7 @@ mod tests {
         let repo_path = temp_dir.path();
 
         let writer = Writer::new_canonical(repo_path);
-        let header = Header::new(1, [0xaa; 32], 0);
+        let header = Header::new(1, 0);
         let mut builder = writer.builder(header);
 
         let entries = vec![
@@ -695,7 +695,7 @@ mod tests {
         let repo_path = temp_dir.path();
 
         let writer = Writer::new_canonical(repo_path);
-        let header = Header::new(1, [0xaa; 32], 0);
+        let header = Header::new(1, 0);
         let mut builder = writer.builder(header);
 
         let entries: Vec<_> = (0..1500)
@@ -726,7 +726,7 @@ mod tests {
         let repo_path = temp_dir.path();
 
         let writer = Writer::new_canonical(repo_path);
-        let header = Header::new(1, [0xaa; 32], 2);
+        let header = Header::new(1, 2);
         let mut builder = writer.builder(header);
 
         // Manually add duplicates (bypassing add_entry which prevents this)
@@ -758,7 +758,7 @@ mod tests {
         let repo_path = temp_dir.path();
 
         let writer = Writer::new_canonical(repo_path);
-        let header = Header::new(1, [0xaa; 32], 5); // Header says 5
+        let header = Header::new(1, 5); // Header says 5
         let mut builder = writer.builder(header);
 
         // But only add 2 entries
@@ -809,7 +809,7 @@ mod tests {
                 })
                 .collect();
 
-            let header = Header::new(1, [0xaa; 32], count as u32);
+            let header = Header::new(1, count as u32);
 
             let start = Instant::now();
             writer.write(&header, &entries)?;

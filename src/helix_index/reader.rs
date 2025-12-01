@@ -347,7 +347,7 @@ mod tests {
         fs::create_dir_all(repo_path.join(".helix"))?;
 
         let writer = Writer::new_cached(repo_path);
-        let header = Header::new(1, [0xaa; 32], 1000);
+        let header = Header::new(1, 1000);
 
         // Create 1000 entries with different flags
         let entries: Vec<_> = (0..1000)
@@ -395,7 +395,7 @@ mod tests {
         fs::create_dir_all(repo_path.join(".helix"))?;
 
         let writer = Writer::new_cached(repo_path);
-        let header = Header::new(1, [0xaa; 32], 100);
+        let header = Header::new(1, 100);
 
         let entries: Vec<_> = (0..100)
             .map(|i| Entry {
@@ -430,7 +430,7 @@ mod tests {
         fs::create_dir_all(repo_path.join(".helix"))?;
 
         let writer = Writer::new_cached(repo_path);
-        let header = Header::new(1, [0xaa; 32], 10);
+        let header = Header::new(1, 10);
 
         let entries: Vec<_> = (0..10)
             .map(|i| {

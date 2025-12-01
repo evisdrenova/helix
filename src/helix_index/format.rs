@@ -28,19 +28,18 @@ pub const ENTRY_RESERVED_SIZE: usize = 64;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Header {
     pub magic: [u8; 4],
-    pub version: u32,           // 1
-    pub generation: u64,        // Incremented on every write
-    pub repo_fingerprint: Hash, // Prevents cross-repo reuse; 32 bytes
-    pub checksum: Hash,         // Checksum of entire file; 32 bytes
+    pub version: u32,    // 1
+    pub generation: u64, // Incremented on every write
+    pub checksum: Hash,  // Checksum of entire file; 32 bytes
     pub entry_count: u32,
     pub created_at: u64,
     pub last_modified: u64,
-    pub reserved: [u8; 28], // reserved for future fields
+    pub reserved: [u8; 60], // reserved for future fields
 }
 
 impl Header {
     pub const HEADER_SIZE: usize = 128;
-    pub fn new(generation: u64, repo_fingerprint: Hash, entry_count: u32) -> Self {
+    pub fn new(generation: u64, entry_count: u32) -> Self {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -49,12 +48,11 @@ impl Header {
             magic: MAGIC,
             version: VERSION,
             generation,
-            repo_fingerprint,
             checksum: [0u8; 32],
             entry_count,
             created_at: if generation == 1 { now } else { 0 },
             last_modified: now,
-            reserved: [0; 28],
+            reserved: [0; 60],
         }
     }
     /// Serialize header to bytes
@@ -71,9 +69,6 @@ impl Header {
         buf[offset..offset + 8].copy_from_slice(&self.generation.to_le_bytes());
         offset += 8;
 
-        buf[offset..offset + 32].copy_from_slice(&self.repo_fingerprint);
-        offset += 32;
-
         buf[offset..offset + 32].copy_from_slice(&self.checksum);
         offset += 32;
 
@@ -86,8 +81,8 @@ impl Header {
         buf[offset..offset + 8].copy_from_slice(&self.last_modified.to_le_bytes());
         offset += 8;
 
-        buf[offset..offset + 28].copy_from_slice(&self.reserved);
-        offset += 28;
+        buf[offset..offset + 60].copy_from_slice(&self.reserved);
+        offset += 60;
 
         assert_eq!(offset, Self::HEADER_SIZE);
         buf
@@ -117,10 +112,6 @@ impl Header {
         let generation = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
         offset += 8;
 
-        let mut repo_fingerprint = [0u8; 32];
-        repo_fingerprint.copy_from_slice(&bytes[offset..offset + 32]);
-        offset += 32;
-
         let mut checksum = [0u8; 32];
         checksum.copy_from_slice(&bytes[offset..offset + 32]);
         offset += 32;
@@ -134,9 +125,9 @@ impl Header {
         let last_modified = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
         offset += 8;
 
-        let mut reserved = [0u8; 28];
-        reserved.copy_from_slice(&bytes[offset..offset + 28]);
-        offset += 28;
+        let mut reserved = [0u8; 60];
+        reserved.copy_from_slice(&bytes[offset..offset + 60]);
+        offset += 60;
 
         assert_eq!(offset, Self::HEADER_SIZE);
 
@@ -144,7 +135,6 @@ impl Header {
             magic,
             version,
             generation,
-            repo_fingerprint,
             checksum,
             entry_count,
             created_at,
@@ -423,8 +413,7 @@ mod tests {
 
     #[test]
     fn test_header_serialization() {
-        let fingerprint = hash_bytes(b"test_repo");
-        let header = Header::new(1, fingerprint, 10);
+        let header = Header::new(1, 10);
 
         let bytes = header.to_bytes();
         assert_eq!(bytes.len(), Header::HEADER_SIZE);
@@ -434,7 +423,6 @@ mod tests {
         assert_eq!(parsed.version, header.version);
         assert_eq!(parsed.generation, header.generation);
         assert_eq!(parsed.entry_count, header.entry_count);
-        assert_eq!(parsed.repo_fingerprint, header.repo_fingerprint);
     }
 
     #[test]
