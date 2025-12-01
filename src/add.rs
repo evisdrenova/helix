@@ -3,8 +3,6 @@
 use crate::helix_index::api::HelixIndexData;
 use crate::helix_index::blob_storage::{BlobBatch, BlobStorage};
 use crate::helix_index::format::{Entry, EntryFlags};
-use crate::helix_index::hash::{hash_file, Hash};
-use crate::helix_index::writer::Writer;
 use anyhow::{Context, Result};
 use rayon::prelude::*;
 use std::collections::HashSet;
@@ -405,7 +403,7 @@ mod tests {
             .output()?;
 
         // Initialize helix
-        crate::init::init_helix_repo(path)?;
+        crate::init::init_helix_repo(path, None)?;
 
         Ok(())
     }

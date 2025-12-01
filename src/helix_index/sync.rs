@@ -34,10 +34,9 @@ use crate::helix_index::hash;
 use crate::index::GitIndex;
 
 use anyhow::{Context, Result};
-use indicatif::{ProgressBar, ProgressState, ProgressStyle};
+use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use std::collections::HashMap;
-use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -53,8 +52,7 @@ impl SyncEngine {
     }
 
     /// One-time import from Git to create initial Helix index
-    /// This is called during 'helix init' only
-    /// After this, Helix operates independently of .git/index
+    /// TODO: import other git items like refs, objects, etc.
     pub fn import_from_git(&self) -> Result<()> {
         wait_for_git_lock(&self.repo_path, Duration::from_secs(5))?;
 

@@ -5,7 +5,7 @@ use tempfile::TempDir;
 
 fn init_test_repo(path: &Path) -> Result<()> {
     // Initialize pure Helix repo (no Git needed)
-    helix::init::init_helix_repo(path)?;
+    helix::init::init_helix_repo(path, None)?;
 
     // Set up author config
     let config_path = path.join(".helix/config.toml");

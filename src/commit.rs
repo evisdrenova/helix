@@ -14,7 +14,6 @@
 // helix commit -m "Message" --amend            # Amend previous
 // helix commit -m "Message" --allow-empty      # Empty commit
 
-
 use crate::helix_index::api::HelixIndexData;
 use crate::helix_index::commit::{Commit, CommitStorage};
 use crate::helix_index::format::EntryFlags;
@@ -392,7 +391,7 @@ mod tests {
             .output()?;
 
         // Initialize helix
-        crate::init::init_helix_repo(path)?;
+        crate::init::init_helix_repo(path, None)?;
 
         // Set author in config
         let config_path = path.join(".helix").join("config.toml");

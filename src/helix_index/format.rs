@@ -71,7 +71,7 @@ impl Header {
         buf[offset..offset + 8].copy_from_slice(&self.generation.to_le_bytes());
         offset += 8;
 
-        buf[offset..offset + 16].copy_from_slice(&self.repo_fingerprint);
+        buf[offset..offset + 32].copy_from_slice(&self.repo_fingerprint);
         offset += 32;
 
         buf[offset..offset + 32].copy_from_slice(&self.checksum);
@@ -86,8 +86,8 @@ impl Header {
         buf[offset..offset + 8].copy_from_slice(&self.last_modified.to_le_bytes());
         offset += 8;
 
-        buf[offset..offset + 64].copy_from_slice(&self.reserved);
-        offset += 64;
+        buf[offset..offset + 28].copy_from_slice(&self.reserved);
+        offset += 28;
 
         assert_eq!(offset, Self::HEADER_SIZE);
         buf
@@ -128,10 +128,10 @@ impl Header {
         let entry_count = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
         offset += 4;
 
-        let created_at = u64::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+        let created_at = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
         offset += 8;
 
-        let last_modified = u64::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+        let last_modified = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
         offset += 8;
 
         let mut reserved = [0u8; 28];
