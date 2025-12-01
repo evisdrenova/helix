@@ -14,6 +14,7 @@
 // helix commit -m "Message" --amend            # Amend previous
 // helix commit -m "Message" --allow-empty      # Empty commit
 
+
 use crate::helix_index::api::HelixIndexData;
 use crate::helix_index::commit::{Commit, CommitStorage};
 use crate::helix_index::format::EntryFlags;

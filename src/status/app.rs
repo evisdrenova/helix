@@ -4,10 +4,13 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use helix::{fsmonitor::FSMonitor, helix_index::api::HelixIndexData};
+use helix::fsmonitor::FSMonitor;
+use helix::helix_index::api::HelixIndexData;
 use ratatui::{backend::CrosstermBackend, Terminal};
-use std::{collections::HashSet, path::Path, process::Command};
-use std::{io, path::PathBuf};
+use std::collections::HashSet;
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
 
 use super::actions::Action;
 use super::ui;
@@ -16,12 +19,6 @@ use super::ui;
 pub enum Section {
     Unstaged,
     Staged,
-}
-
-#[derive(Default, Debug)]
-pub struct StageStatus {
-    pub staged: HashSet<PathBuf>,
-    pub modified: HashSet<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -135,52 +132,6 @@ impl App {
         Ok(app)
     }
 
-    // todo: look at these in more detail. i don't like that we ahve to call git porcelain here
-    fn get_git_status(&self) -> Result<StageStatus> {
-        let output = Command::new("git")
-            .current_dir(&self.repo_path)
-            .args(&["status", "--porcelain"])
-            .output()
-            .context("Failed to run git status")?;
-
-        let output_str = String::from_utf8_lossy(&output.stdout);
-
-        let mut status = StageStatus::default();
-
-        for line in output_str.lines() {
-            if line.len() < 4 {
-                continue;
-            }
-
-            // Git status format: XY filename
-            // X = index status, Y = worktree status
-            let index_status = line.chars().nth(0).unwrap();
-            let worktree_status = line.chars().nth(1).unwrap();
-            let path = PathBuf::from(line[3..].trim());
-
-            // If index status is not ' ' or '?', file is staged
-            if index_status != ' ' && index_status != '?' {
-                status.staged.insert(path.clone());
-            }
-
-            // If worktree status is not ' ', file has modifications
-            if worktree_status != ' ' {
-                status.modified.insert(path.clone());
-            }
-        }
-
-        Ok(status)
-    }
-
-    fn sync_staging_from_git(&mut self, git_status: &StageStatus) {
-        // Clear and rebuild staged files from git's truth index
-        self.staged_files.clear();
-
-        for path in &git_status.staged {
-            self.staged_files.insert(path.clone());
-        }
-    }
-
     pub fn update_visible_height(&mut self, terminal_height: u16) {
         let main_content_height = terminal_height.saturating_sub(4);
         let inner_height = main_content_height.saturating_sub(2);
@@ -190,61 +141,43 @@ impl App {
     pub fn refresh_status(&mut self) -> Result<()> {
         self.files.clear();
 
-        // Snapshot dirty working-tree paths once
-        let dirty_files = self.fsmonitor.get_dirty_files();
-
-        // 1) If .git/index changed, refresh the helix index (TRACKED/STAGED side)
+        // If index changed on disk, reload it
         if self.fsmonitor.index_changed() {
-            if dirty_files.is_empty() {
-                // Index changed but no specific files dirty - do full refresh
-                self.helix_index.full_refresh()?;
-            } else {
-                // Incremental update - FAST PATH
-                self.helix_index.incremental_refresh(&dirty_files)?;
-            }
-
+            self.helix_index = HelixIndexData::load_or_rebuild(&self.repo_path)?;
             self.fsmonitor.clear_index_flag();
         }
 
-        // 2) Apply working tree changes to EntryFlags (MODIFIED/DELETED/UNTRACKED)
-        if !dirty_files.is_empty() {
-            self.helix_index.apply_worktree_changes(&dirty_files)?;
-            // We've consumed the dirty set for this refresh cycle
-            self.fsmonitor.clear_dirty();
-        }
-
-        // 3) Staged files come directly from the helix index
+        // Get staged files from index
         self.staged_files = self.helix_index.get_staged();
 
-        // 4) Build UI-level FileStatus from the helix index flags
-        let mut seen: HashSet<PathBuf> = HashSet::new();
+        // Get dirty files from FSMonitor
+        let dirty_files = self.fsmonitor.get_dirty_files();
 
-        // Untracked files (if we’re showing them)
+        // Build file status list
+        let mut seen = HashSet::new();
+
+        // Show untracked files
         if self.show_untracked {
-            for path in self.helix_index.get_untracked() {
-                seen.insert(path.clone());
-                self.files.push(FileStatus::Untracked(path));
+            for path in &dirty_files {
+                if !self.helix_index.is_tracked(path) {
+                    seen.insert(path.clone());
+                    self.files.push(FileStatus::Untracked(path.clone()));
+                }
             }
         }
 
-        // Deleted files
-        for path in self.helix_index.get_deleted() {
-            if seen.insert(path.clone()) {
-                self.files.push(FileStatus::Deleted(path));
+        // Show modified files
+        for path in &dirty_files {
+            if self.helix_index.is_tracked(path) && !self.staged_files.contains(path) {
+                if seen.insert(path.clone()) {
+                    self.files.push(FileStatus::Modified(path.clone()));
+                }
             }
         }
 
-        // Modified (unstaged) files
-        for path in self.helix_index.get_unstaged() {
-            if seen.insert(path.clone()) {
-                self.files.push(FileStatus::Modified(path));
-            }
-        }
-
-        // Sort files for stable display
+        // Sort files
         self.files.sort_by(|a, b| a.path().cmp(b.path()));
 
-        self.last_refresh = std::time::Instant::now();
         Ok(())
     }
 
@@ -286,27 +219,51 @@ impl App {
     }
 
     /// Toggle staging for the selected file
-    pub fn toggle_stage(&mut self) {
+    pub fn toggle_stage(&mut self) -> Result<()> {
         if let Some(file) = self.get_selected_file() {
             let path = file.path().to_path_buf();
+
             if self.staged_files.contains(&path) {
+                // Unstage: remove STAGED flag
+                self.helix_index.unstage_file(&path)?;
                 self.staged_files.remove(&path);
             } else {
+                // Stage: add STAGED flag
+                self.helix_index.stage_file(&path)?;
                 self.staged_files.insert(path);
             }
+
+            // Persist changes to .helix/helix.idx
+            self.helix_index.persist()?;
         }
+
+        Ok(())
     }
 
     /// Stage all files
-    pub fn stage_all(&mut self) {
+    pub fn stage_all(&mut self) -> Result<()> {
         for file in &self.files {
-            self.staged_files.insert(file.path().to_path_buf());
+            let path = file.path().to_path_buf();
+            self.helix_index.stage_file(&path)?;
+            self.staged_files.insert(path);
         }
+
+        // Persist changes to .helix/helix.idx
+        self.helix_index.persist()?;
+        Ok(())
     }
 
     /// Unstage all files
-    pub fn unstage_all(&mut self) {
+    pub fn unstage_all(&mut self) -> Result<()> {
+        for path in self.staged_files.clone() {
+            self.helix_index.unstage_file(&path)?;
+        }
+
         self.staged_files.clear();
+
+        // Persist changes to .helix/helix.idx
+        self.helix_index.persist()?;
+        Ok(())
     }
 
     pub fn handle_action(&mut self, action: Action) -> Result<()> {
@@ -356,13 +313,13 @@ impl App {
                 self.adjust_scroll();
             }
             Action::ToggleStage => {
-                self.toggle_stage();
+                self.toggle_stage()?;
             }
             Action::StageAll => {
-                self.stage_all();
+                self.stage_all()?;
             }
             Action::UnstageAll => {
-                self.unstage_all();
+                self.unstage_all()?;
             }
             Action::Refresh => {
                 self.refresh_status()?;
@@ -450,13 +407,6 @@ impl App {
             let terminal_height = terminal.size()?.height;
             self.update_visible_height(terminal_height);
 
-            // Check if .git/index changed (external git add/reset/restore)
-            if self.fsmonitor.index_changed() {
-                let git_status = self.get_git_status()?;
-                self.sync_staging_from_git(&git_status);
-                self.fsmonitor.clear_index_flag();
-            }
-
             // Auto-refresh every 2 seconds if enabled
             if self.auto_refresh && self.last_refresh.elapsed().as_secs() >= 2 {
                 self.refresh_status()?;
@@ -516,13 +466,27 @@ impl App {
     }
 }
 
+/// Get current branch name from .helix/HEAD
 fn get_current_branch(repo_path: &Path) -> Result<String> {
-    use std::process::Command;
+    let head_path = repo_path.join(".helix").join("HEAD");
 
-    let output = Command::new("git")
-        .current_dir(repo_path)
-        .args(&["branch", "--show-current"])
-        .output()?;
+    if !head_path.exists() {
+        return Ok("(no branch)".to_string());
+    }
 
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    let content = fs::read_to_string(&head_path)?;
+    let content = content.trim();
+
+    if content.starts_with("ref:") {
+        let ref_path = content.strip_prefix("ref:").unwrap().trim();
+
+        // Extract branch name from refs/heads/main
+        if let Some(branch) = ref_path.strip_prefix("refs/heads/") {
+            Ok(branch.to_string())
+        } else {
+            Ok("(unknown)".to_string())
+        }
+    } else {
+        Ok("(detached HEAD)".to_string())
+    }
 }

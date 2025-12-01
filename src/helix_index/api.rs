@@ -47,6 +47,7 @@ impl HelixIndexData {
     }
 
     /// Rebuild the helix index from Git (used for recovery or first-time init)
+    /// TODO: what happens if the git index is no longer up to date? or if it was never there to begin with? what is the back up plan? i don't think rebuilding from git should be the first option here.
     pub fn rebuild_helix_index(repo_path: &Path) -> Result<Self> {
         let syncer = SyncEngine::new(repo_path);
         syncer.import_from_git()?;
@@ -161,6 +162,41 @@ impl HelixIndexData {
                 }
             }
         }
+
+        Ok(())
+    }
+
+    pub fn stage_file(&mut self, path: &Path) -> Result<()> {
+        // Find the entry
+        let entry = self
+            .entries_mut()
+            .iter_mut()
+            .find(|e| e.path == path)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Cannot stage '{}': file is not tracked. Use 'helix add' to track it first.",
+                    path.display()
+                )
+            })?;
+
+        // Add STAGED flag
+        entry.flags.insert(EntryFlags::STAGED);
+
+        Ok(())
+    }
+
+    pub fn unstage_file(&mut self, path: &Path) -> Result<()> {
+        // Find the entry
+        let entry = self
+            .entries_mut()
+            .iter_mut()
+            .find(|e| e.path == path)
+            .ok_or_else(|| {
+                anyhow::anyhow!("Cannot unstage '{}': file is not tracked.", path.display())
+            })?;
+
+        // Remove STAGED flag
+        entry.flags.remove(EntryFlags::STAGED);
 
         Ok(())
     }
@@ -360,6 +396,20 @@ impl HelixIndexData {
     /// Get current generation
     pub fn generation(&self) -> u64 {
         self.data.header.generation
+    }
+
+    pub fn is_tracked(&self, path: &Path) -> bool {
+        if self.data.entries.len() > 1000 {
+            self.data
+                .entries
+                .par_iter()
+                .any(|e| e.path == path && e.flags.contains(EntryFlags::TRACKED))
+        } else {
+            self.data
+                .entries
+                .iter()
+                .any(|e| e.path == path && e.flags.contains(EntryFlags::TRACKED))
+        }
     }
 
     /// Get all entries (for debugging)

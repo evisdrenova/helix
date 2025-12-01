@@ -29,7 +29,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     let repo_text = format!(" {} ", app.repo_name);
 
     let branch_text = if let Some(ref remote) = app.remote_branch {
-        let mut text = format!(" ◉ {} → {} ", app.get_current_branch_name, remote);
+        let mut text = format!(" ◉ {} → {} ", app.current_branch_name, remote);
 
         if app.ahead > 0 {
             text.push_str(&format!("↑{} ", app.ahead));
@@ -39,7 +39,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         }
         text
     } else {
-        format!(" ◉ {} ", app.get_current_branch_name)
+        format!(" ◉ {} ", app.current_branch_name)
     };
 
     let commit_count = format!(" {} commits ", app.commits.len());
