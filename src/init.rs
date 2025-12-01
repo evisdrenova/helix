@@ -377,6 +377,56 @@ mod tests {
     }
 
     #[test]
+    fn test_detect_git_user_says_no() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo_path = temp_dir.path();
+
+        // Real git repo with a committed file
+        Command::new("git")
+            .args(["init"])
+            .current_dir(repo_path)
+            .output()?;
+        Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(repo_path)
+            .output()?;
+        Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(repo_path)
+            .output()?;
+        fs::write(repo_path.join("test.txt"), "content")?;
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(repo_path)
+            .output()?;
+        Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(repo_path)
+            .output()?;
+
+        // Simulate user typing "n\n"
+        let input = b"n\n";
+        let reader = std::io::Cursor::new(input.as_slice());
+
+        // Only call detect_git + init helpers, not init_helix_repo directly
+        detect_git_with_reader(repo_path, reader, None)?;
+        create_directory_structure(repo_path)?;
+        create_empty_index(repo_path)?;
+        create_head_file(repo_path)?;
+        create_repo_config(repo_path)?;
+
+        let reader = Reader::new(repo_path);
+        let data = reader.read()?;
+        assert_eq!(
+            data.entries.len(),
+            0,
+            "Should not import from git when user says no"
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn test_init_in_existing_git_repo_migrate_multi_file() -> Result<()> {
         let temp_dir = TempDir::new()?;
         let repo_path = temp_dir.path();
@@ -434,6 +484,31 @@ mod tests {
 
         assert_eq!(main_entry.file_mode, 0o100755);
         assert_eq!(lib_entry.file_mode, 0o100644);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_import_from_empty_git_repo_creates_empty_index() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo_path = temp_dir.path();
+
+        // git repo but no commits, no .git/index
+        Command::new("git")
+            .args(["init"])
+            .current_dir(repo_path)
+            .output()?;
+
+        init_helix_repo(repo_path, Some("y".to_string()))?;
+
+        let reader = Reader::new(repo_path);
+        let data = reader.read()?;
+
+        assert_eq!(
+            data.entries.len(),
+            0,
+            "Empty git repo should produce empty index"
+        );
 
         Ok(())
     }
