@@ -370,7 +370,10 @@ impl App {
                     }
 
                     let action = match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => Some(Action::Quit),
+                        KeyCode::Char('q') | KeyCode::Esc => {
+                            println!("trying to quit");
+                            Some(Action::Quit)
+                        }
                         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             Some(Action::Quit)
                         }

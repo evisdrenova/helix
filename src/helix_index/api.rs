@@ -185,6 +185,20 @@ impl HelixIndexData {
         Ok(())
     }
 
+    pub fn stage_files(&mut self, paths: &[&Path]) -> Result<()> {
+        for path in paths {
+            self.stage_file(path)?;
+        }
+        Ok(())
+    }
+
+    pub fn stage_all(&mut self) -> Result<()> {
+        for entry in self.entries_mut() {
+            entry.flags.insert(EntryFlags::STAGED);
+        }
+        Ok(())
+    }
+
     pub fn unstage_file(&mut self, path: &Path) -> Result<()> {
         // Find the entry
         let entry = self
@@ -198,6 +212,21 @@ impl HelixIndexData {
         // Remove STAGED flag
         entry.flags.remove(EntryFlags::STAGED);
 
+        Ok(())
+    }
+
+    /// Unstage multiple files at once
+    pub fn unstage_files(&mut self, paths: &[&Path]) -> Result<()> {
+        for path in paths {
+            self.unstage_file(path)?;
+        }
+        Ok(())
+    }
+
+    pub fn unstage_all(&mut self) -> Result<()> {
+        for entry in self.entries_mut() {
+            entry.flags.remove(EntryFlags::STAGED);
+        }
         Ok(())
     }
 
@@ -474,6 +503,20 @@ mod tests {
             .current_dir(path)
             .output()?;
         Ok(())
+    }
+
+    fn create_test_entry(path: &str, flags: EntryFlags) -> Entry {
+        Entry {
+            path: PathBuf::from(path),
+            oid: [0u8; 32],
+            flags,
+            size: 100,
+            mtime_sec: 1234567890,
+            mtime_nsec: 0,
+            file_mode: 0o100644,
+            merge_conflict_stage: 0,
+            reserved: [0u8; 33],
+        }
     }
 
     #[test]
@@ -770,6 +813,214 @@ mod tests {
         let index = HelixIndexData::load_or_rebuild(repo_path)?;
 
         assert_eq!(index.repo_path, repo_path);
+
+        Ok(())
+    }
+    fn test_stage_file() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo_path = temp_dir.path();
+
+        init_test_repo(repo_path)?;
+
+        let mut index = HelixIndexData::load_or_rebuild(repo_path)?;
+
+        // Add a tracked file (not staged)
+        index
+            .entries_mut()
+            .push(create_test_entry("test.txt", EntryFlags::TRACKED));
+
+        // Stage it
+        index.stage_file(Path::new("test.txt"))?;
+
+        // Verify STAGED flag added
+        let entry = &index.entries()[0];
+        assert!(entry.flags.contains(EntryFlags::TRACKED));
+        assert!(entry.flags.contains(EntryFlags::STAGED));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_stage_file_not_tracked() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo_path = temp_dir.path();
+
+        init_test_repo(repo_path)?;
+
+        let mut index = HelixIndexData::load_or_rebuild(repo_path)?;
+
+        // Try to stage untracked file
+        let result = index.stage_file(Path::new("untracked.txt"));
+
+        // Should error
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not tracked"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_unstage_file() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo_path = temp_dir.path();
+
+        init_test_repo(repo_path)?;
+
+        let mut index = HelixIndexData::load_or_rebuild(repo_path)?;
+
+        // Add a staged file
+        index.entries_mut().push(create_test_entry(
+            "test.txt",
+            EntryFlags::TRACKED | EntryFlags::STAGED,
+        ));
+
+        // Unstage it
+        index.unstage_file(Path::new("test.txt"))?;
+
+        // Verify STAGED flag removed but TRACKED remains
+        let entry = &index.entries()[0];
+        assert!(entry.flags.contains(EntryFlags::TRACKED));
+        assert!(!entry.flags.contains(EntryFlags::STAGED));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_stage_multiple_files() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo_path = temp_dir.path();
+
+        init_test_repo(repo_path)?;
+
+        let mut index = HelixIndexData::load_or_rebuild(repo_path)?;
+        // Add multiple tracked files
+        index
+            .entries_mut()
+            .push(create_test_entry("file1.txt", EntryFlags::TRACKED));
+        index
+            .entries_mut()
+            .push(create_test_entry("file2.txt", EntryFlags::TRACKED));
+        index
+            .entries_mut()
+            .push(create_test_entry("file3.txt", EntryFlags::TRACKED));
+
+        // Stage multiple
+        index.stage_files(&[Path::new("file1.txt"), Path::new("file2.txt")])?;
+
+        // Verify
+        assert!(index.entries()[0].flags.contains(EntryFlags::STAGED));
+        assert!(index.entries()[1].flags.contains(EntryFlags::STAGED));
+        assert!(!index.entries()[2].flags.contains(EntryFlags::STAGED));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_stage_all() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo_path = temp_dir.path();
+
+        init_test_repo(repo_path)?;
+
+        let mut index = HelixIndexData::load_or_rebuild(repo_path)?;
+
+        // Add multiple tracked files
+        index
+            .entries_mut()
+            .push(create_test_entry("file1.txt", EntryFlags::TRACKED));
+        index
+            .entries_mut()
+            .push(create_test_entry("file2.txt", EntryFlags::TRACKED));
+        index
+            .entries_mut()
+            .push(create_test_entry("file3.txt", EntryFlags::TRACKED));
+
+        // Stage all
+        index.stage_all()?;
+
+        // Verify all staged
+        for entry in index.entries() {
+            assert!(entry.flags.contains(EntryFlags::STAGED));
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_unstage_all() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo_path = temp_dir.path();
+
+        init_test_repo(repo_path)?;
+
+        let mut index = HelixIndexData::load_or_rebuild(repo_path)?;
+
+        // Add multiple staged files
+        index.entries_mut().push(create_test_entry(
+            "file1.txt",
+            EntryFlags::TRACKED | EntryFlags::STAGED,
+        ));
+        index.entries_mut().push(create_test_entry(
+            "file2.txt",
+            EntryFlags::TRACKED | EntryFlags::STAGED,
+        ));
+
+        // Unstage all
+        index.unstage_all()?;
+
+        // Verify all unstaged but still tracked
+        for entry in index.entries() {
+            assert!(entry.flags.contains(EntryFlags::TRACKED));
+            assert!(!entry.flags.contains(EntryFlags::STAGED));
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_stage_already_staged() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo_path = temp_dir.path();
+
+        init_test_repo(repo_path)?;
+
+        let mut index = HelixIndexData::load_or_rebuild(repo_path)?;
+
+        // Add already staged file
+        index.entries_mut().push(create_test_entry(
+            "test.txt",
+            EntryFlags::TRACKED | EntryFlags::STAGED,
+        ));
+
+        // Stage again (should be idempotent)
+        index.stage_file(Path::new("test.txt"))?;
+
+        // Verify still staged
+        let entry = &index.entries()[0];
+        assert!(entry.flags.contains(EntryFlags::STAGED));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_unstage_not_staged() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo_path = temp_dir.path();
+
+        init_test_repo(repo_path)?;
+
+        let mut index = HelixIndexData::load_or_rebuild(repo_path)?;
+
+        // Add unstaged file
+        index
+            .entries_mut()
+            .push(create_test_entry("test.txt", EntryFlags::TRACKED));
+
+        // Unstage (should be idempotent)
+        index.unstage_file(Path::new("test.txt"))?;
+
+        // Verify still not staged
+        let entry = &index.entries()[0];
+        assert!(!entry.flags.contains(EntryFlags::STAGED));
 
         Ok(())
     }
