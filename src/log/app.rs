@@ -131,6 +131,12 @@ impl App {
 
     /// Handle user actions
     pub fn handle_action(&mut self, action: Action) -> Result<()> {
+        // always allow quitting even if there are no visible commts
+        if let Action::Quit = action {
+            self.should_quit = true;
+            return Ok(());
+        }
+
         // Get the list we're navigating
         let visible = self.visible_commits();
         let visible_count = visible.len();
@@ -370,10 +376,7 @@ impl App {
                     }
 
                     let action = match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => {
-                            println!("trying to quit");
-                            Some(Action::Quit)
-                        }
+                        KeyCode::Char('q') | KeyCode::Esc => Some(Action::Quit),
                         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             Some(Action::Quit)
                         }
