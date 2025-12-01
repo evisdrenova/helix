@@ -77,6 +77,7 @@ pub struct IndexEntry<'a> {
     pub oid: Oid,
     pub mtime: u64,
     pub size: u64,
+    pub file_mode: u32,
 }
 
 pub struct IndexEntryIter<'a> {
@@ -126,6 +127,23 @@ impl GitIndex {
     }
 }
 
+/*
+header: 0-12
+----after header---
+ctime secs: 0–3
+ctime nsecs: 4–7
+mtime secs: 8–11
+mtime nsecs: 12–15
+dev: 16–19
+ino: 20–23
+mode: 24–27
+uid: 28–31
+gid: 32–35
+file size: 36–39
+oid: 40–59
+flags: 60–61
+ */
+
 // todo: probably optimize this, it's pretty restrictive in the way that it checks the bounds
 impl<'a> Iterator for IndexEntryIter<'a> {
     type Item = IndexEntry<'a>;
@@ -151,6 +169,8 @@ impl<'a> Iterator for IndexEntryIter<'a> {
         let mtime_secs = u32::from_be_bytes(buf[base + 8..base + 12].try_into().ok()?);
         let mtime_nsecs = u32::from_be_bytes(buf[base + 12..base + 16].try_into().ok()?);
         let mtime = ((mtime_secs as u64) << 32) | (mtime_nsecs as u64);
+
+        let file_mode = u32::from_be_bytes(buf[base + 24..base + 28].try_into().ok()?);
 
         // file size (offset 36-39)
         let size = u32::from_be_bytes(buf[base + 36..base + 40].try_into().ok()?) as u64;
@@ -200,6 +220,7 @@ impl<'a> Iterator for IndexEntryIter<'a> {
             oid,
             mtime,
             size,
+            file_mode,
         })
     }
 }

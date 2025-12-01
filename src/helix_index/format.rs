@@ -158,7 +158,7 @@ pub struct Entry {
 }
 
 impl Entry {
-    pub const ENTRY_MAX_SIZE: usize = 256;
+    pub const ENTRY_MAX_SIZE: usize = 296;
     pub const ENTRY_MAX_PATH_LEN: usize = 200;
 
     /// Create a new Helix index entry

@@ -12,7 +12,7 @@ use std::{
     time::Instant,
 };
 
-use crate::helix_index::{self, hash::ZERO_HASH, sync::SyncEngine, Header, Writer};
+use crate::helix_index::{self, sync::SyncEngine, Header, Writer};
 
 pub fn init_helix_repo(repo_path: &Path, auto: Option<String>) -> Result<()> {
     let git_path = repo_path.join(".git");
@@ -225,7 +225,7 @@ fn print_success_message(repo_path: &Path) -> Result<()> {
 mod tests {
     use super::*;
     use crate::helix_index::Reader;
-    use std::process::Command;
+    use std::{os::unix::fs::PermissionsExt, path::PathBuf, process::Command};
     use tempfile::TempDir;
 
     #[test]
@@ -333,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn test_init_in_existing_git_repo() -> Result<()> {
+    fn test_init_in_existing_git_repo_one_file() -> Result<()> {
         let temp_dir = TempDir::new()?;
         let repo_path = temp_dir.path();
 
@@ -372,6 +372,68 @@ mod tests {
             "Should have imported one entry from git"
         );
         assert_eq!(data.entries[0].path, std::path::PathBuf::from("test.txt"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_init_in_existing_git_repo_migrate_multi_file() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo_path = temp_dir.path();
+
+        Command::new("git")
+            .args(["init"])
+            .current_dir(repo_path)
+            .output()?;
+        Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(repo_path)
+            .output()?;
+        Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(repo_path)
+            .output()?;
+        fs::write(repo_path.join("main.rs"), "main content")?;
+        // set permissions on main.rs file to be executable
+        let mut perms = fs::metadata(repo_path.join("main.rs"))?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(repo_path.join("main.rs"), perms)?;
+        fs::write(repo_path.join("lib.rs"), "lib content")?;
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(repo_path)
+            .output()?;
+        Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(repo_path)
+            .output()?;
+
+        let yes = "Y".to_string();
+        init_helix_repo(repo_path, Some(yes))?;
+
+        // Verify Helix index has two entries (main.rs and lib.rs)
+        let reader = Reader::new(repo_path);
+        let data = reader.read()?;
+
+        assert_eq!(
+            data.entries.len(),
+            2,
+            "Should have imported two entries from git"
+        );
+
+        let main_entry = data
+            .entries
+            .iter()
+            .find(|e| e.path == PathBuf::from("main.rs"))
+            .expect("main.rs entry not found");
+        let lib_entry = data
+            .entries
+            .iter()
+            .find(|e| e.path == PathBuf::from("lib.rs"))
+            .expect("lib.rs entry not found");
+
+        assert_eq!(main_entry.file_mode, 0o100755);
+        assert_eq!(lib_entry.file_mode, 0o100644);
 
         Ok(())
     }

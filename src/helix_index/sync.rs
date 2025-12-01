@@ -93,8 +93,6 @@ impl SyncEngine {
         Ok(())
     }
 
-    // ===== Helper Methods =====
-
     fn build_helix_index_entries(&self, git_index: &GitIndex) -> Result<Vec<Entry>> {
         let head_tree = self.load_full_head_tree()?;
         let index_entries: Vec<_> = git_index.entries().collect();
@@ -172,7 +170,7 @@ impl SyncEngine {
             mtime_nsec: 0,
             flags,
             merge_conflict_stage: 0,
-            file_mode: 0o100644,
+            file_mode: index_entry.file_mode,
             oid: index_oid,
             reserved: [0; 33],
         })
