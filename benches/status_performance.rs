@@ -1,11 +1,10 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use helix::helix_index::api::HelixIndexData;
 use std::fs;
 use std::hint::black_box;
 use std::path::Path;
 use std::process::Command;
 use tempfile::TempDir;
-
-use helix::helix_index::api::HelixIndex;
 
 fn init_test_repo(path: &Path, file_count: usize) -> anyhow::Result<()> {
     fs::create_dir_all(path.join(".git"))?;
@@ -98,7 +97,7 @@ fn bench_helix_index_first_run(c: &mut Criterion) {
                     temp_dir
                 },
                 |temp_dir| {
-                    black_box(HelixIndex::load_or_rebuild(temp_dir.path()).unwrap());
+                    black_box(HelixIndexData::load_or_rebuild(temp_dir.path()).unwrap());
                 },
                 criterion::BatchSize::SmallInput,
             );
@@ -116,13 +115,13 @@ fn bench_helix_index_cached_run(c: &mut Criterion) {
         init_test_repo(temp_dir.path(), *size).unwrap();
 
         // Pre-build index
-        use helix::helix_index::api::HelixIndex;
-        HelixIndex::load_or_rebuild(temp_dir.path()).unwrap();
+        use helix::helix_index::api::HelixIndexData;
+        HelixIndexData::load_or_rebuild(temp_dir.path()).unwrap();
 
         group.throughput(Throughput::Elements(*size as u64));
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, _| {
             b.iter(|| {
-                black_box(HelixIndex::load_or_rebuild(temp_dir.path()).unwrap());
+                black_box(HelixIndexData::load_or_rebuild(temp_dir.path()).unwrap());
             });
         });
     }
@@ -136,7 +135,7 @@ fn bench_helix_index_after_change(c: &mut Criterion) {
     for size in [10, 100, 1000].iter() {
         let temp_dir = TempDir::new().unwrap();
         init_test_repo(temp_dir.path(), *size).unwrap();
-        let mut index = HelixIndex::load_or_rebuild(temp_dir.path()).unwrap();
+        let mut index = HelixIndexData::load_or_rebuild(temp_dir.path()).unwrap();
 
         group.throughput(Throughput::Elements(*size as u64));
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, _| {
@@ -151,7 +150,7 @@ fn bench_helix_index_after_change(c: &mut Criterion) {
                     .output()
                     .unwrap();
 
-                black_box(index.full_refresh().unwrap());
+                black_box(index.reload().unwrap());
             });
         });
     }
@@ -165,7 +164,7 @@ fn bench_query_staged(c: &mut Criterion) {
     for size in [10, 100, 1000].iter() {
         let temp_dir = TempDir::new().unwrap();
         init_test_repo(temp_dir.path(), *size).unwrap();
-        let index = HelixIndex::load_or_rebuild(temp_dir.path()).unwrap();
+        let index = HelixIndexData::load_or_rebuild(temp_dir.path()).unwrap();
 
         group.throughput(Throughput::Elements(*size as u64));
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, _| {

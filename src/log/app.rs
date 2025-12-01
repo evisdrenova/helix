@@ -131,7 +131,7 @@ impl App {
 
     /// Handle user actions
     pub fn handle_action(&mut self, action: Action) -> Result<()> {
-        // always allow quitting even if there are no visible commts
+        // always allow quitting even if there are no visible commits
         if let Action::Quit = action {
             self.should_quit = true;
             return Ok(());
