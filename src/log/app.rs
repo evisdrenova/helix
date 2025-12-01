@@ -4,7 +4,8 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use helix::helix_index::commit::Commit;
+use helix::helix_index::commit::{Commit, CommitLoader};
+use helix::helix_index::hash::Hash;
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
 use std::path::Path;
@@ -16,7 +17,7 @@ pub struct App {
     pub commits: Vec<Commit>,
     pub selected_index: usize,
     pub scroll_offset: usize,
-    pub get_current_branch_name: String,
+    pub current_branch_name: String,
     pub should_quit: bool,
     pub split_ratio: f32,
     pub loader: CommitLoader,
@@ -33,16 +34,13 @@ pub struct App {
     pub filtered_indices: Vec<usize>,
     pub branch_name_input: String,
     pub branch_name_mode: bool,
-    pub pending_checkout_hash: Option<String>,
+    pub pending_checkout_hash: Option<Hash>,
 }
 
 impl App {
     pub fn new(repo_path: &Path) -> Result<Self> {
-        let loader = 
-        
-        
-        // CommitLoader::open_repo_at_path(repo_path)?;
-        let get_current_branch_name = loader.get_current_branch_name()?;
+        let loader = CommitLoader::new(repo_path)?;
+        let current_branch_name = loader.get_current_branch_name()?;
 
         let initial_limit = 50;
         let commits = loader.load_commits(initial_limit)?;
@@ -58,12 +56,12 @@ impl App {
             commits,
             selected_index: 0,
             scroll_offset: 0,
-            get_current_branch_name,
+            current_branch_name,
             should_quit: false,
             split_ratio: 0.35, // 35% for timeline, 65% for details
             loader,
             total_loaded,
-            initial_limit: initial_limit,
+            initial_limit,
             repo_name,
             remote_branch,
             ahead,
@@ -91,13 +89,9 @@ impl App {
             .iter()
             .enumerate()
             .filter(|(_, commit)| {
-                commit.summary.to_lowercase().contains(&query)
-                    || commit.author_name.to_lowercase().contains(&query)
+                commit.summary().to_lowercase().contains(&query)
+                    || commit.author.to_lowercase().contains(&query)
                     || commit.message.to_lowercase().contains(&query)
-                    || commit
-                        .file_changes
-                        .iter()
-                        .any(|f| f.path.to_lowercase().contains(&query))
             })
             .map(|(idx, _)| idx)
             .collect();
@@ -144,8 +138,6 @@ impl App {
         if visible_count == 0 {
             return Ok(()); // No commits to navigate
         }
-
-        //...
 
         match action {
             Action::Quit => {
@@ -215,7 +207,7 @@ impl App {
             }
             Action::CheckoutCommit => {
                 if let Some(commit) = self.get_selected_commit() {
-                    let branch_name = format!("checkout-{}", &commit.short_hash);
+                    let branch_name = format!("checkout-{}", commit.short_hash());
 
                     match self
                         .loader
@@ -384,8 +376,8 @@ impl App {
                         }
                         KeyCode::Char('c') => {
                             if let Some(commit) = self.get_selected_commit() {
-                                let hash = commit.hash.clone();
-                                let short_hash = commit.short_hash.clone();
+                                let hash = commit.hash;
+                                let short_hash = commit.short_hash();
                                 self.branch_name_mode = true;
                                 self.pending_checkout_hash = Some(hash);
                                 self.branch_name_input = format!("checkout-{}", short_hash);

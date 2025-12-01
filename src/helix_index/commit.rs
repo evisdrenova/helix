@@ -10,7 +10,7 @@
 //
 // Storage: .helix/objects/commits/{BLAKE3_HASH}
 
-use crate::helix_index::hash::{hash_bytes, Hash};
+use crate::helix_index::hash::{hash_bytes, hash_to_hex, hex_to_hash, Hash};
 use anyhow::{Context, Result};
 use rayon::prelude::*;
 use std::fs;
@@ -496,6 +496,176 @@ impl<'a> CommitBatch<'a> {
     /// Check existence of all commits (parallel)
     pub fn exists_all(&self, hashes: &[Hash]) -> Vec<bool> {
         self.storage.exists_batch(hashes)
+    }
+}
+
+/// Load commits from Helix repository
+pub struct CommitLoader {
+    repo_path: PathBuf,
+    storage: CommitStorage,
+}
+
+impl CommitLoader {
+    pub fn new(repo_path: &Path) -> Result<Self> {
+        let helix_dir = repo_path.join(".helix");
+        if !helix_dir.exists() {
+            anyhow::bail!("Not a Helix repository (no .helix directory found)");
+        }
+
+        let storage = CommitStorage::for_repo(repo_path);
+
+        Ok(Self {
+            repo_path: repo_path.to_path_buf(),
+            storage,
+        })
+    }
+
+    /// Load commits starting from HEAD
+    pub fn load_commits(&self, limit: usize) -> Result<Vec<Commit>> {
+        let mut commits = Vec::new();
+
+        // Read HEAD
+        let head_hash = match self.read_head() {
+            Ok(hash) => hash,
+            Err(_) => {
+                // No commits yet
+                return Ok(commits);
+            }
+        };
+
+        // Walk commit history
+        let mut current_hash = head_hash;
+        let mut visited = std::collections::HashSet::new();
+
+        while commits.len() < limit {
+            // Prevent infinite loops
+            if !visited.insert(current_hash) {
+                break;
+            }
+
+            // Load commit
+            let commit = match self.storage.read(&current_hash) {
+                Ok(c) => c,
+                Err(_) => break,
+            };
+
+            // Move to parent
+            if commit.is_initial() {
+                commits.push(commit);
+                break;
+            }
+
+            let next_hash = commit.parents[0]; // Follow first parent
+            commits.push(commit);
+            current_hash = next_hash;
+        }
+
+        Ok(commits)
+    }
+
+    /// Read current HEAD commit hash
+    fn read_head(&self) -> Result<Hash> {
+        let head_path = self.repo_path.join(".helix").join("HEAD");
+
+        if !head_path.exists() {
+            anyhow::bail!("HEAD not found");
+        }
+
+        let content = fs::read_to_string(&head_path).context("Failed to read HEAD")?;
+
+        let content = content.trim();
+
+        if content.starts_with("ref:") {
+            // Symbolic reference
+            let ref_path = content.strip_prefix("ref:").unwrap().trim();
+            let full_ref_path = self.repo_path.join(".helix").join(ref_path);
+
+            if !full_ref_path.exists() {
+                anyhow::bail!("Reference {} not found", ref_path);
+            }
+
+            let ref_content =
+                fs::read_to_string(&full_ref_path).context("Failed to read reference")?;
+
+            hex_to_hash(ref_content.trim()).context("Invalid hash in reference")
+        } else {
+            // Direct hash
+            hex_to_hash(content).context("Invalid hash in HEAD")
+        }
+    }
+
+    /// Get current branch name
+    pub fn get_current_branch_name(&self) -> Result<String> {
+        let head_path = self.repo_path.join(".helix").join("HEAD");
+
+        if !head_path.exists() {
+            return Ok("(no branch)".to_string());
+        }
+
+        let content = fs::read_to_string(&head_path)?;
+        let content = content.trim();
+
+        if content.starts_with("ref:") {
+            let ref_path = content.strip_prefix("ref:").unwrap().trim();
+
+            // Extract branch name from refs/heads/main
+            if let Some(branch) = ref_path.strip_prefix("refs/heads/") {
+                Ok(branch.to_string())
+            } else {
+                Ok("(unknown)".to_string())
+            }
+        } else {
+            Ok("(detached HEAD)".to_string())
+        }
+    }
+
+    /// Get repository name from path
+    pub fn get_repo_name(&self) -> String {
+        self.repo_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("repository")
+            .to_string()
+    }
+
+    /// Get remote tracking information (placeholder)
+    pub fn remote_tracking_info(&self) -> Option<(String, usize, usize)> {
+        // TODO: Implement remote tracking
+        // For now, return None (no remote)
+        None
+    }
+
+    /// Checkout a commit (placeholder)
+    pub fn checkout_commit(&self, commit_hash: &Hash, branch_name: Option<&str>) -> Result<()> {
+        // TODO: Implement checkout
+        // For now, just update HEAD
+
+        let head_path = self.repo_path.join(".helix").join("HEAD");
+
+        if let Some(branch) = branch_name {
+            // Create branch and checkout
+            let branch_ref = format!("refs/heads/{}", branch);
+            let branch_path = self.repo_path.join(".helix").join(&branch_ref);
+
+            // Ensure refs/heads directory exists
+            if let Some(parent) = branch_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+
+            // Write commit hash to branch
+            let hash_hex = hash_to_hex(commit_hash);
+            fs::write(&branch_path, hash_hex)?;
+
+            // Update HEAD to point to branch
+            let head_content = format!("ref: {}", branch_ref);
+            fs::write(&head_path, head_content)?;
+        } else {
+            // Detached HEAD
+            let hash_hex = hash_to_hex(commit_hash);
+            fs::write(&head_path, hash_hex)?;
+        }
+
+        Ok(())
     }
 }
 
