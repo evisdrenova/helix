@@ -1,56 +1,58 @@
 /*
-Creates a new helix index. if there is an existing .git/index in the repo then we read it and create the helix index from it. Otherwise, we create it from scratch.
+Creates a new helix repository with empty directory structure.
+
+We detect if there is a git repo there and ask the user if they want to import their git data.
 */
 
 use anyhow::{Context, Result};
-use std::{fs, path::Path, time::Instant};
+use std::{fs, io::stdin, path::Path, time::Instant};
 
-use crate::helix_index::{self, sync::SyncEngine};
+use crate::helix_index::{self, hash::ZERO_HASH, sync::SyncEngine, Header, Writer};
 
 pub fn init_helix_repo(repo_path: &Path) -> Result<()> {
-    println!(
-        "Initializing Helix repository at {}...",
-        repo_path.display()
-    );
+    let helix_index_path = repo_path.join(".helix/helix.idx");
+    let git_path = repo_path.join(".git");
+
+    if helix_index_path.exists() {
+        // TODO: reinitialize existing repo, no deletes, just check structure
+        // add in missing files/directories, ensure head file, add any default configs
+        println!("○ helix.idx already exists, skipping ... ");
+    } else if git_path.exists() {
+        detect_git(repo_path)?;
+    } else {
+        println!(
+            "Initializing Helix repository at {}...",
+            repo_path.display()
+        );
+    }
     println!();
 
-    create_helix_directory(repo_path)?;
-    import_from_git_if_needed(repo_path)?;
+    create_directory_structure(repo_path)?;
+    create_empty_index(repo_path)?;
+    create_head_file(repo_path)?;
     create_repo_config(repo_path)?;
     print_success_message(repo_path)?;
 
     Ok(())
 }
 
-fn create_helix_directory(repo_path: &Path) -> Result<()> {
-    let helix_dir = repo_path.join(".helix");
+pub fn detect_git(repo_path: &Path) -> Result<()> {
+    println!("Detected existing git repo, import your git commits to Helix? (Y/N).");
 
-    if helix_dir.exists() {
-        println!("✓ .helix/ directory exists");
-        return Ok(());
+    let mut input = String::new();
+
+    stdin().read_line(&mut input).expect("Failed to read line");
+
+    let import_git = input.trim().to_lowercase();
+
+    if import_git == "y" {
+        import_from_git(repo_path)?;
     }
 
-    fs::create_dir_all(&helix_dir).context("Failed to create .helix directory")?;
-
-    println!("✓ Created .helix/ directory");
     Ok(())
 }
 
-/// Import from Git index if it exists, otherwise create empty Helix index
-/// This is a ONE-TIME operation - after this, Helix operates independently
-fn import_from_git_if_needed(repo_path: &Path) -> Result<()> {
-    let helix_index_path = repo_path.join(".helix/helix.idx");
-    let git_index_path = repo_path.join(".git/index");
-
-    // Check if helix.idx already exists
-    if helix_index_path.exists() {
-        println!("○ helix.idx already exists, rebuilding from Git...");
-    } else if git_index_path.exists() {
-        println!("○ Importing from .git/index...");
-    } else {
-        println!("○ Creating empty helix.idx (no .git/index found)...");
-    }
-
+fn import_from_git(repo_path: &Path) -> Result<()> {
     let start = Instant::now();
 
     // Use SyncEngine to import from Git (one-time operation)
@@ -82,29 +84,115 @@ fn import_from_git_if_needed(repo_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn create_repo_config(repo_path: &Path) -> Result<()> {
+fn create_directory_structure(repo_path: &Path) -> Result<()> {
     let helix_dir = repo_path.join(".helix");
-    let config_path = helix_dir.join("config.toml");
 
-    if config_path.exists() {
-        println!("✓ .helix/config.toml exists");
+    if helix_dir.exists() {
+        println!("✓ .helix/ directory exists (re-initializing)");
+    } else {
+        fs::create_dir_all(&helix_dir).context("Failed to create .helix directory")?;
+        println!("✓ Created .helix/ directory");
+    }
+
+    // Create objects subdirectories
+    let objects_dirs = [
+        helix_dir.join("objects"),
+        helix_dir.join("objects/blobs"),
+        helix_dir.join("objects/trees"),
+        helix_dir.join("objects/commits"),
+    ];
+
+    for dir in &objects_dirs {
+        if !dir.exists() {
+            fs::create_dir_all(dir)
+                .with_context(|| format!("Failed to create {}", dir.display()))?;
+        }
+    }
+
+    println!("✓ Created objects/ directories");
+
+    // Create refs subdirectories
+    let refs_dirs = [
+        helix_dir.join("refs"),
+        helix_dir.join("refs/heads"),
+        helix_dir.join("refs/tags"),
+    ];
+
+    for dir in &refs_dirs {
+        if !dir.exists() {
+            fs::create_dir_all(dir)
+                .with_context(|| format!("Failed to create {}", dir.display()))?;
+        }
+    }
+
+    println!("✓ Created refs/ directories");
+
+    Ok(())
+}
+
+fn create_empty_index(repo_path: &Path) -> Result<()> {
+    let index_path = repo_path.join(".helix/helix.idx");
+
+    if index_path.exists() {
+        println!("○ helix.idx already exists, skipping");
         return Ok(());
     }
 
-    fs::create_dir_all(&helix_dir).context("Failed to create .helix directory")?;
+    // Create empty index with generation 1
+    let writer = Writer::new_canonical(repo_path);
+    let empty_header = Header::new(1, ZERO_HASH, 0);
+
+    writer
+        .write(&empty_header, &[])
+        .context("Failed to create empty index")?;
+
+    println!("✓ Created empty helix.idx");
+
+    Ok(())
+}
+
+fn create_head_file(repo_path: &Path) -> Result<()> {
+    let head_path = repo_path.join(".helix/HEAD");
+
+    if head_path.exists() {
+        println!("○ HEAD already exists, skipping");
+        return Ok(());
+    }
+
+    // Create HEAD pointing to main branch (doesn't exist yet)
+    fs::write(&head_path, "ref: refs/heads/main\n").context("Failed to create HEAD file")?;
+
+    println!("✓ Created HEAD (ref: refs/heads/main)");
+
+    Ok(())
+}
+
+fn create_repo_config(repo_path: &Path) -> Result<()> {
+    let config_path = repo_path.join(".helix/config.toml");
+
+    if config_path.exists() {
+        println!("○ config.toml already exists, skipping");
+        return Ok(());
+    }
 
     let default_config = r#"# Helix repository configuration
 #
 # This file configures Helix behavior for this repository.
 # Settings here override global settings in ~/.helix.toml
 
-# Helix operates independently of Git by default
-# The .git/index is only read once during 'helix init'
-# After that, Helix maintains its own index at .helix/helix.idx
+[user]
+# Author information for commits
+# Uncomment and set these, or use environment variables:
+#   HELIX_AUTHOR_NAME, HELIX_AUTHOR_EMAIL
+# name = "Your Name"
+# email = "you@example.com"
 
 [core]
 # Automatically stage modified files on commit
 auto_stage = false
+
+# Default branch name for new repositories
+default_branch = "main"
 
 [ignore]
 # Additional patterns to ignore (beyond .gitignore)
@@ -115,41 +203,47 @@ patterns = [
     ".DS_Store",
 ]
 
-# Note: Helix does not sync with .git/index
-# Use native Helix commands for all operations:
-#   helix add     - Stage files
-#   helix status  - View status
-#   helix commit  - Commit changes
-#   helix diff    - View changes
+# Helix is a pure version control system
+# Use Helix commands for all operations:
+#   helix add <files>  - Stage files
+#   helix status       - View status  
+#   helix commit       - Commit changes
+#   helix log          - View history
+#   helix diff         - View changes
 "#;
 
     fs::write(&config_path, default_config).context("Failed to write .helix/config.toml")?;
 
-    println!("✓ Created .helix/config.toml");
+    println!("✓ Created config.toml");
 
     Ok(())
 }
 
 fn print_success_message(repo_path: &Path) -> Result<()> {
     println!();
-    println!("🎉 Helix is ready!");
+    println!("🎉 Initialized empty Helix repository!");
     println!();
-    println!("Configuration:");
-    println!("  Repo:   {}", repo_path.display());
-    println!("  Config: {}/.helix/config.toml", repo_path.display());
-    println!("  Index:  {}/.helix/helix.idx", repo_path.display());
+    println!("Repository structure:");
+    println!("  {}/", repo_path.display());
+    println!("  └── .helix/");
+    println!("      ├── HEAD           → ref: refs/heads/main");
+    println!("      ├── config.toml    → repository configuration");
+    println!("      ├── helix.idx      → staging index (empty)");
+    println!("      ├── objects/       → object storage");
+    println!("      │   ├── blobs/     → file content");
+    println!("      │   ├── trees/     → directory snapshots");
+    println!("      │   └── commits/   → commit history");
+    println!("      └── refs/");
+    println!("          ├── heads/     → branch pointers");
+    println!("          └── tags/      → tag pointers");
     println!();
-    println!("Quick start:");
-    println!("  helix status           # View working directory status");
-    println!("  helix add <files>      # Stage files for commit");
-    println!("  helix commit           # Commit staged changes");
-    println!("  helix diff             # View changes");
+    println!("Next steps:");
+    println!("  1. Configure author (edit .helix/config.toml or set env vars)");
+    println!("  2. Add files:    helix add <files>");
+    println!("  3. Make commit:  helix commit -m \"Initial commit\"");
     println!();
-    println!("Notes:");
-    println!("  • Helix operates independently of Git after initialization");
-    println!("  • Use Helix commands (not git commands) for version control");
-    println!("  • Edit .helix/config.toml to customize behavior");
-    println!("  • Run 'helix init' again to re-import from Git if needed");
+    println!("View status:       helix status");
+    println!("View history:      helix log");
     println!();
 
     Ok(())
@@ -158,252 +252,89 @@ fn print_success_message(repo_path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::helix_index::format::EntryFlags;
-    use std::fs;
-    use std::process::Command;
+    use crate::helix_index::Reader;
     use tempfile::TempDir;
 
-    fn init_git_repo(path: &Path) -> Result<()> {
-        Command::new("git")
-            .args(&["init"])
-            .current_dir(path)
-            .output()
-            .context("Failed to run git init")?;
-
-        Command::new("git")
-            .args(&["config", "user.name", "Test User"])
-            .current_dir(path)
-            .output()?;
-
-        Command::new("git")
-            .args(&["config", "user.email", "test@test.com"])
-            .current_dir(path)
-            .output()?;
-
-        Ok(())
-    }
-
     #[test]
-    fn test_init_fresh_directory() -> Result<()> {
+    fn test_init_creates_directory_structure() -> Result<()> {
         let temp_dir = TempDir::new()?;
         let repo_path = temp_dir.path();
 
         init_helix_repo(repo_path)?;
 
-        // Verify helix directory created
+        // Verify main directory
         assert!(repo_path.join(".helix").exists());
 
-        // Verify index created
+        // Verify objects directories
+        assert!(repo_path.join(".helix/objects").exists());
+        assert!(repo_path.join(".helix/objects/blobs").exists());
+        assert!(repo_path.join(".helix/objects/trees").exists());
+        assert!(repo_path.join(".helix/objects/commits").exists());
+
+        // Verify refs directories
+        assert!(repo_path.join(".helix/refs").exists());
+        assert!(repo_path.join(".helix/refs/heads").exists());
+        assert!(repo_path.join(".helix/refs/tags").exists());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_init_creates_empty_index() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo_path = temp_dir.path();
+
+        init_helix_repo(repo_path)?;
+
+        // Verify index exists
         assert!(repo_path.join(".helix/helix.idx").exists());
 
-        // Verify config created
-        assert!(repo_path.join(".helix/config.toml").exists());
-
-        // Verify empty index
-        let reader = helix_index::Reader::new(repo_path);
+        // Verify it's empty
+        let reader = Reader::new(repo_path);
         let data = reader.read()?;
+
+        assert_eq!(data.entries.len(), 0, "Index should be empty");
+        assert_eq!(data.header.generation, 1, "Should be generation 1");
+        assert_eq!(data.header.version, 2, "Should be version 2");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_init_creates_head_file() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo_path = temp_dir.path();
+
+        init_helix_repo(repo_path)?;
+
+        let head_path = repo_path.join(".helix/HEAD");
+        assert!(head_path.exists(), "HEAD file should exist");
+
+        let content = fs::read_to_string(head_path)?;
         assert_eq!(
-            data.entries.len(),
-            0,
-            "Fresh directory should have empty index"
-        );
-        assert_eq!(
-            data.header.generation, 1,
-            "First init should be generation 1"
+            content.trim(),
+            "ref: refs/heads/main",
+            "HEAD should point to main branch"
         );
 
         Ok(())
     }
 
     #[test]
-    fn test_init_existing_git_repo() -> Result<()> {
+    fn test_init_creates_config() -> Result<()> {
         let temp_dir = TempDir::new()?;
         let repo_path = temp_dir.path();
 
-        // Pre-create git repo
-        init_git_repo(repo_path)?;
-
-        // Add some files
-        fs::write(repo_path.join("test.txt"), "hello")?;
-        Command::new("git")
-            .args(&["add", "test.txt"])
-            .current_dir(repo_path)
-            .output()?;
-
         init_helix_repo(repo_path)?;
 
-        // Verify helix index built with imported file
-        let reader = helix_index::Reader::new(repo_path);
-        let data = reader.read()?;
-        assert_eq!(data.entries.len(), 1);
-        assert_eq!(data.entries[0].path.to_str().unwrap(), "test.txt");
+        let config_path = repo_path.join(".helix/config.toml");
+        assert!(config_path.exists(), "Config should exist");
 
-        Ok(())
-    }
-
-    #[test]
-    fn test_init_with_multiple_files() -> Result<()> {
-        let temp_dir = TempDir::new()?;
-        let repo_path = temp_dir.path();
-
-        init_git_repo(repo_path)?;
-
-        // Add multiple files to Git
-        fs::write(repo_path.join("file1.txt"), "content 1")?;
-        fs::write(repo_path.join("file2.rs"), "fn main() {}")?;
-        fs::create_dir_all(repo_path.join("src"))?;
-        fs::write(repo_path.join("src/lib.rs"), "pub fn test() {}")?;
-
-        Command::new("git")
-            .args(&["add", "."])
-            .current_dir(repo_path)
-            .output()?;
-
-        init_helix_repo(repo_path)?;
-
-        // Verify all files imported
-        let reader = helix_index::Reader::new(repo_path);
-        let data = reader.read()?;
-
-        assert_eq!(data.entries.len(), 3, "Should import all 3 files from Git");
-
-        // Verify all files are tracked
-        for entry in &data.entries {
-            assert!(
-                entry.flags.contains(EntryFlags::TRACKED),
-                "File {:?} should be tracked",
-                entry.path
-            );
-        }
-
-        // Verify specific files exist
-        let paths: Vec<_> = data.entries.iter().map(|e| e.path.as_path()).collect();
-        assert!(paths.iter().any(|p| p.ends_with("file1.txt")));
-        assert!(paths.iter().any(|p| p.ends_with("file2.rs")));
-        assert!(paths.iter().any(|p| p.ends_with("src/lib.rs")));
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_init_no_git_index() -> Result<()> {
-        let temp_dir = TempDir::new()?;
-        let repo_path = temp_dir.path();
-
-        // Initialize git but don't add any files
-        init_git_repo(repo_path)?;
-
-        init_helix_repo(repo_path)?;
-
-        // Verify empty helix index created
-        let reader = helix_index::Reader::new(repo_path);
-        let data = reader.read()?;
-        assert_eq!(data.entries.len(), 0);
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_init_detects_staged_files() -> Result<()> {
-        let temp_dir = TempDir::new()?;
-        let repo_path = temp_dir.path();
-
-        init_git_repo(repo_path)?;
-
-        // Create and commit a file
-        fs::write(repo_path.join("committed.txt"), "v1")?;
-        Command::new("git")
-            .args(&["add", "committed.txt"])
-            .current_dir(repo_path)
-            .output()?;
-        Command::new("git")
-            .args(&["commit", "-m", "initial"])
-            .current_dir(repo_path)
-            .output()?;
-
-        // Modify and stage the file
-        fs::write(repo_path.join("committed.txt"), "v2")?;
-        Command::new("git")
-            .args(&["add", "committed.txt"])
-            .current_dir(repo_path)
-            .output()?;
-
-        // Add a new file (not committed)
-        fs::write(repo_path.join("new.txt"), "new content")?;
-        Command::new("git")
-            .args(&["add", "new.txt"])
-            .current_dir(repo_path)
-            .output()?;
-
-        // Initialize Helix
-        init_helix_repo(repo_path)?;
-
-        let reader = helix_index::Reader::new(repo_path);
-        let data = reader.read()?;
-
-        assert_eq!(data.entries.len(), 2);
-
-        // Modified file should be TRACKED and STAGED
-        let committed_entry = data
-            .entries
-            .iter()
-            .find(|e| e.path.ends_with("committed.txt"))
-            .expect("committed.txt should be in index");
-
-        assert!(committed_entry.flags.contains(EntryFlags::TRACKED));
-        assert!(
-            committed_entry.flags.contains(EntryFlags::STAGED),
-            "Modified file should be staged"
-        );
-
-        // New file should be TRACKED and STAGED
-        let new_entry = data
-            .entries
-            .iter()
-            .find(|e| e.path.ends_with("new.txt"))
-            .expect("new.txt should be in index");
-
-        assert!(new_entry.flags.contains(EntryFlags::TRACKED));
-        assert!(
-            new_entry.flags.contains(EntryFlags::STAGED),
-            "New file should be staged"
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_init_with_committed_unstaged_files() -> Result<()> {
-        let temp_dir = TempDir::new()?;
-        let repo_path = temp_dir.path();
-
-        init_git_repo(repo_path)?;
-
-        // Create, stage, and commit a file
-        fs::write(repo_path.join("stable.txt"), "content")?;
-        Command::new("git")
-            .args(&["add", "stable.txt"])
-            .current_dir(repo_path)
-            .output()?;
-        Command::new("git")
-            .args(&["commit", "-m", "add stable file"])
-            .current_dir(repo_path)
-            .output()?;
-
-        // Initialize Helix
-        init_helix_repo(repo_path)?;
-
-        let reader = helix_index::Reader::new(repo_path);
-        let data = reader.read()?;
-
-        assert_eq!(data.entries.len(), 1);
-
-        let entry = &data.entries[0];
-        assert!(entry.flags.contains(EntryFlags::TRACKED));
-        assert!(
-            !entry.flags.contains(EntryFlags::STAGED),
-            "Committed file that matches HEAD should not be staged"
-        );
+        let content = fs::read_to_string(config_path)?;
+        assert!(content.contains("# Helix repository configuration"));
+        assert!(content.contains("[user]"));
+        assert!(content.contains("[core]"));
+        assert!(content.contains("[ignore]"));
 
         Ok(())
     }
@@ -415,116 +346,120 @@ mod tests {
 
         // Init twice
         init_helix_repo(repo_path)?;
-
-        // Read generation after first init
-        let reader = helix_index::Reader::new(repo_path);
-        let data1 = reader.read()?;
-        let gen1 = data1.header.generation;
-
         init_helix_repo(repo_path)?;
-
-        // Generation should increment on re-init
-        let data2 = reader.read()?;
-        let gen2 = data2.header.generation;
-
-        assert_eq!(gen2, gen1 + 1, "Generation should increment on re-init");
 
         // Should still work
         assert!(repo_path.join(".helix/helix.idx").exists());
+        assert!(repo_path.join(".helix/HEAD").exists());
+        assert!(repo_path.join(".helix/config.toml").exists());
+
+        // Index should still be valid
+        let reader = Reader::new(repo_path);
+        let data = reader.read()?;
+        assert_eq!(data.entries.len(), 0);
 
         Ok(())
     }
 
     #[test]
-    fn test_init_preserves_git_repo() -> Result<()> {
+    fn test_init_in_existing_git_repo_no_import() -> Result<()> {
         let temp_dir = TempDir::new()?;
         let repo_path = temp_dir.path();
 
-        // Create git repo with commits
-        init_git_repo(repo_path)?;
+        // Create a fake .git directory with files
+        fs::create_dir_all(repo_path.join(".git"))?;
+        fs::write(repo_path.join(".git/index"), "fake git index")?;
+        fs::write(repo_path.join("test.txt"), "content")?;
 
-        fs::write(repo_path.join("file.txt"), "content")?;
-        Command::new("git")
-            .args(&["add", "file.txt"])
-            .current_dir(repo_path)
-            .output()?;
+        // Init Helix - should NOT import from Git
+        init_helix_repo(repo_path)?;
 
-        Command::new("git")
-            .args(&["commit", "-m", "initial"])
-            .current_dir(repo_path)
-            .output()?;
+        // Verify index is empty (no import happened)
+        let reader = Reader::new(repo_path);
+        let data = reader.read()?;
+
+        assert_eq!(
+            data.entries.len(),
+            0,
+            "Should create empty index, not import from Git"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_init_preserves_existing_files() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo_path = temp_dir.path();
+
+        // Create some files first
+        fs::create_dir_all(repo_path.join("src"))?;
+        fs::write(repo_path.join("README.md"), "# My Project")?;
+        fs::write(repo_path.join("src/main.rs"), "fn main() {}")?;
 
         // Init Helix
         init_helix_repo(repo_path)?;
 
-        // Verify git history preserved
-        let log_output = Command::new("git")
-            .args(&["log", "--oneline"])
-            .current_dir(repo_path)
-            .output()?;
+        // Verify files still exist
+        assert!(repo_path.join("README.md").exists());
+        assert!(repo_path.join("src/main.rs").exists());
 
-        assert!(log_output.status.success());
-        assert!(String::from_utf8_lossy(&log_output.stdout).contains("initial"));
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_init_config_created() -> Result<()> {
-        let temp_dir = TempDir::new()?;
-        let repo_path = temp_dir.path();
-
-        init_helix_repo(repo_path)?;
-
-        let config_path = repo_path.join(".helix/config.toml");
-        assert!(config_path.exists(), "Config file should be created");
-
-        let config_content = fs::read_to_string(config_path)?;
-        assert!(config_content.contains("# Helix repository configuration"));
-        assert!(config_content.contains("[core]"));
-        assert!(config_content.contains("[ignore]"));
+        // Verify they're not tracked
+        let reader = Reader::new(repo_path);
+        let data = reader.read()?;
+        assert_eq!(data.entries.len(), 0, "Files should not be auto-tracked");
 
         Ok(())
     }
 
     #[test]
-    fn test_init_multiple_times_reimports() -> Result<()> {
+    fn test_init_multiple_times_safe() -> Result<()> {
         let temp_dir = TempDir::new()?;
         let repo_path = temp_dir.path();
 
-        init_git_repo(repo_path)?;
-
-        // Add a file
-        fs::write(repo_path.join("test.txt"), "content")?;
-        Command::new("git")
-            .args(&["add", "test.txt"])
-            .current_dir(repo_path)
-            .output()?;
-
-        // First init
+        // Init first time
         init_helix_repo(repo_path)?;
 
-        let reader = helix_index::Reader::new(repo_path);
+        // Manually modify index
+        let reader = Reader::new(repo_path);
         let data1 = reader.read()?;
-        assert_eq!(data1.entries.len(), 1);
+        let gen1 = data1.header.generation;
 
-        // Add another file to Git
-        fs::write(repo_path.join("new.txt"), "new")?;
-        Command::new("git")
-            .args(&["add", "new.txt"])
-            .current_dir(repo_path)
-            .output()?;
-
-        // Second init should pick up new file
+        // Init again - should skip existing files
         init_helix_repo(repo_path)?;
 
+        // Generation should remain the same (index not overwritten)
         let data2 = reader.read()?;
         assert_eq!(
-            data2.entries.len(),
-            2,
-            "Re-init should pick up new Git files"
+            data2.header.generation, gen1,
+            "Re-init should not overwrite index"
         );
-        assert!(data2.header.generation > data1.header.generation);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_all_directories_writable() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo_path = temp_dir.path();
+
+        init_helix_repo(repo_path)?;
+
+        // Try writing to each objects directory
+        fs::write(repo_path.join(".helix/objects/blobs/test"), "blob")?;
+        fs::write(repo_path.join(".helix/objects/trees/test"), "tree")?;
+        fs::write(repo_path.join(".helix/objects/commits/test"), "commit")?;
+
+        // Try writing to refs directories
+        fs::write(repo_path.join(".helix/refs/heads/test"), "abc123")?;
+        fs::write(repo_path.join(".helix/refs/tags/v1.0"), "def456")?;
+
+        // Verify all written
+        assert!(repo_path.join(".helix/objects/blobs/test").exists());
+        assert!(repo_path.join(".helix/objects/trees/test").exists());
+        assert!(repo_path.join(".helix/objects/commits/test").exists());
+        assert!(repo_path.join(".helix/refs/heads/test").exists());
+        assert!(repo_path.join(".helix/refs/tags/v1.0").exists());
 
         Ok(())
     }

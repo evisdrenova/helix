@@ -34,8 +34,10 @@ use crate::helix_index::hash;
 use crate::index::GitIndex;
 
 use anyhow::{Context, Result};
+use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use rayon::prelude::*;
 use std::collections::HashMap;
+use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -102,11 +104,35 @@ impl SyncEngine {
     fn build_helix_index_entries(&self, git_index: &GitIndex) -> Result<Vec<Entry>> {
         let head_tree = self.load_full_head_tree()?;
         let index_entries: Vec<_> = git_index.entries().collect();
+        let entry_count = index_entries.len();
 
+        if entry_count == 0 {
+            return Ok(Vec::new());
+        }
+
+        let pb = ProgressBar::new(entry_count as u64);
+        pb.set_style(
+            ProgressStyle::with_template(
+                "{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] \
+             {pos}/{len} entries ({eta})",
+            )?
+            .progress_chars(">-"),
+        );
+
+        // Build entries in parallel, updating the progress bar as we go
         let entries: Result<Vec<Entry>> = index_entries
             .into_par_iter()
-            .map(|e| self.build_helix_entry_from_git_entry(&e, &head_tree))
+            .map_init(
+                || pb.clone(),
+                |pb, e| {
+                    let res = self.build_helix_entry_from_git_entry(&e, &head_tree);
+                    pb.inc(1);
+                    res
+                },
+            )
             .collect();
+
+        pb.finish_with_message("helix index built");
 
         entries
     }

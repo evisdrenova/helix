@@ -127,11 +127,13 @@ impl Writer {
         writer.write_all(&header_bytes)?;
         hasher.update(&header_bytes);
 
-        // Stream entries directly - no pre-serialization!
-        for entry in entries {
-            let entry_bytes = entry.to_bytes()?;
-            writer.write_all(&entry_bytes)?;
-            hasher.update(&entry_bytes);
+        if !entries.is_empty() {
+            // Stream entries directly
+            for entry in entries {
+                let entry_bytes = entry.to_bytes()?;
+                writer.write_all(&entry_bytes)?;
+                hasher.update(&entry_bytes);
+            }
         }
 
         // Write footer
