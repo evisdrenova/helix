@@ -68,8 +68,6 @@ impl SyncEngine {
             0
         };
 
-        println!("the path {:?}", self.repo_path);
-
         let git_index_path = self.repo_path.join(".git/index");
 
         // Handle brand-new repo with no .git/index yet
@@ -87,7 +85,7 @@ impl SyncEngine {
         let entries = self.build_helix_index_entries(&git_index)?;
         let header = Header::new(current_generation + 1, entries.len() as u32);
 
-        let writer = Writer::new_canonical(&self.repo_path); // Canonical write with fsync
+        let writer = Writer::new_canonical(&self.repo_path);
         writer.write(&header, &entries)?;
 
         Ok(())

@@ -97,9 +97,7 @@ fn import_from_git(repo_path: &Path) -> Result<()> {
 fn create_directory_structure(repo_path: &Path) -> Result<()> {
     let helix_dir = repo_path.join(".helix");
 
-    if helix_dir.exists() {
-        println!("✓ .helix/ directory exists (re-initializing)");
-    } else {
+    if !helix_dir.exists() {
         fs::create_dir_all(&helix_dir).context("Failed to create .helix directory")?;
     }
 
@@ -137,7 +135,6 @@ fn create_empty_index(repo_path: &Path) -> Result<()> {
     let index_path = repo_path.join(".helix/helix.idx");
 
     if index_path.exists() {
-        println!("○ helix.idx already exists, skipping");
         return Ok(());
     }
 
