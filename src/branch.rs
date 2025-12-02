@@ -349,7 +349,7 @@ mod tests {
         crate::init::init_helix_repo(path, None)?;
 
         // Set up config
-        let config_path = path.join(".helix/config.toml");
+        let config_path = path.join("helix.toml");
         fs::write(
             &config_path,
             r#"

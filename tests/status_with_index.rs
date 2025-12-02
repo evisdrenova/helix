@@ -8,7 +8,7 @@ fn init_test_repo(path: &Path) -> Result<()> {
     helix::init::init_helix_repo(path, None)?;
 
     // Set up author config
-    let config_path = path.join(".helix/config.toml");
+    let config_path = path.join("helix.toml");
     fs::write(
         &config_path,
         r#"

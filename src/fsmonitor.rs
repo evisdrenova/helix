@@ -439,10 +439,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path();
 
-        // Create .helix/config.toml
-        fs::create_dir(repo.join(".helix")).unwrap();
         fs::write(
-            repo.join(".helix/config.toml"),
+            repo.join("helix.toml"),
             r#"
 [ignore]
 patterns = ["*.tmp", "cache/", "ignored_file"]

@@ -32,7 +32,7 @@ pub struct GlobalConfig {
     pub message_level: MessageLevel,
 }
 
-/// Repository-specific configuration (from .helix/config.toml)
+/// Repository-specific configuration (from helix.toml)
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct RepoConfig {
     #[serde(default)]
@@ -92,7 +92,7 @@ impl Config {
     }
 
     fn load_repo(repo_path: &Path) -> Result<Option<RepoConfig>> {
-        let config_path = repo_path.join(".helix/config.toml");
+        let config_path = repo_path.join("helix.toml");
 
         if !config_path.exists() {
             return Ok(None);
@@ -101,8 +101,7 @@ impl Config {
         let content = fs::read_to_string(&config_path)
             .with_context(|| format!("Failed to read {}", config_path.display()))?;
 
-        let config: RepoConfig =
-            toml::from_str(&content).context("Failed to parse .helix/config.toml")?;
+        let config: RepoConfig = toml::from_str(&content).context("Failed to parse helix.toml")?;
 
         Ok(Some(config))
     }

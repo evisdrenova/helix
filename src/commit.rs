@@ -271,7 +271,7 @@ fn write_head(repo_path: &Path, commit_hash: Hash) -> Result<()> {
 /// Get author from config or environment
 fn get_author(repo_path: &Path) -> Result<String> {
     // Try reading from .helix/config
-    let config_path = repo_path.join(".helix").join("config.toml");
+    let config_path = repo_path.join("helix.toml");
 
     if config_path.exists() {
         let config_content = fs::read_to_string(&config_path)?;
@@ -304,7 +304,7 @@ fn get_author(repo_path: &Path) -> Result<String> {
     }
 
     anyhow::bail!(
-        "Author not configured. Set in .helix/config.toml:\n\
+        "Author not configured. Set in helix.toml:\n\
          author = \"Your Name <your@email.com>\"\n\
          \n\
          Or use environment variables:\n\
@@ -370,7 +370,6 @@ mod tests {
     use super::*;
     use crate::helix_index::blob_storage::BlobStorage;
     use crate::helix_index::format::Entry;
-    use crate::helix_index::hash::hash_bytes;
     use std::process::Command;
     use tempfile::TempDir;
 
@@ -394,7 +393,7 @@ mod tests {
         crate::init::init_helix_repo(path, None)?;
 
         // Set author in config
-        let config_path = path.join(".helix").join("config.toml");
+        let config_path = path.join("helix.toml");
         fs::write(&config_path, "author = \"Test User <test@example.com>\"\n")?;
 
         Ok(())

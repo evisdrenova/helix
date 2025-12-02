@@ -163,10 +163,10 @@ fn create_head_file(repo_path: &Path) -> Result<()> {
 }
 
 fn create_repo_config(repo_path: &Path) -> Result<()> {
-    let config_path = repo_path.join(".helix/config.toml");
+    let config_path = repo_path.join("helix.toml");
 
     if config_path.exists() {
-        println!("○ config.toml already exists, skipping");
+        println!("○ helix.toml already exists, skipping");
         return Ok(());
     }
 
@@ -190,11 +190,13 @@ patterns = [
     "*.tmp",
     "*.swp",
     ".DS_Store",
-    ".helix/*"
+    ".helix/*",
+    ".git/",
+    "target"
 ]
 "#;
 
-    fs::write(&config_path, default_config).context("Failed to write .helix/config.toml")?;
+    fs::write(&config_path, default_config).context("Failed to write helix.toml")?;
 
     Ok(())
 }
@@ -207,7 +209,7 @@ fn print_success_message(repo_path: &Path) -> Result<()> {
     );
     println!();
     println!("Next steps:");
-    println!("  1. Configure author (edit .helix/config.toml or set env vars)");
+    println!("  1. Configure author (edit helix.toml or set env vars)");
     println!("  2. Add files:    helix add <files>");
     println!("  3. Make commit:  helix commit -m \"Initial commit\"");
     println!();
@@ -298,7 +300,7 @@ mod tests {
 
         init_helix_repo(repo_path, None)?;
 
-        let config_path = repo_path.join(".helix/config.toml");
+        let config_path = repo_path.join("helix.toml");
         assert!(config_path.exists(), "Config should exist");
 
         let content = fs::read_to_string(config_path)?;
@@ -321,7 +323,7 @@ mod tests {
         // Should still work
         assert!(repo_path.join(".helix/helix.idx").exists());
         assert!(repo_path.join(".helix/HEAD").exists());
-        assert!(repo_path.join(".helix/config.toml").exists());
+        assert!(repo_path.join("helix.toml").exists());
 
         // Index should still be valid
         let reader = Reader::new(repo_path);
@@ -952,7 +954,7 @@ mod tests {
         // Create .helix directory with files
         fs::create_dir_all(repo_path.join(".helix"))?;
         fs::write(repo_path.join(".helix/HEAD"), "ref: refs/heads/main")?;
-        fs::write(repo_path.join(".helix/config.toml"), "# config")?;
+        fs::write(repo_path.join("helix.toml"), "# config")?;
 
         // Stage .helix files (shouldn't happen, but let's test it)
         Command::new("git")

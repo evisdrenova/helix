@@ -83,7 +83,7 @@ impl IgnoreRules {
 
     /// Load patterns from .helix/config.toml (repo-level)
     fn load_helix_repo_config(repo_path: &Path) -> Vec<IgnorePattern> {
-        let config_path = repo_path.join(".helix/config.toml");
+        let config_path = repo_path.join("helix.toml");
         Self::load_helix_toml(&config_path)
     }
 
