@@ -1,3 +1,5 @@
+//todo: update to helix when its ready
+
 use crate::{config::Config, git::Git, llm::LLM};
 use anyhow::{Context, Result};
 

@@ -4,13 +4,14 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use helix::fsmonitor::FSMonitor;
 use helix::helix_index::api::HelixIndexData;
+use helix::{fsmonitor::FSMonitor, ignore::IgnoreRules};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::collections::HashSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use walkdir::WalkDir;
 
 use super::actions::Action;
 use super::ui;
@@ -89,6 +90,7 @@ pub struct App {
     pub sections_collapsed: HashSet<Section>,
     pub current_branch: Option<String>,
     pub helix_index: HelixIndexData,
+    pub ignore_rules: IgnoreRules,
 }
 
 impl App {
@@ -106,6 +108,8 @@ impl App {
 
         let mut fsmonitor = FSMonitor::new(&repo_path)?;
         fsmonitor.start_watching_repo()?;
+
+        let ignore_rules = IgnoreRules::load(&repo_path);
 
         let mut app = Self {
             files: Vec::new(),
@@ -126,6 +130,7 @@ impl App {
             sections_collapsed: HashSet::new(),
             current_branch,
             helix_index,
+            ignore_rules,
         };
 
         app.refresh_status()?;
@@ -150,15 +155,21 @@ impl App {
         // Get staged files from index
         self.staged_files = self.helix_index.get_staged();
 
-        // Get dirty files from FSMonitor
+        let mut all_files = HashSet::new();
         let dirty_files = self.fsmonitor.get_dirty_files();
+        all_files.extend(dirty_files);
+
+        if self.show_untracked {
+            let untracked = self.scan_for_untracked_files()?;
+            all_files.extend(untracked);
+        }
 
         // Build file status list
         let mut seen = HashSet::new();
 
         // Show untracked files
         if self.show_untracked {
-            for path in &dirty_files {
+            for path in &all_files {
                 if !self.helix_index.is_tracked(path) {
                     seen.insert(path.clone());
                     self.files.push(FileStatus::Untracked(path.clone()));
@@ -166,8 +177,8 @@ impl App {
             }
         }
 
-        // Show modified files
-        for path in &dirty_files {
+        // Show modified files (tracked but dirty)
+        for path in &all_files {
             if self.helix_index.is_tracked(path) && !self.staged_files.contains(path) {
                 if seen.insert(path.clone()) {
                     self.files.push(FileStatus::Modified(path.clone()));
@@ -179,6 +190,64 @@ impl App {
         self.files.sort_by(|a, b| a.path().cmp(b.path()));
 
         Ok(())
+    }
+
+    /// Scan working tree for untracked files
+    /// This catches files that existed before FSMonitor started
+    fn scan_for_untracked_files(&self) -> Result<Vec<PathBuf>> {
+        let mut untracked = Vec::new();
+
+        for entry in WalkDir::new(&self.repo_path)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|e| self.should_process_entry(e))
+        {
+            let entry = entry?;
+
+            if !entry.path().is_file() {
+                continue;
+            }
+
+            let rel_path = entry.path().strip_prefix(&self.repo_path)?;
+
+            // Skip if tracked
+            if self.helix_index.is_tracked(rel_path) {
+                continue;
+            }
+
+            // Skip if ignored
+            if self.ignore_rules.should_ignore(rel_path) {
+                continue;
+            }
+
+            // Found untracked file!
+            untracked.push(rel_path.to_path_buf());
+        }
+
+        Ok(untracked)
+    }
+
+    fn should_process_entry(&self, entry: &walkdir::DirEntry) -> bool {
+        let name = entry.file_name().to_string_lossy();
+
+        // Skip .git and .helix
+        if name == ".git" || name == ".helix" {
+            return false;
+        }
+
+        // For directories, check if ignored
+        if entry.path().is_dir() {
+            let rel_path = match entry.path().strip_prefix(&self.repo_path) {
+                Ok(p) => p,
+                Err(_) => return false,
+            };
+
+            if self.ignore_rules.should_ignore(rel_path) {
+                return false;
+            }
+        }
+
+        true
     }
 
     pub fn visible_files(&self) -> Vec<&FileStatus> {

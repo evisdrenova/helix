@@ -37,6 +37,7 @@ use anyhow::{Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -78,8 +79,6 @@ impl SyncEngine {
 
             return Ok(());
         }
-
-        println!("after repo");
 
         let git_index = GitIndex::open(&self.repo_path)?;
         let entries = self.build_helix_index_entries(&git_index)?;
@@ -138,8 +137,6 @@ impl SyncEngine {
     /// - Setting STAGED when index != HEAD (or when the path doesn't exist in HEAD)
     ///
     /// It does NOT set:
-    /// - MODIFIED  (requires working tree vs helix.idx comparison)
-    /// - DELETED   (requires working tree presence info)
     /// - UNTRACKED (requires FSMonitor / paths not in helix.idx)
     fn build_helix_entry_from_git_entry(
         &self,
@@ -147,6 +144,7 @@ impl SyncEngine {
         head_tree: &HashMap<PathBuf, Vec<u8>>,
     ) -> Result<Entry> {
         let path = PathBuf::from(&index_entry.path);
+        let full_path = self.repo_path.join(&path);
 
         let mut flags = EntryFlags::TRACKED;
         let index_oid = hash::hash_bytes(index_entry.oid.as_bytes());
@@ -155,16 +153,41 @@ impl SyncEngine {
         let is_staged = head_tree
             .get(&path)
             .map(|head_oid| head_oid.as_slice() != index_oid)
-            .unwrap_or(true); // Not in HEAD = new file = staged by default
+            .unwrap_or(true); // Not in HEAD = new file = staged
 
         if is_staged {
             flags |= EntryFlags::STAGED;
         }
 
+        // Check if MODIFIED (working tree != index)
+        if full_path.exists() && full_path.is_file() {
+            let working_content = fs::read(&full_path)?;
+            let working_oid = hash::hash_bytes(&working_content);
+
+            if working_oid != index_oid {
+                flags |= EntryFlags::MODIFIED;
+            }
+        } else if !full_path.exists() {
+            // File was deleted from working tree
+            flags |= EntryFlags::DELETED;
+        }
+
+        let (mtime_sec, file_size) = if full_path.exists() {
+            let metadata = fs::metadata(&full_path)?;
+            let mtime = metadata
+                .modified()?
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_secs();
+            (mtime, metadata.len())
+        } else {
+            // File doesn't exist, use index values
+            (index_entry.mtime as u64, index_entry.size as u64)
+        };
+
         Ok(Entry {
             path,
-            size: index_entry.size as u64,
-            mtime_sec: index_entry.mtime as u64,
+            size: file_size,
+            mtime_sec,
             mtime_nsec: 0,
             flags,
             merge_conflict_stage: 0,
