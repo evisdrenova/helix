@@ -149,6 +149,9 @@ fn draw_file_sections(f: &mut Frame, area: Rect, app: &App) {
         let is_selected = idx == app.selected_index;
         let is_staged = app.staged_files.contains(file.path());
         let is_tracked = app.tracked_files.contains(file.path());
+        let is_untracked = matches!(file, FileStatus::Untracked(_));
+        let is_modified = matches!(file, FileStatus::Modified(_));
+        let is_deleted = matches!(file, FileStatus::Deleted(_));
 
         let item = create_file_item(
             file,
@@ -157,12 +160,20 @@ fn draw_file_sections(f: &mut Frame, area: Rect, app: &App) {
             app.current_section == Section::Unstaged && is_selected,
         );
 
+        // only in “UNTRACKED”
+        if is_untracked {
+            untracked_items.push(item.clone());
+            continue;
+        }
+
+        //  file has something in the index differing from HEAD
         if is_staged {
-            staged_items.push(item);
-        } else if !is_tracked && !is_staged {
-            untracked_items.push(item);
-        } else {
-            unstaged_items.push(item);
+            staged_items.push(item.clone());
+        }
+
+        // Unstaged changes: working tree differs from index
+        if (is_modified || is_deleted) && is_tracked {
+            unstaged_items.push(item.clone());
         }
     }
 
