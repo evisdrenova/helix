@@ -219,7 +219,7 @@ fn draw_file_sections(f: &mut Frame, area: Rect, app: &App) {
     draw_section(
         f,
         sections[1],
-        "Untracked",
+        "UNTRACKED",
         &untracked_items,
         untracked_visible,
         app.current_section == Section::Untracked,
