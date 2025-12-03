@@ -20,6 +20,7 @@ use super::ui;
 pub enum Section {
     Unstaged,
     Staged,
+    Untracked,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -85,6 +86,7 @@ pub struct App {
     pub auto_refresh: bool,
     pub last_refresh: std::time::Instant,
     pub staged_files: HashSet<PathBuf>,
+    pub tracked_files: HashSet<PathBuf>,
     pub show_help: bool,
     pub current_section: Section,
     pub sections_collapsed: HashSet<Section>,
@@ -125,6 +127,7 @@ impl App {
             auto_refresh: true,
             last_refresh: std::time::Instant::now(),
             staged_files: HashSet::new(),
+            tracked_files: HashSet::new(),
             show_help: false,
             current_section: Section::Unstaged,
             sections_collapsed: HashSet::new(),
@@ -194,15 +197,20 @@ impl App {
 
     /// Scan working tree for untracked files
     /// This catches files that existed before FSMonitor started
-    fn scan_for_untracked_files(&self) -> Result<Vec<PathBuf>> {
+    fn scan_for_untracked_files(&mut self) -> Result<Vec<PathBuf>> {
         let mut untracked = Vec::new();
 
+        // No filter_entry that closes over &self
         for entry in WalkDir::new(&self.repo_path)
             .follow_links(false)
             .into_iter()
-            .filter_entry(|e| self.should_process_entry(e))
         {
             let entry = entry?;
+
+            // Now the borrow of &self is only for this call, and ends right after
+            if !self.should_process_entry(&entry) {
+                continue;
+            }
 
             if !entry.path().is_file() {
                 continue;
@@ -210,17 +218,18 @@ impl App {
 
             let rel_path = entry.path().strip_prefix(&self.repo_path)?;
 
-            // Skip if tracked
-            if self.helix_index.is_tracked(rel_path) {
+            // Short immutable borrow for helix_index
+            let tracked = self.helix_index.is_tracked(rel_path);
+            if tracked {
+                // Now we can mutably borrow self.tracked_files safely
+                self.tracked_files.insert(rel_path.to_path_buf());
                 continue;
             }
 
-            // Skip if ignored
             if self.ignore_rules.should_ignore(rel_path) {
                 continue;
             }
 
-            // Found untracked file!
             untracked.push(rel_path.to_path_buf());
         }
 
@@ -415,6 +424,7 @@ impl App {
                 self.current_section = match self.current_section {
                     Section::Unstaged => Section::Staged,
                     Section::Staged => Section::Unstaged,
+                    Section::Untracked => Section::Staged,
                 };
                 // Reset selection when switching sections
                 self.selected_index = 0;

@@ -141,13 +141,14 @@ fn draw_file_sections(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    // Group files by status and whether they're staged
     let mut unstaged_items = Vec::new();
     let mut staged_items = Vec::new();
+    let mut untracked_items = Vec::new();
 
     for (idx, file) in visible_files.iter().enumerate() {
         let is_selected = idx == app.selected_index;
         let is_staged = app.staged_files.contains(file.path());
+        let is_tracked = app.tracked_files.contains(file.path());
 
         let item = create_file_item(
             file,
@@ -158,6 +159,8 @@ fn draw_file_sections(f: &mut Frame, area: Rect, app: &App) {
 
         if is_staged {
             staged_items.push(item);
+        } else if !is_tracked && !is_staged {
+            untracked_items.push(item);
         } else {
             unstaged_items.push(item);
         }
@@ -166,6 +169,7 @@ fn draw_file_sections(f: &mut Frame, area: Rect, app: &App) {
     // Calculate section sizes
     let unstaged_visible = !app.sections_collapsed.contains(&Section::Unstaged);
     let staged_visible = !app.sections_collapsed.contains(&Section::Staged);
+    let untracked_visible = !app.sections_collapsed.contains(&Section::Untracked);
 
     let unstaged_size = if unstaged_visible {
         (unstaged_items.len() + 1).min(20) as u16
@@ -179,11 +183,18 @@ fn draw_file_sections(f: &mut Frame, area: Rect, app: &App) {
         1
     };
 
+    let untracked_size = if untracked_visible {
+        (untracked_items.len() + 1).min(20) as u16
+    } else {
+        1
+    };
+
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(unstaged_size + 2),
             Constraint::Length(staged_size + 2),
+            Constraint::Length(untracked_size + 2),
             Constraint::Min(0),
         ])
         .split(area);
@@ -204,6 +215,14 @@ fn draw_file_sections(f: &mut Frame, area: Rect, app: &App) {
         &staged_items,
         staged_visible,
         app.current_section == Section::Staged,
+    );
+    draw_section(
+        f,
+        sections[1],
+        "Untracked",
+        &untracked_items,
+        untracked_visible,
+        app.current_section == Section::Untracked,
     );
 }
 
