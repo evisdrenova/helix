@@ -213,7 +213,7 @@ fn draw_file_sections(f: &mut Frame, area: Rect, app: &App) {
     draw_section(
         f,
         sections[0],
-        "UNSTAGED (focus)",
+        "UNSTAGED",
         &unstaged_items,
         unstaged_visible,
         app.current_section == Section::Unstaged,
@@ -229,7 +229,7 @@ fn draw_file_sections(f: &mut Frame, area: Rect, app: &App) {
     );
     draw_section(
         f,
-        sections[1],
+        sections[2],
         "UNTRACKED",
         &untracked_items,
         untracked_visible,
@@ -288,7 +288,7 @@ fn create_file_item(
     };
 
     let indicator = if is_selected { "▶ " } else { "  " };
-    let staged_marker = if is_staged { "" } else { "" };
+    let staged_marker = if is_staged { "S" } else { " " };
 
     let path_str = file.path().to_string_lossy();
 
