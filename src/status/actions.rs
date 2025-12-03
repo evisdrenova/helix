@@ -11,7 +11,6 @@ pub enum Action {
     StageAll,
     UnstageAll,
     Refresh,
-    ToggleFilter,
     ToggleUntracked,
     ToggleHelp,
     SwitchSection,   // Tab

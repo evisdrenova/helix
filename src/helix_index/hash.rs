@@ -3,6 +3,7 @@
 use anyhow::Result;
 use blake3::Hasher;
 use rayon::prelude::*;
+use sha1::{Digest, Sha1};
 use std::{fs, io::Read, path::Path};
 
 /// 32-byte BLAKE3 hash (vs 20-byte SHA-1)
@@ -43,6 +44,13 @@ pub fn hash_file_stream(path: &Path) -> Result<Hash> {
 /// Hash multiple files in parallel
 pub fn hash_files_parallel(paths: &[&Path]) -> Result<Vec<Hash>> {
     paths.par_iter().map(|path| hash_file(path)).collect()
+}
+
+pub fn compute_blob_oid(content: &[u8]) -> [u8; 20] {
+    let mut hasher = Sha1::new();
+    hasher.update(format!("blob {}\0", content.len()).as_bytes());
+    hasher.update(content);
+    hasher.finalize().into()
 }
 
 /// Convert hash to hex string for display/storage

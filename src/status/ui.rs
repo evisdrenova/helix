@@ -14,7 +14,7 @@ use ratatui::{
 
 use crate::status::app::Section;
 
-use super::app::{App, FileStatus, FilterMode};
+use super::app::{App, FileStatus};
 
 pub fn draw(f: &mut Frame, app: &App) {
     if app.show_help {
@@ -134,10 +134,10 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_file_sections(f: &mut Frame, area: Rect, app: &App) {
-    let visible_files = app.visible_files();
+    let visible_files = app.files.clone();
 
     if visible_files.is_empty() {
-        draw_empty_state(f, area, app);
+        draw_empty_state(f, area);
         return;
     }
 
@@ -153,16 +153,12 @@ fn draw_file_sections(f: &mut Frame, area: Rect, app: &App) {
         let is_modified = matches!(file, FileStatus::Modified(_));
         let is_deleted = matches!(file, FileStatus::Deleted(_));
 
-        
-
         let item = create_file_item(
             file,
             is_selected,
             is_staged,
             app.current_section == Section::Unstaged && is_selected,
         );
-
-        // these states aren't mutually exclusive
 
         // only in “UNTRACKED”
         if is_untracked {
@@ -332,12 +328,8 @@ fn create_file_item(
     ListItem::new(line)
 }
 
-fn draw_empty_state(f: &mut Frame, area: Rect, app: &App) {
-    let message = if app.filter_mode == FilterMode::All {
-        "Working directory empty"
-    } else {
-        "No files match the current filter"
-    };
+fn draw_empty_state(f: &mut Frame, area: Rect) {
+    let message = "Working directory empty";
 
     let empty = Paragraph::new(message)
         .block(

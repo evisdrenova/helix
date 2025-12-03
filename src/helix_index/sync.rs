@@ -34,6 +34,7 @@ use crate::helix_index::hash;
 use crate::index::GitIndex;
 
 use anyhow::{Context, Result};
+use hash::compute_blob_oid;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -91,13 +92,14 @@ impl SyncEngine {
     }
 
     fn build_helix_index_entries(&self, git_index: &GitIndex) -> Result<Vec<Entry>> {
-        let head_tree = self.load_full_head_tree()?;
         let index_entries: Vec<_> = git_index.entries().collect();
         let entry_count = index_entries.len();
 
         if entry_count == 0 {
             return Ok(Vec::new());
         }
+
+        let head_tree = self.load_full_head_tree()?;
 
         let pb = ProgressBar::new(entry_count as u64);
         pb.set_style(
@@ -138,6 +140,65 @@ impl SyncEngine {
     ///
     /// It does NOT set:
     /// - UNTRACKED (requires FSMonitor / paths not in helix.idx)
+    // fn build_helix_entry_from_git_entry(
+    //     &self,
+    //     index_entry: &crate::index::IndexEntry,
+    //     head_tree: &HashMap<PathBuf, Vec<u8>>,
+    // ) -> Result<Entry> {
+    //     let path = PathBuf::from(&index_entry.path);
+    //     let full_path = self.repo_path.join(&path);
+
+    //     let mut flags = EntryFlags::TRACKED;
+    //     let index_oid = hash::hash_bytes(index_entry.oid.as_bytes());
+
+    //     // Check if staged (index != HEAD)
+    //     let is_staged = head_tree
+    //         .get(&path)
+    //         .map(|head_oid| head_oid.as_slice() != index_oid)
+    //         .unwrap_or(true); // Not in HEAD = new file = staged
+
+    //     if is_staged {
+    //         flags |= EntryFlags::STAGED;
+    //     }
+
+    //     // Check if MODIFIED (working tree != index)
+    //     if full_path.exists() && full_path.is_file() {
+    //         let working_content = fs::read(&full_path)?;
+    //         let working_oid = hash::hash_bytes(&working_content);
+
+    //         if working_oid != index_oid {
+    //             flags |= EntryFlags::MODIFIED;
+    //         }
+    //     } else if !full_path.exists() {
+    //         // File was deleted from working tree
+    //         flags |= EntryFlags::DELETED;
+    //     }
+
+    //     let (mtime_sec, file_size) = if full_path.exists() {
+    //         let metadata = fs::metadata(&full_path)?;
+    //         let mtime = metadata
+    //             .modified()?
+    //             .duration_since(std::time::UNIX_EPOCH)?
+    //             .as_secs();
+    //         (mtime, metadata.len())
+    //     } else {
+    //         // File doesn't exist, use index values
+    //         (index_entry.mtime as u64, index_entry.size as u64)
+    //     };
+
+    //     Ok(Entry {
+    //         path,
+    //         size: file_size,
+    //         mtime_sec,
+    //         mtime_nsec: 0,
+    //         flags,
+    //         merge_conflict_stage: 0,
+    //         file_mode: index_entry.file_mode,
+    //         oid: index_oid,
+    //         reserved: [0; 33],
+    //     })
+    // }
+
     fn build_helix_entry_from_git_entry(
         &self,
         index_entry: &crate::index::IndexEntry,
@@ -147,31 +208,36 @@ impl SyncEngine {
         let full_path = self.repo_path.join(&path);
 
         let mut flags = EntryFlags::TRACKED;
-        let index_oid = hash::hash_bytes(index_entry.oid.as_bytes());
 
-        // Check if staged (index != HEAD)
+        // Git's index snapshot blob-hash
+        let index_git_oid = index_entry.oid.as_bytes();
+
+        // Helix stores its own hash (of the Git oid bytes)
+        let helix_oid = hash::hash_bytes(index_git_oid);
+
+        // ───────────────── STAGED check: index vs HEAD ─────────────────
         let is_staged = head_tree
             .get(&path)
-            .map(|head_oid| head_oid.as_slice() != index_oid)
-            .unwrap_or(true); // Not in HEAD = new file = staged
+            .map(|head_oid| head_oid.as_slice() != helix_oid)
+            .unwrap_or(true); // new file = staged
 
         if is_staged {
             flags |= EntryFlags::STAGED;
         }
 
-        // Check if MODIFIED (working tree != index)
+        // ───────────────── MODIFIED / DELETED: working tree vs index ─────────────────
         if full_path.exists() && full_path.is_file() {
             let working_content = fs::read(&full_path)?;
-            let working_oid = hash::hash_bytes(&working_content);
+            let working_git_oid = compute_blob_oid(&working_content);
 
-            if working_oid != index_oid {
+            if &working_git_oid != index_git_oid {
                 flags |= EntryFlags::MODIFIED;
             }
-        } else if !full_path.exists() {
-            // File was deleted from working tree
+        } else {
             flags |= EntryFlags::DELETED;
         }
 
+        // ───────────────── Metadata ─────────────────
         let (mtime_sec, file_size) = if full_path.exists() {
             let metadata = fs::metadata(&full_path)?;
             let mtime = metadata
@@ -180,7 +246,6 @@ impl SyncEngine {
                 .as_secs();
             (mtime, metadata.len())
         } else {
-            // File doesn't exist, use index values
             (index_entry.mtime as u64, index_entry.size as u64)
         };
 
@@ -192,7 +257,7 @@ impl SyncEngine {
             flags,
             merge_conflict_stage: 0,
             file_mode: index_entry.file_mode,
-            oid: index_oid,
+            oid: helix_oid,
             reserved: [0; 33],
         })
     }

@@ -51,27 +51,6 @@ impl FileStatus {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum FilterMode {
-    All,
-    Modified,
-    Added,
-    Deleted,
-    Untracked,
-}
-
-impl FilterMode {
-    pub fn next(&self) -> Self {
-        match self {
-            FilterMode::All => FilterMode::Modified,
-            FilterMode::Modified => FilterMode::Added,
-            FilterMode::Added => FilterMode::Deleted,
-            FilterMode::Deleted => FilterMode::Untracked,
-            FilterMode::Untracked => FilterMode::All,
-        }
-    }
-}
-
 pub struct App {
     pub files: Vec<FileStatus>,
     pub selected_index: usize,
@@ -79,7 +58,6 @@ pub struct App {
     pub fsmonitor: FSMonitor,
     pub should_quit: bool,
     pub show_untracked: bool,
-    pub filter_mode: FilterMode,
     pub visible_height: usize,
     pub repo_path: PathBuf,
     pub repo_name: String,
@@ -120,7 +98,6 @@ impl App {
             fsmonitor,
             should_quit: false,
             show_untracked: true,
-            filter_mode: FilterMode::All,
             visible_height: 20,
             repo_path,
             repo_name,
@@ -291,41 +268,12 @@ impl App {
         true
     }
 
-    pub fn visible_files(&self) -> Vec<&FileStatus> {
-        let filtered: Vec<&FileStatus> = match self.filter_mode {
-            FilterMode::All => self.files.iter().collect(),
-            FilterMode::Modified => self
-                .files
-                .iter()
-                .filter(|f| matches!(f, FileStatus::Modified(_)))
-                .collect(),
-            FilterMode::Added => self
-                .files
-                .iter()
-                .filter(|f| matches!(f, FileStatus::Added(_)))
-                .collect(),
-            FilterMode::Deleted => self
-                .files
-                .iter()
-                .filter(|f| matches!(f, FileStatus::Deleted(_)))
-                .collect(),
-            FilterMode::Untracked => self
-                .files
-                .iter()
-                .filter(|f| matches!(f, FileStatus::Untracked(_)))
-                .collect(),
-        };
-
-        filtered
-    }
-
     /// Get the currently selected file
     pub fn get_selected_file(&self) -> Option<&FileStatus> {
-        let visible = self.visible_files();
-        if visible.is_empty() {
+        if self.files.is_empty() {
             return None;
         }
-        visible.get(self.selected_index).copied()
+        self.files.get(self.selected_index)
     }
 
     /// Toggle staging for the selected file
@@ -377,7 +325,7 @@ impl App {
     }
 
     pub fn handle_action(&mut self, action: Action) -> Result<()> {
-        let visible = self.visible_files();
+        let visible = self.files.iter();
         let visible_count = visible.len();
 
         if visible_count == 0
@@ -434,15 +382,10 @@ impl App {
             Action::Refresh => {
                 self.refresh_status()?;
                 // Reset selection if out of bounds
-                let visible_count = self.visible_files().len();
+                let visible_count = self.files.len();
                 if self.selected_index >= visible_count && visible_count > 0 {
                     self.selected_index = visible_count - 1;
                 }
-            }
-            Action::ToggleFilter => {
-                self.filter_mode = self.filter_mode.next();
-                self.selected_index = 0;
-                self.scroll_offset = 0;
             }
             Action::ToggleUntracked => {
                 self.show_untracked = !self.show_untracked;
@@ -488,7 +431,7 @@ impl App {
         }
 
         // Ensure scroll doesn't go past the end
-        let visible_count = self.visible_files().len();
+        let visible_count = self.files.len();
         let max_scroll = visible_count.saturating_sub(visible_height);
         self.scroll_offset = self.scroll_offset.min(max_scroll);
     }
@@ -553,7 +496,6 @@ impl App {
                         KeyCode::Char('a') => Some(Action::StageAll),
                         KeyCode::Char('A') => Some(Action::UnstageAll),
                         KeyCode::Char('r') => Some(Action::Refresh),
-                        KeyCode::Char('f') => Some(Action::ToggleFilter),
                         KeyCode::Char('t') => Some(Action::ToggleUntracked),
                         KeyCode::Char('?') => Some(Action::ToggleHelp),
                         KeyCode::Tab => Some(Action::SwitchSection),
