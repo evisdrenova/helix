@@ -4,7 +4,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use helix::helix_index::api::HelixIndexData;
+use helix::helix_index::{api::HelixIndexData, EntryFlags};
 use helix::{fsmonitor::FSMonitor, ignore::IgnoreRules};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::collections::HashSet;
@@ -148,6 +148,8 @@ impl App {
 
     pub fn refresh_status(&mut self) -> Result<()> {
         self.files.clear();
+        self.tracked_files.clear();
+        self.staged_files.clear();
 
         // If index changed on disk, reload it
         if self.fsmonitor.index_changed() {
@@ -155,41 +157,71 @@ impl App {
             self.fsmonitor.clear_index_flag();
         }
 
-        // Get staged files from index
-        self.staged_files = self.helix_index.get_staged();
+        // Build tracked & staged sets from helix index entries
+        let entries = self.helix_index.entries();
 
-        let mut all_files = HashSet::new();
-        let dirty_files = self.fsmonitor.get_dirty_files();
-        all_files.extend(dirty_files);
+        for entry in entries {
+            let path = entry.path.clone();
+            let flags = entry.flags;
 
-        if self.show_untracked {
-            let untracked = self.scan_for_untracked_files()?;
-            all_files.extend(untracked);
-        }
+            if flags.contains(EntryFlags::TRACKED) {
+                self.tracked_files.insert(path.clone());
+            }
 
-        // Build file status list
-        let mut seen = HashSet::new();
-
-        // Show untracked files
-        if self.show_untracked {
-            for path in &all_files {
-                if !self.helix_index.is_tracked(path) {
-                    seen.insert(path.clone());
-                    self.files.push(FileStatus::Untracked(path.clone()));
-                }
+            if flags.contains(EntryFlags::STAGED) {
+                self.staged_files.insert(path.clone());
             }
         }
 
-        // Show modified files (tracked but dirty)
-        for path in &all_files {
-            if self.helix_index.is_tracked(path) && !self.staged_files.contains(path) {
+        // Build FileStatus from flags (FileStatus is a simple wrapper over the flags)
+        let mut seen = std::collections::HashSet::new();
+
+        // tracked entries with changes (staged and/or modified/deleted)
+        for entry in entries {
+            let path = entry.path.clone();
+            let flags = entry.flags;
+
+            if !flags.contains(EntryFlags::TRACKED) {
+                continue;
+            }
+
+            // Clean file → no status entry
+            if !flags.intersects(EntryFlags::STAGED | EntryFlags::MODIFIED | EntryFlags::DELETED) {
+                continue;
+            }
+
+            // Partially staged case:
+            // TRACKED | STAGED | MODIFIED
+            // We represent it as "Modified" in FileStatus and let the UI
+            // also show it in the STAGED section via self.staged_files.
+
+            if flags.contains(EntryFlags::MODIFIED) {
                 if seen.insert(path.clone()) {
-                    self.files.push(FileStatus::Modified(path.clone()));
+                    self.files.push(FileStatus::Modified(path));
+                }
+            } else if flags.contains(EntryFlags::DELETED) {
+                if seen.insert(path.clone()) {
+                    self.files.push(FileStatus::Deleted(path));
+                }
+            } else if flags.contains(EntryFlags::STAGED) {
+                // Staged, no extra working-tree changes -> treat as "Added"/"Staged change"
+                if seen.insert(path.clone()) {
+                    self.files.push(FileStatus::Added(path));
                 }
             }
         }
 
-        // Sort files
+        // Untracked files (not in helix index)
+        if self.show_untracked {
+            let untracked_paths = self.scan_for_untracked_files()?;
+            for path in untracked_paths {
+                if seen.insert(path.clone()) {
+                    self.files.push(FileStatus::Untracked(path));
+                }
+            }
+        }
+
+        //  Sort for stable display
         self.files.sort_by(|a, b| a.path().cmp(b.path()));
 
         Ok(())

@@ -153,12 +153,16 @@ fn draw_file_sections(f: &mut Frame, area: Rect, app: &App) {
         let is_modified = matches!(file, FileStatus::Modified(_));
         let is_deleted = matches!(file, FileStatus::Deleted(_));
 
+        
+
         let item = create_file_item(
             file,
             is_selected,
             is_staged,
             app.current_section == Section::Unstaged && is_selected,
         );
+
+        // these states aren't mutually exclusive
 
         // only in “UNTRACKED”
         if is_untracked {
