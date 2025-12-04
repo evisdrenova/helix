@@ -149,24 +149,33 @@ impl SyncEngine {
         // if it's a new file it will default be being staged
         let is_staged = head_tree
             .get(&path)
-            .map(|head_oid| head_oid.as_slice() != helix_oid)
+            .map(|head_git_oid| head_git_oid.as_slice() != index_git_oid)
             .unwrap_or(true);
 
         if is_staged {
             flags |= EntryFlags::STAGED;
         }
 
+        let was_in_head = head_tree.contains_key(&path);
+
         // MODIFIED / DELETED: working tree vs index
         // compare working directory hashed content to .git/index hashed content
         // if different, then the file is modified, otherwise the same, if the file doesn't exist, it's deleted
         if full_path.exists() && full_path.is_file() {
-            let working_content = fs::read(&full_path)?;
-            let working_git_oid = compute_blob_oid(&working_content);
+            if was_in_head {
+                let working_content = fs::read(&full_path)?;
+                let working_git_oid = compute_blob_oid(&working_content);
 
-            if &working_git_oid != index_git_oid {
-                flags |= EntryFlags::MODIFIED;
+                println!("File: {}", path.display());
+                println!("  Working OID: {:02x?}", &working_git_oid[..8]);
+                println!("  Index OID:   {:02x?}", &index_git_oid[..8]);
+                println!("  Match: {}", &working_git_oid == index_git_oid);
+
+                if &working_git_oid != index_git_oid {
+                    flags |= EntryFlags::MODIFIED;
+                }
             }
-        } else {
+        } else if was_in_head {
             flags |= EntryFlags::DELETED;
         }
 
@@ -226,7 +235,7 @@ impl SyncEngine {
                 }
             })
             .collect();
-
+        println!("HEAD tree has {} files", map.len());
         Ok(map)
     }
 }

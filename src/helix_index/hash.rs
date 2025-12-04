@@ -48,11 +48,17 @@ pub fn hash_files_parallel(paths: &[&Path]) -> Result<Vec<Hash>> {
     paths.par_iter().map(|path| hash_file(path)).collect()
 }
 
-pub fn compute_blob_oid(content: &[u8]) -> [u8; 20] {
+pub fn compute_blob_oid(content: &[u8]) -> Vec<u8> {
+    use sha1::{Digest, Sha1};
+
+    // Git's blob format: "blob {size}\0{content}"
+    let header = format!("blob {}\0", content.len());
+
     let mut hasher = Sha1::new();
-    hasher.update(format!("blob {}\0", content.len()).as_bytes());
+    hasher.update(header.as_bytes());
     hasher.update(content);
-    hasher.finalize().into()
+
+    hasher.finalize().to_vec()
 }
 
 /// Convert hash to hex string for display/storage

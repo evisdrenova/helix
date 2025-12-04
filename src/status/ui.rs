@@ -222,7 +222,7 @@ fn draw_file_sections(f: &mut Frame, area: Rect, app: &App) {
     draw_section(
         f,
         sections[1],
-        "STAGED",
+        "TO BE COMMITTED",
         &staged_items,
         staged_visible,
         app.current_section == Section::Staged,

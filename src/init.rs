@@ -222,6 +222,26 @@ mod tests {
     };
     use tempfile::TempDir;
 
+    fn init_test_repo(path: &Path) -> Result<()> {
+        fs::create_dir_all(path.join(".git"))?;
+        Command::new("git")
+            .args(&["init"])
+            .current_dir(path)
+            .output()?;
+        Command::new("git")
+            .args(&["config", "user.name", "Test"])
+            .current_dir(path)
+            .output()?;
+        Command::new("git")
+            .args(&["config", "user.email", "test@test.com"])
+            .current_dir(path)
+            .output()?;
+        let yes = "y";
+        crate::init::init_helix_repo(path, Some(yes.to_string()))?;
+
+        Ok(())
+    }
+
     #[test]
     fn test_init_creates_directory_structure() -> Result<()> {
         let temp_dir = TempDir::new()?;
@@ -583,28 +603,6 @@ mod tests {
         Ok(())
     }
 
-    fn init_test_repo(path: &Path) -> Result<()> {
-        // Initialize git repo (for helix init to work)
-        fs::create_dir_all(path.join(".git"))?;
-        Command::new("git")
-            .args(&["init"])
-            .current_dir(path)
-            .output()?;
-        Command::new("git")
-            .args(&["config", "user.name", "Test"])
-            .current_dir(path)
-            .output()?;
-        Command::new("git")
-            .args(&["config", "user.email", "test@test.com"])
-            .current_dir(path)
-            .output()?;
-
-        // Initialize helix
-        crate::init::init_helix_repo(path, None)?;
-
-        Ok(())
-    }
-
     #[test]
     fn test_import_sets_flags_for_multiple_entries() -> Result<()> {
         let temp_dir = TempDir::new()?;
@@ -613,8 +611,7 @@ mod tests {
         init_test_repo(repo_path)?;
 
         // 1. committed.txt: committed and unchanged (index == HEAD)
-        let committed = repo_path.join("committed.txt");
-        fs::write(&committed, "v1")?;
+        fs::write(repo_path.join("committed.txt"), "v1")?;
         Command::new("git")
             .args(&["add", "committed.txt"])
             .current_dir(repo_path)
@@ -625,16 +622,7 @@ mod tests {
             .output()?;
 
         // 2. staged_new.txt: new file, staged but never committed (not in HEAD)
-        let staged_new = repo_path.join("staged_new.txt");
-        fs::write(&staged_new, "new staged content")?;
-        Command::new("git")
-            .args(&["add", "staged_new.txt"])
-            .current_dir(repo_path)
-            .output()?;
-
-        // 3. staged_modified.txt: committed once, then modified and re-staged (index != HEAD)
-        let staged_modified = repo_path.join("staged_modified.txt");
-        fs::write(&staged_modified, "original")?;
+        fs::write(repo_path.join("staged_modified.txt"), "original")?;
         Command::new("git")
             .args(&["add", "staged_modified.txt"])
             .current_dir(repo_path)
@@ -644,55 +632,58 @@ mod tests {
             .current_dir(repo_path)
             .output()?;
 
-        // modify and stage again (HEAD still has "original")
-        fs::write(&staged_modified, "modified")?;
+        fs::write(repo_path.join("staged_new.txt"), "new staged content")?;
+        Command::new("git")
+            .args(&["add", "staged_new.txt"])
+            .current_dir(repo_path)
+            .output()?;
+
+        fs::write(repo_path.join("staged_modified.txt"), "modified")?;
         Command::new("git")
             .args(&["add", "staged_modified.txt"])
             .current_dir(repo_path)
             .output()?;
 
-        // Import into Helix
         let syncer = SyncEngine::new(repo_path);
         syncer.import_from_git()?;
 
         let reader = Reader::new(repo_path);
         let data = reader.read()?;
 
-        // Build a map: PathBuf -> flags for easy lookup
         let by_path: HashMap<PathBuf, EntryFlags> = data
             .entries
             .iter()
             .map(|e| (e.path.clone(), e.flags))
             .collect();
 
-        // committed.txt: tracked, NOT staged (index == HEAD)
+        // committed.txt: TRACKED only (clean state)
         let committed_flags = by_path
             .get(&PathBuf::from("committed.txt"))
-            .expect("committed.txt not found in helix index");
+            .expect("committed.txt not found");
         assert!(committed_flags.contains(EntryFlags::TRACKED));
         assert!(
             !committed_flags.contains(EntryFlags::STAGED),
-            "committed.txt should not be marked STAGED"
+            "committed.txt should NOT be STAGED (matches HEAD)"
         );
 
-        // staged_new.txt: tracked + staged (not in HEAD)
+        // staged_new.txt: TRACKED | STAGED (new file, not in HEAD)
         let staged_new_flags = by_path
             .get(&PathBuf::from("staged_new.txt"))
-            .expect("staged_new.txt not found in helix index");
+            .expect("staged_new.txt not found");
         assert!(staged_new_flags.contains(EntryFlags::TRACKED));
         assert!(
             staged_new_flags.contains(EntryFlags::STAGED),
-            "staged_new.txt should be marked STAGED (new file not in HEAD)"
+            "staged_new.txt should be STAGED (not in HEAD)"
         );
 
-        // staged_modified.txt: tracked + staged (index != HEAD)
+        // staged_modified.txt: TRACKED | STAGED (modified, re-staged)
         let staged_modified_flags = by_path
             .get(&PathBuf::from("staged_modified.txt"))
-            .expect("staged_modified.txt not found in helix index");
+            .expect("staged_modified.txt not found");
         assert!(staged_modified_flags.contains(EntryFlags::TRACKED));
         assert!(
             staged_modified_flags.contains(EntryFlags::STAGED),
-            "staged_modified.txt should be marked STAGED (differs from HEAD)"
+            "staged_modified.txt should be STAGED (differs from HEAD)"
         );
 
         Ok(())
