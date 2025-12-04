@@ -58,7 +58,6 @@ impl SyncEngine {
     pub fn import_from_git(&self) -> Result<()> {
         wait_for_git_lock(&self.repo_path, Duration::from_secs(5))?;
 
-        // Determine next generation
         let reader = Reader::new(&self.repo_path);
         let current_generation = if reader.exists() {
             reader
@@ -75,7 +74,7 @@ impl SyncEngine {
         // Handle brand-new repo with no .git/index yet
         if !git_index_path.exists() {
             let header = Header::new(current_generation + 1, 0);
-            let writer = Writer::new_canonical(&self.repo_path); // Durable write with fsync
+            let writer = Writer::new_canonical(&self.repo_path);
             writer.write(&header, &[])?;
 
             return Ok(());
@@ -128,104 +127,38 @@ impl SyncEngine {
         entries
     }
 
-    /// Build a helix index Entry from a Git index entry.
-    ///
-    /// This function ONLY has visibility into:
-    /// - .git/index (the staging area)
-    /// - HEAD (via `head_tree`)
-    ///
-    /// So it is responsible for:
-    /// - Setting TRACKED (always, since we're iterating the index)
-    /// - Setting STAGED when index != HEAD (or when the path doesn't exist in HEAD)
-    ///
-    /// It does NOT set:
-    /// - UNTRACKED (requires FSMonitor / paths not in helix.idx)
-    // fn build_helix_entry_from_git_entry(
-    //     &self,
-    //     index_entry: &crate::index::IndexEntry,
-    //     head_tree: &HashMap<PathBuf, Vec<u8>>,
-    // ) -> Result<Entry> {
-    //     let path = PathBuf::from(&index_entry.path);
-    //     let full_path = self.repo_path.join(&path);
-
-    //     let mut flags = EntryFlags::TRACKED;
-    //     let index_oid = hash::hash_bytes(index_entry.oid.as_bytes());
-
-    //     // Check if staged (index != HEAD)
-    //     let is_staged = head_tree
-    //         .get(&path)
-    //         .map(|head_oid| head_oid.as_slice() != index_oid)
-    //         .unwrap_or(true); // Not in HEAD = new file = staged
-
-    //     if is_staged {
-    //         flags |= EntryFlags::STAGED;
-    //     }
-
-    //     // Check if MODIFIED (working tree != index)
-    //     if full_path.exists() && full_path.is_file() {
-    //         let working_content = fs::read(&full_path)?;
-    //         let working_oid = hash::hash_bytes(&working_content);
-
-    //         if working_oid != index_oid {
-    //             flags |= EntryFlags::MODIFIED;
-    //         }
-    //     } else if !full_path.exists() {
-    //         // File was deleted from working tree
-    //         flags |= EntryFlags::DELETED;
-    //     }
-
-    //     let (mtime_sec, file_size) = if full_path.exists() {
-    //         let metadata = fs::metadata(&full_path)?;
-    //         let mtime = metadata
-    //             .modified()?
-    //             .duration_since(std::time::UNIX_EPOCH)?
-    //             .as_secs();
-    //         (mtime, metadata.len())
-    //     } else {
-    //         // File doesn't exist, use index values
-    //         (index_entry.mtime as u64, index_entry.size as u64)
-    //     };
-
-    //     Ok(Entry {
-    //         path,
-    //         size: file_size,
-    //         mtime_sec,
-    //         mtime_nsec: 0,
-    //         flags,
-    //         merge_conflict_stage: 0,
-    //         file_mode: index_entry.file_mode,
-    //         oid: index_oid,
-    //         reserved: [0; 33],
-    //     })
-    // }
-
     fn build_helix_entry_from_git_entry(
         &self,
-        index_entry: &crate::index::IndexEntry,
+        git_index_entry: &crate::index::IndexEntry,
         head_tree: &HashMap<PathBuf, Vec<u8>>,
     ) -> Result<Entry> {
-        let path = PathBuf::from(&index_entry.path);
+        let path = PathBuf::from(&git_index_entry.path);
         let full_path = self.repo_path.join(&path);
 
         let mut flags = EntryFlags::TRACKED;
 
         // Git's index snapshot blob-hash
-        let index_git_oid = index_entry.oid.as_bytes();
+        let index_git_oid = git_index_entry.oid.as_bytes();
 
         // Helix stores its own hash (of the Git oid bytes)
         let helix_oid = hash::hash_bytes(index_git_oid);
 
-        // ───────────────── STAGED check: index vs HEAD ─────────────────
+        // STAGED check: index vs HEAD
+        // check if the hashed head oid from git head  is the same as the hashed helix oid from .git/index
+        // if the same then the file is staged, if they're are different then the file is not staged
+        // if it's a new file it will default be being staged
         let is_staged = head_tree
             .get(&path)
             .map(|head_oid| head_oid.as_slice() != helix_oid)
-            .unwrap_or(true); // new file = staged
+            .unwrap_or(true);
 
         if is_staged {
             flags |= EntryFlags::STAGED;
         }
 
-        // ───────────────── MODIFIED / DELETED: working tree vs index ─────────────────
+        // MODIFIED / DELETED: working tree vs index
+        // compare working directory hashed content to .git/index hashed content
+        // if different, then the file is modified, otherwise the same, if the file doesn't exist, it's deleted
         if full_path.exists() && full_path.is_file() {
             let working_content = fs::read(&full_path)?;
             let working_git_oid = compute_blob_oid(&working_content);
@@ -237,7 +170,6 @@ impl SyncEngine {
             flags |= EntryFlags::DELETED;
         }
 
-        // ───────────────── Metadata ─────────────────
         let (mtime_sec, file_size) = if full_path.exists() {
             let metadata = fs::metadata(&full_path)?;
             let mtime = metadata
@@ -246,7 +178,7 @@ impl SyncEngine {
                 .as_secs();
             (mtime, metadata.len())
         } else {
-            (index_entry.mtime as u64, index_entry.size as u64)
+            (git_index_entry.mtime as u64, git_index_entry.size as u64)
         };
 
         Ok(Entry {
@@ -256,7 +188,7 @@ impl SyncEngine {
             mtime_nsec: 0,
             flags,
             merge_conflict_stage: 0,
-            file_mode: index_entry.file_mode,
+            file_mode: git_index_entry.file_mode,
             oid: helix_oid,
             reserved: [0; 33],
         })
@@ -283,7 +215,7 @@ impl SyncEngine {
 
         let map: HashMap<PathBuf, Vec<u8>> = recorder
             .records
-            .into_iter()
+            .into_par_iter()
             .filter_map(|record| {
                 if record.mode.is_blob() {
                     let path = PathBuf::from(record.filepath.to_string());

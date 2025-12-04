@@ -1,7 +1,5 @@
 /*
-Creates a new helix repository with empty directory structure.
-
-We detect if there is a git repo there and ask the user if they want to import their git data.
+Creates a new helix repository. We will detect if there is an existing Git repo and prompt the user to decide if they want to migrate their Git data to Helix or start with an empty Helix repo.
 */
 
 use anyhow::{Context, Result};
@@ -67,14 +65,11 @@ pub fn detect_git_with_reader<R: BufRead>(
 fn import_from_git(repo_path: &Path) -> Result<()> {
     let start = Instant::now();
 
-    // Use SyncEngine to import from Git (one-time operation)
-    // This reads .git/index if it exists, otherwise creates empty index
     let sync = SyncEngine::new(repo_path);
     sync.import_from_git()
         .context("Failed to import Git index")?;
 
     let elapsed = start.elapsed();
-
     let reader = helix_index::Reader::new(repo_path);
     let index_data = reader
         .read()
@@ -85,7 +80,7 @@ fn import_from_git(repo_path: &Path) -> Result<()> {
 
     if file_count > 0 {
         println!(
-            "✓ Imported {} tracked files from Git in {:.0?}",
+            "Imported {} tracked files from Git in {:.0?}",
             file_count, elapsed
         );
     }
@@ -152,11 +147,10 @@ fn create_head_file(repo_path: &Path) -> Result<()> {
     let head_path = repo_path.join(".helix/HEAD");
 
     if head_path.exists() {
-        println!("○ HEAD already exists, skipping");
         return Ok(());
     }
 
-    // TODO: Create HEAD pointing to main branch
+    // HEAD gets created on first commit, so this is just a pointer to the branch that will eventually exist
     fs::write(&head_path, "ref: refs/heads/main\n").context("Failed to create HEAD file")?;
 
     Ok(())
@@ -166,7 +160,6 @@ fn create_repo_config(repo_path: &Path) -> Result<()> {
     let config_path = repo_path.join("helix.toml");
 
     if config_path.exists() {
-        println!("○ helix.toml already exists, skipping");
         return Ok(());
     }
 
@@ -184,7 +177,7 @@ fn create_repo_config(repo_path: &Path) -> Result<()> {
 
 
 [ignore]
-# Additional patterns to ignore (beyond .gitignore)
+# Additional patterns to ignore (this will get combined with .gitignore if you have one)
 patterns = [
     "*.log",
     "*.tmp",
@@ -211,7 +204,7 @@ fn print_success_message(repo_path: &Path) -> Result<()> {
     println!("Next steps:");
     println!("  1. Configure author (edit helix.toml or set env vars)");
     println!("  2. Add files:    helix add <files>");
-    println!("  3. Make commit:  helix commit -m \"Initial commit\"");
+    println!("  3. Create a commit:  helix commit -m \"Initial commit\"");
     println!();
     println!("View status:       helix status");
     println!("View history:      helix log");
@@ -382,7 +375,6 @@ mod tests {
         let temp_dir = TempDir::new()?;
         let repo_path = temp_dir.path();
 
-        // Real git repo with a committed file
         Command::new("git")
             .args(["init"])
             .current_dir(repo_path)

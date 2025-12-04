@@ -1,4 +1,6 @@
-/* This file defines the hashing module that we use to hash helix objects for content-addressing */
+/*
+Functions and methods for hashing data
+*/
 
 use anyhow::Result;
 use blake3::Hasher;
@@ -6,7 +8,7 @@ use rayon::prelude::*;
 use sha1::{Digest, Sha1};
 use std::{fs, io::Read, path::Path};
 
-/// 32-byte BLAKE3 hash (vs 20-byte SHA-1)
+/// 32-byte BLAKE3 hash
 pub type Hash = [u8; 32];
 
 /// Hash arbitrary bytes with BLAKE3
