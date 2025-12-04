@@ -158,24 +158,17 @@ impl SyncEngine {
 
         let was_in_head = head_tree.contains_key(&path);
 
-        // MODIFIED / DELETED: working tree vs index
-        // compare working directory hashed content to .git/index hashed content
-        // if different, then the file is modified, otherwise the same, if the file doesn't exist, it's deleted
+        // Always check working tree vs. index, this will catch repos with no commits yet
         if full_path.exists() && full_path.is_file() {
-            if was_in_head {
-                let working_content = fs::read(&full_path)?;
-                let working_git_oid = compute_blob_oid(&working_content);
+            let working_content = fs::read(&full_path)?;
+            let working_git_oid = compute_blob_oid(&working_content);
 
-                println!("File: {}", path.display());
-                println!("  Working OID: {:02x?}", &working_git_oid[..8]);
-                println!("  Index OID:   {:02x?}", &index_git_oid[..8]);
-                println!("  Match: {}", &working_git_oid == index_git_oid);
-
-                if &working_git_oid != index_git_oid {
-                    flags |= EntryFlags::MODIFIED;
-                }
+            if &working_git_oid != index_git_oid {
+                flags |= EntryFlags::MODIFIED;
             }
         } else if was_in_head {
+            // Only mark DELETED if file was in HEAD
+            // (Don't mark new staged files as deleted if they don't exist)
             flags |= EntryFlags::DELETED;
         }
 

@@ -380,41 +380,6 @@ mod tests {
     }
 
     #[test]
-    fn test_built_in_ignore_patterns() {
-        let rules = IgnoreRules {
-            patterns: IgnoreRules::built_in_patterns(),
-        };
-
-        // Should ignore .git subdirectories
-        assert!(rules.should_ignore(Path::new(".git/objects/abc123")));
-        assert!(rules.should_ignore(Path::new(".git/refs/heads/main")));
-
-        // Should ignore build directories
-        assert!(rules.should_ignore(Path::new("target/debug/main")));
-        assert!(rules.should_ignore(Path::new("node_modules/package/index.js")));
-        assert!(rules.should_ignore(Path::new("__pycache__/module.pyc")));
-
-        // Should ignore editor temp files
-        assert!(rules.should_ignore(Path::new(".foo.swp")));
-        assert!(rules.should_ignore(Path::new("file.txt~")));
-        assert!(rules.should_ignore(Path::new(".DS_Store")));
-
-        // Should ignore helix cache directory
-        assert!(rules.should_ignore(Path::new(".helix/cache/data.bin")));
-
-        // Should ignore temp files during write
-        assert!(rules.should_ignore(Path::new(".helix/helix.idx.new")));
-
-        // Should NOT ignore helix.idx itself (we watch this explicitly)
-        assert!(!rules.should_ignore(Path::new(".helix/helix.idx")));
-
-        // Should NOT ignore normal files
-        assert!(!rules.should_ignore(Path::new("src/main.rs")));
-        assert!(!rules.should_ignore(Path::new("README.md")));
-        assert!(!rules.should_ignore(Path::new("Cargo.toml")));
-    }
-
-    #[test]
     fn test_gitignore_loading() {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path();

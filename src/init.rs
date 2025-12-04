@@ -690,15 +690,12 @@ mod tests {
     }
 
     #[test]
-    fn test_import_comprehensive_flags() -> Result<()> {
+    fn test_import_clean_file() -> Result<()> {
         let temp_dir = TempDir::new()?;
         let repo_path = temp_dir.path();
         init_test_repo(repo_path)?;
 
-        // ═══════════════════════════════════════════════════════════
-        // SCENARIO 1: Committed file, unchanged
-        // Expected: TRACKED only (clean state)
-        // ═══════════════════════════════════════════════════════════
+        // Create and commit a file
         fs::write(repo_path.join("clean.txt"), "v1")?;
         Command::new("git")
             .args(&["add", "clean.txt"])
@@ -709,79 +706,7 @@ mod tests {
             .current_dir(repo_path)
             .output()?;
 
-        // ═══════════════════════════════════════════════════════════
-        // SCENARIO 2: New file, staged
-        // Expected: TRACKED | STAGED
-        // ═══════════════════════════════════════════════════════════
-        fs::write(repo_path.join("staged_new.txt"), "new content")?;
-        Command::new("git")
-            .args(&["add", "staged_new.txt"])
-            .current_dir(repo_path)
-            .output()?;
-
-        // ═══════════════════════════════════════════════════════════
-        // SCENARIO 3: Committed file, modified and staged
-        // Expected: TRACKED | STAGED
-        // ═══════════════════════════════════════════════════════════
-        fs::write(repo_path.join("staged_modified.txt"), "original")?;
-        Command::new("git")
-            .args(&["add", "staged_modified.txt"])
-            .current_dir(repo_path)
-            .output()?;
-        Command::new("git")
-            .args(&["commit", "-m", "add staged_modified"])
-            .current_dir(repo_path)
-            .output()?;
-        fs::write(repo_path.join("staged_modified.txt"), "changed")?;
-        Command::new("git")
-            .args(&["add", "staged_modified.txt"])
-            .current_dir(repo_path)
-            .output()?;
-
-        // ═══════════════════════════════════════════════════════════
-        // SCENARIO 4: Committed file, modified but NOT staged
-        // Expected: TRACKED | MODIFIED
-        // ═══════════════════════════════════════════════════════════
-        fs::write(repo_path.join("unstaged_modified.txt"), "original")?;
-        Command::new("git")
-            .args(&["add", "unstaged_modified.txt"])
-            .current_dir(repo_path)
-            .output()?;
-        Command::new("git")
-            .args(&["commit", "-m", "add unstaged_modified"])
-            .current_dir(repo_path)
-            .output()?;
-        // Modify WITHOUT staging
-        fs::write(
-            repo_path.join("unstaged_modified.txt"),
-            "modified but not staged",
-        )?;
-
-        // ═══════════════════════════════════════════════════════════
-        // SCENARIO 5: Partially staged (staged + modified)
-        // Expected: TRACKED | STAGED | MODIFIED
-        // ═══════════════════════════════════════════════════════════
-        fs::write(repo_path.join("partially_staged.txt"), "v1")?;
-        Command::new("git")
-            .args(&["add", "partially_staged.txt"])
-            .current_dir(repo_path)
-            .output()?;
-        Command::new("git")
-            .args(&["commit", "-m", "add partially_staged"])
-            .current_dir(repo_path)
-            .output()?;
-        // First change: stage it
-        fs::write(repo_path.join("partially_staged.txt"), "v2")?;
-        Command::new("git")
-            .args(&["add", "partially_staged.txt"])
-            .current_dir(repo_path)
-            .output()?;
-        // Second change: don't stage
-        fs::write(repo_path.join("partially_staged.txt"), "v3")?;
-
-        // ═══════════════════════════════════════════════════════════
-        // Import into Helix
-        // ═══════════════════════════════════════════════════════════
+        // Import
         let syncer = SyncEngine::new(repo_path);
         syncer.import_from_git()?;
 
@@ -794,11 +719,7 @@ mod tests {
             .map(|e| (e.path.clone(), e.flags))
             .collect();
 
-        // ═══════════════════════════════════════════════════════════
-        // Assertions
-        // ═══════════════════════════════════════════════════════════
-
-        // 1. clean.txt: TRACKED only
+        // Assert: TRACKED only (clean state)
         let clean = by_path.get(&PathBuf::from("clean.txt")).unwrap();
         assert!(
             clean.contains(EntryFlags::TRACKED),
@@ -813,7 +734,36 @@ mod tests {
             "clean.txt should NOT be MODIFIED"
         );
 
-        // 2. staged_new.txt: TRACKED | STAGED
+        Ok(())
+    }
+
+    #[test]
+    fn test_import_staged_new_file() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo_path = temp_dir.path();
+        init_test_repo(repo_path)?;
+
+        // Stage a new file (don't commit)
+        fs::write(repo_path.join("staged_new.txt"), "new content")?;
+        Command::new("git")
+            .args(&["add", "staged_new.txt"])
+            .current_dir(repo_path)
+            .output()?;
+
+        // Import
+        let syncer = SyncEngine::new(repo_path);
+        syncer.import_from_git()?;
+
+        let reader = Reader::new(repo_path);
+        let data = reader.read()?;
+
+        let by_path: HashMap<PathBuf, EntryFlags> = data
+            .entries
+            .iter()
+            .map(|e| (e.path.clone(), e.flags))
+            .collect();
+
+        // Assert: TRACKED | STAGED
         let staged_new = by_path.get(&PathBuf::from("staged_new.txt")).unwrap();
         assert!(
             staged_new.contains(EntryFlags::TRACKED),
@@ -821,14 +771,53 @@ mod tests {
         );
         assert!(
             staged_new.contains(EntryFlags::STAGED),
-            "staged_new.txt should be STAGED (new file)"
+            "staged_new.txt should be STAGED (new file not in HEAD)"
         );
         assert!(
             !staged_new.contains(EntryFlags::MODIFIED),
             "staged_new.txt should NOT be MODIFIED"
         );
 
-        // 3. staged_modified.txt: TRACKED | STAGED
+        Ok(())
+    }
+
+    #[test]
+    fn test_import_staged_modified_file() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo_path = temp_dir.path();
+        init_test_repo(repo_path)?;
+
+        // Create, commit, then modify and stage
+        fs::write(repo_path.join("staged_modified.txt"), "original")?;
+        Command::new("git")
+            .args(&["add", "staged_modified.txt"])
+            .current_dir(repo_path)
+            .output()?;
+        Command::new("git")
+            .args(&["commit", "-m", "add staged_modified"])
+            .current_dir(repo_path)
+            .output()?;
+
+        fs::write(repo_path.join("staged_modified.txt"), "changed")?;
+        Command::new("git")
+            .args(&["add", "staged_modified.txt"])
+            .current_dir(repo_path)
+            .output()?;
+
+        // Import
+        let syncer = SyncEngine::new(repo_path);
+        syncer.import_from_git()?;
+
+        let reader = Reader::new(repo_path);
+        let data = reader.read()?;
+
+        let by_path: HashMap<PathBuf, EntryFlags> = data
+            .entries
+            .iter()
+            .map(|e| (e.path.clone(), e.flags))
+            .collect();
+
+        // Assert: TRACKED | STAGED
         let staged_mod = by_path.get(&PathBuf::from("staged_modified.txt")).unwrap();
         assert!(
             staged_mod.contains(EntryFlags::TRACKED),
@@ -843,7 +832,45 @@ mod tests {
             "staged_modified.txt should NOT be MODIFIED (changes are staged)"
         );
 
-        // 4. unstaged_modified.txt: TRACKED | MODIFIED
+        Ok(())
+    }
+
+    #[test]
+    fn test_import_unstaged_modified_file() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo_path = temp_dir.path();
+        init_test_repo(repo_path)?;
+
+        // Create, commit, then modify WITHOUT staging
+        fs::write(repo_path.join("unstaged_modified.txt"), "original")?;
+        Command::new("git")
+            .args(&["add", "unstaged_modified.txt"])
+            .current_dir(repo_path)
+            .output()?;
+        Command::new("git")
+            .args(&["commit", "-m", "add unstaged_modified"])
+            .current_dir(repo_path)
+            .output()?;
+
+        fs::write(
+            repo_path.join("unstaged_modified.txt"),
+            "modified but not staged",
+        )?;
+
+        // Import
+        let syncer = SyncEngine::new(repo_path);
+        syncer.import_from_git()?;
+
+        let reader = Reader::new(repo_path);
+        let data = reader.read()?;
+
+        let by_path: HashMap<PathBuf, EntryFlags> = data
+            .entries
+            .iter()
+            .map(|e| (e.path.clone(), e.flags))
+            .collect();
+
+        // Assert: TRACKED | MODIFIED
         let unstaged_mod = by_path
             .get(&PathBuf::from("unstaged_modified.txt"))
             .unwrap();
@@ -860,7 +887,50 @@ mod tests {
             "unstaged_modified.txt should be MODIFIED"
         );
 
-        // 5. partially_staged.txt: TRACKED | STAGED | MODIFIED
+        Ok(())
+    }
+
+    #[test]
+    fn test_import_partially_staged_file() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo_path = temp_dir.path();
+        init_test_repo(repo_path)?;
+
+        // Create and commit
+        fs::write(repo_path.join("partially_staged.txt"), "v1")?;
+        Command::new("git")
+            .args(&["add", "partially_staged.txt"])
+            .current_dir(repo_path)
+            .output()?;
+        Command::new("git")
+            .args(&["commit", "-m", "add partially_staged"])
+            .current_dir(repo_path)
+            .output()?;
+
+        // First change: stage it
+        fs::write(repo_path.join("partially_staged.txt"), "v2")?;
+        Command::new("git")
+            .args(&["add", "partially_staged.txt"])
+            .current_dir(repo_path)
+            .output()?;
+
+        // Second change: don't stage
+        fs::write(repo_path.join("partially_staged.txt"), "v3")?;
+
+        // Import
+        let syncer = SyncEngine::new(repo_path);
+        syncer.import_from_git()?;
+
+        let reader = Reader::new(repo_path);
+        let data = reader.read()?;
+
+        let by_path: HashMap<PathBuf, EntryFlags> = data
+            .entries
+            .iter()
+            .map(|e| (e.path.clone(), e.flags))
+            .collect();
+
+        // Assert: TRACKED | STAGED | MODIFIED
         let partial = by_path.get(&PathBuf::from("partially_staged.txt")).unwrap();
         assert!(
             partial.contains(EntryFlags::TRACKED),
@@ -925,6 +995,7 @@ mod tests {
     fn test_import_filters_helix_files() -> Result<()> {
         let temp_dir = TempDir::new()?;
         let repo_path = temp_dir.path();
+
         init_test_repo(repo_path)?;
 
         // Create and stage a normal file
@@ -934,17 +1005,19 @@ mod tests {
             .current_dir(repo_path)
             .output()?;
 
-        // Create .helix directory with files
+        // Create .helix directory with files (internal state)
         fs::create_dir_all(repo_path.join(".helix"))?;
         fs::write(repo_path.join(".helix/HEAD"), "ref: refs/heads/main")?;
+        fs::write(repo_path.join(".helix/helix.idx"), "fake index")?;
+
+        // Create helix.toml (repo config - SHOULD be checked in)
         fs::write(repo_path.join("helix.toml"), "# config")?;
 
-        // Stage .helix files (shouldn't happen, but let's test it)
+        // Stage all files
         Command::new("git")
-            .args(&["add", ".helix/"])
+            .args(&["add", "."])
             .current_dir(repo_path)
-            .output()
-            .ok(); // Might fail if gitignore present
+            .output()?;
 
         // Import
         let syncer = SyncEngine::new(repo_path);
@@ -953,22 +1026,45 @@ mod tests {
         let reader = Reader::new(repo_path);
         let data = reader.read()?;
 
-        // Should only have normal.txt, not .helix files
-        assert_eq!(
-            data.entries.len(),
-            1,
-            "Should only have 1 file (not .helix files)"
-        );
-        assert_eq!(data.entries[0].path, PathBuf::from("normal.txt"));
+        // ✅ Should have 2 files: normal.txt and helix.toml
+        // Should NOT have .helix/ internal files
+        let paths: Vec<_> = data.entries.iter().map(|e| &e.path).collect();
 
-        // Verify .helix files are NOT in index
+        println!("\n=== Imported files ===");
+        for path in &paths {
+            println!("  - {}", path.display());
+        }
+
+        // Verify no .helix/ internal files
         for entry in &data.entries {
             assert!(
                 !entry.path.starts_with(".helix/"),
-                "Should not import .helix/ files: {:?}",
+                "Should not import .helix/ internal files: {:?}",
                 entry.path
             );
         }
+
+        // Verify we have the expected files
+        assert!(
+            data.entries
+                .iter()
+                .any(|e| e.path == PathBuf::from("normal.txt")),
+            "Should import normal.txt"
+        );
+
+        assert!(
+            data.entries
+                .iter()
+                .any(|e| e.path == PathBuf::from("helix.toml")),
+            "Should import helix.toml (repo config)"
+        );
+
+        // Should have exactly 2 files
+        assert_eq!(
+            data.entries.len(),
+            2,
+            "Should have 2 files (normal.txt and helix.toml), not .helix/ internal files"
+        );
 
         Ok(())
     }

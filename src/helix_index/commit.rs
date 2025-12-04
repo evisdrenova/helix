@@ -594,61 +594,61 @@ impl CommitLoader {
         }
     }
 
-    // /// Get current branch name
-    // pub fn get_current_branch_name(&self) -> Result<String> {
-    //     let head_path = self.repo_path.join(".helix").join("HEAD");
-
-    //     if !head_path.exists() {
-    //         return Ok("(no branch)".to_string());
-    //     }
-
-    //     let content = fs::read_to_string(&head_path)?;
-    //     let content = content.trim();
-
-    //     if content.starts_with("ref:") {
-    //         let ref_path = content.strip_prefix("ref:").unwrap().trim();
-
-    //         // Extract branch name from refs/heads/main
-    //         if let Some(branch) = ref_path.strip_prefix("refs/heads/") {
-    //             Ok(branch.to_string())
-    //         } else {
-    //             Ok("(unknown)".to_string())
-    //         }
-    //     } else {
-    //         Ok("(detached HEAD)".to_string())
-    //     }
-    // }
-
-    pub fn get_current_branch(repo_path: &Path) -> Result<String> {
-        let head_path = repo_path.join(".helix/HEAD");
+    /// Get current branch name
+    pub fn get_current_branch_name(&self) -> Result<String> {
+        let head_path = self.repo_path.join(".helix").join("HEAD");
 
         if !head_path.exists() {
             return Ok("(no branch)".to_string());
         }
 
         let content = fs::read_to_string(&head_path)?;
+        let content = content.trim();
 
         if content.starts_with("ref:") {
-            let branch_ref = content.strip_prefix("ref:").unwrap().trim();
-            let branch_path = repo_path.join(".helix").join(branch_ref);
+            let ref_path = content.strip_prefix("ref:").unwrap().trim();
 
-            // Check if branch file exists
-            if !branch_path.exists() {
-                // Branch doesn't exist yet (before first commit)
-                // But we can still show the branch name!
-                if let Some(name) = branch_ref.strip_prefix("refs/heads/") {
-                    return Ok(format!("{} (no commits yet)", name));
-                }
+            // Extract branch name from refs/heads/main
+            if let Some(branch) = ref_path.strip_prefix("refs/heads/") {
+                Ok(branch.to_string())
+            } else {
+                Ok("(unknown)".to_string())
             }
-
-            // Branch exists, extract name
-            if let Some(name) = branch_ref.strip_prefix("refs/heads/") {
-                return Ok(name.to_string());
-            }
+        } else {
+            Ok("(detached HEAD)".to_string())
         }
-
-        Ok("(detached HEAD)".to_string())
     }
+
+    // pub fn get_current_branch_name(repo_path: &Path) -> Result<String> {
+    //     let head_path = repo_path.join(".helix/HEAD");
+
+    //     if !head_path.exists() {
+    //         return Ok("(no branch)".to_string());
+    //     }
+
+    //     let content = fs::read_to_string(&head_path)?;
+
+    //     if content.starts_with("ref:") {
+    //         let branch_ref = content.strip_prefix("ref:").unwrap().trim();
+    //         let branch_path = repo_path.join(".helix").join(branch_ref);
+
+    //         // Check if branch file exists
+    //         if !branch_path.exists() {
+    //             // Branch doesn't exist yet (before first commit)
+    //             // But we can still show the branch name!
+    //             if let Some(name) = branch_ref.strip_prefix("refs/heads/") {
+    //                 return Ok(format!("{} (no commits yet)", name));
+    //             }
+    //         }
+
+    //         // Branch exists, extract name
+    //         if let Some(name) = branch_ref.strip_prefix("refs/heads/") {
+    //             return Ok(name.to_string());
+    //         }
+    //     }
+
+    //     Ok("(detached HEAD)".to_string())
+    // }
 
     /// Get repository name from path
     pub fn get_repo_name(&self) -> String {
