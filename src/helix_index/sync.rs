@@ -976,72 +976,69 @@ mod tests {
         Ok(())
     }
 
-    // #[test]
-    // fn test_import_git_commits_multiple_commits() -> Result<()> {
-    //     let temp_dir = TempDir::new()?;
-    //     init_test_repo(temp_dir.path())?;
+    #[test]
+    fn test_import_git_commits_multiple_commits() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        init_test_repo(temp_dir.path())?;
 
-    //     // First commit
-    //     fs::write(temp_dir.path().join("file1.txt"), "content1")?;
-    //     Command::new("git")
-    //         .args(&["add", "file1.txt"])
-    //         .current_dir(temp_dir.path())
-    //         .output()?;
-    //     Command::new("git")
-    //         .args(&["commit", "-m", "First commit"])
-    //         .current_dir(temp_dir.path())
-    //         .output()?;
+        // First commit
+        fs::write(temp_dir.path().join("file1.txt"), "content1")?;
+        git(temp_dir.path(), &["add", "file1.txt"])?;
+        git(temp_dir.path(), &["commit", "-m", "First commit"])?;
 
-    //     // Second commit
-    //     fs::write(temp_dir.path().join("file2.txt"), "content2")?;
-    //     Command::new("git")
-    //         .args(&["add", "file2.txt"])
-    //         .current_dir(temp_dir.path())
-    //         .output()?;
-    //     Command::new("git")
-    //         .args(&["commit", "-m", "Second commit"])
-    //         .current_dir(temp_dir.path())
-    //         .output()?;
+        // Second commit
+        fs::write(temp_dir.path().join("file2.txt"), "content2")?;
+        git(temp_dir.path(), &["add", "file2.txt"])?;
+        git(temp_dir.path(), &["commit", "-m", "Second commit"])?;
 
-    //     // Third commit
-    //     fs::write(temp_dir.path().join("file3.txt"), "content3")?;
-    //     Command::new("git")
-    //         .args(&["add", "file3.txt"])
-    //         .current_dir(temp_dir.path())
-    //         .output()?;
-    //     Command::new("git")
-    //         .args(&["commit", "-m", "Third commit"])
-    //         .current_dir(temp_dir.path())
-    //         .output()?;
+        // Third commit
+        fs::write(temp_dir.path().join("file3.txt"), "content3")?;
+        git(temp_dir.path(), &["add", "file3.txt"])?;
+        git(temp_dir.path(), &["commit", "-m", "Third commit"])?;
 
-    //     // Import commits
-    //     let syncer = SyncEngine::new(temp_dir.path());
-    //     let commits = syncer.import_git_commits()?;
+        // Import commits
+        let syncer = SyncEngine::new(temp_dir.path());
+        syncer.import_git_commits()?;
+        let commit_reader = CommitStorage::for_repo(temp_dir.path());
+        let commits = &commit_reader.list_all()?;
 
-    //     assert_eq!(commits.len(), 3, "Should have 3 commits");
+        assert_eq!(commits.len(), 3, "Should have 3 commits");
 
-    //     // Verify order (oldest first)
-    //     assert_eq!(commits[0].message, "First commit");
-    //     assert_eq!(commits[1].message, "Second commit");
-    //     assert_eq!(commits[2].message, "Third commit");
+        // Verify order (oldest first)
+        assert_eq!(commit_reader.read(&commits[0])?.message, "First commit");
+        assert_eq!(commit_reader.read(&commits[1])?.message, "Second commit");
+        assert_eq!(commit_reader.read(&commits[2])?.message, "Third commit");
 
-    //     // Verify parent relationships
-    //     assert!(commits[0].parents.is_empty(), "First commit has no parent");
-    //     assert_eq!(commits[1].parents.len(), 1, "Second commit has 1 parent");
-    //     assert_eq!(commits[2].parents.len(), 1, "Third commit has 1 parent");
+        // Verify parent relationships
+        assert!(
+            commit_reader.read(&commits[0])?.parents.is_empty(),
+            "First commit has no parent"
+        );
+        assert_eq!(
+            commit_reader.read(&commits[1])?.parents.len(),
+            1,
+            "Second commit has 1 parent"
+        );
+        assert_eq!(
+            commit_reader.read(&commits[2])?.parents.len(),
+            1,
+            "Third commit has 1 parent"
+        );
 
-    //     // Verify parent hashes match
-    //     assert_eq!(
-    //         commits[1].parents[0], commits[0].commit_hash,
-    //         "Second commit's parent should be first commit"
-    //     );
-    //     assert_eq!(
-    //         commits[2].parents[0], commits[1].commit_hash,
-    //         "Third commit's parent should be second commit"
-    //     );
+        // Verify parent hashes match
+        assert_eq!(
+            commit_reader.read(&commits[1])?.parents[0],
+            commit_reader.read(&commits[0])?.commit_hash,
+            "Second commit's parent should be first commit"
+        );
+        assert_eq!(
+            commit_reader.read(&commits[2])?.parents[0],
+            commit_reader.read(&commits[1])?.commit_hash,
+            "Third commit's parent should be second commit"
+        );
 
-    //     Ok(())
-    // }
+        Ok(())
+    }
 
     // #[test]
     // fn test_import_git_commits_with_multiline_message() -> Result<()> {
