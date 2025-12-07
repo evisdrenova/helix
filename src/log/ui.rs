@@ -299,7 +299,7 @@ fn format_commit_details(commit: &Commit) -> Text<'static> {
         Span::styled(commit.short_hash(), Style::default().fg(Color::Green)),
         Span::raw(" ("),
         Span::styled(
-            hash_to_hex(&commit.hash),
+            hash_to_hex(&commit.commit_hash),
             Style::default().fg(Color::DarkGray),
         ),
         Span::raw(")"),
@@ -350,7 +350,7 @@ fn format_commit_details(commit: &Commit) -> Text<'static> {
         ),
         Span::raw("   "),
         Span::styled(
-            hash_to_hex(&commit.tree)[..8].to_string(),
+            hash_to_hex(&commit.tree_hash)[..8].to_string(),
             Style::default().fg(Color::Magenta),
         ),
     ]));

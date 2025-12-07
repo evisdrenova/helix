@@ -217,7 +217,7 @@ impl App {
 
                     match self
                         .loader
-                        .checkout_commit(&commit.hash, Some(&branch_name))
+                        .checkout_commit(&commit.commit_hash, Some(&branch_name))
                     {
                         Ok(_) => {
                             self.should_quit = true;
@@ -382,7 +382,7 @@ impl App {
                         }
                         KeyCode::Char('c') => {
                             if let Some(commit) = self.get_selected_commit() {
-                                let hash = commit.hash;
+                                let hash = commit.commit_hash;
                                 let short_hash = commit.short_hash();
                                 self.branch_name_mode = true;
                                 self.pending_checkout_hash = Some(hash);
