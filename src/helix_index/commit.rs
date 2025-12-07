@@ -32,13 +32,7 @@ pub struct Commit {
 
 impl Commit {
     /// Create new commit
-    pub fn new(
-        tree_hash: Hash,
-        parents: Vec<Hash>,
-        author: String,
-        committer: String,
-        message: String,
-    ) -> Self {
+    pub fn new(tree_hash: Hash, parents: Vec<Hash>, author: String, message: String) -> Self {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -101,18 +95,18 @@ impl Commit {
 
     /// Create initial commit (no parents)
     pub fn initial(tree: Hash, author: String, message: String) -> Self {
-        Self::new(tree, vec![], author.clone(), author, message)
+        Self::new(tree, vec![], author, message)
     }
 
     /// Create commit with one parent
     pub fn with_parent(tree: Hash, parent: Hash, author: String, message: String) -> Self {
-        Self::new(tree, vec![parent], author.clone(), author, message)
+        Self::new(tree, vec![parent], author, message)
     }
 
     /// Create merge commit (2+ parents)
     pub fn merge(tree: Hash, parents: Vec<Hash>, author: String, message: String) -> Self {
         assert!(parents.len() >= 2, "Merge commit needs 2+ parents");
-        Self::new(tree, parents, author.clone(), author, message)
+        Self::new(tree, parents, author, message)
     }
 
     /// Check if this is the initial commit
@@ -191,18 +185,6 @@ impl Commit {
         }
         let author_time = u64::from_le_bytes(bytes[offset..offset + 8].try_into()?);
         offset += 8;
-
-        // Committer length (2 bytes)
-        if offset + 2 > bytes.len() {
-            anyhow::bail!("Commit ended unexpectedly while reading committer length");
-        }
-        let committer_len = u16::from_le_bytes(bytes[offset..offset + 2].try_into()?) as usize;
-        offset += 2;
-
-        // Committer (variable)
-        if offset + committer_len > bytes.len() {
-            anyhow::bail!("Commit ended unexpectedly while reading committer");
-        }
 
         // Commit time (8 bytes)
         if offset + 8 > bytes.len() {
@@ -395,6 +377,7 @@ impl CommitStorage {
     /// List all commits
     pub fn list_all(&self) -> Result<Vec<Hash>> {
         if !self.commits_dir.exists() {
+            println!("the commit path does not exist");
             return Ok(Vec::new());
         }
 

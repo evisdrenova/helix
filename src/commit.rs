@@ -138,7 +138,6 @@ pub fn commit(repo_path: &Path, options: CommitOptions) -> Result<Hash> {
         Commit::new(
             tree_hash,
             prev_commit.parents, // Keep original parents
-            author.clone(),      // author
             author,              // committer (same as author)
             options.message,
         )

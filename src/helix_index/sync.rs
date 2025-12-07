@@ -274,8 +274,15 @@ impl SyncEngine {
             gix::traverse::commit::simple::CommitTimeOrder::NewestFirst,
         ));
 
+        // 🔹 Clone iterator to count commits before consuming
+        let count_iter = head_commit.ancestors().sorting(Sorting::ByCommitTime(
+            gix::traverse::commit::simple::CommitTimeOrder::NewestFirst,
+        ));
+        let total_commits = count_iter.all()?.count();
+        println!("Git reports {} commits in history", total_commits);
+
         let pb = ProgressBar::new_spinner();
-        pb.set_message("Importing commits...");
+        pb.set_message(format!("Importing commits",));
 
         for (i, commit_result) in commit_iter.all()?.enumerate() {
             let commit_info = commit_result?;
@@ -436,6 +443,23 @@ impl SyncEngine {
         for commit in commits {
             commit_storage.write(commit)?;
             pb.inc(1);
+        }
+
+        let commits_path = self
+            .repo_path
+            .join(".helix")
+            .join("objects")
+            .join("commits");
+
+        println!("Listing commit files in {:?}", commits_path);
+
+        if commits_path.exists() {
+            for entry in fs::read_dir(&commits_path)? {
+                let entry = entry?;
+                println!(" - {:?}", entry.file_name());
+            }
+        } else {
+            println!("Commit path does not exist yet: {:?}", commits_path);
         }
 
         pb.finish_with_message("commits stored");
@@ -929,23 +953,12 @@ mod tests {
         // Import commits
         let syncer = SyncEngine::new(temp_dir.path());
         syncer.import_git_commits()?;
-        let commit_reader = CommitStorage::new(temp_dir.path());
 
-        // 🔹 Print how many commits Git has
-        let output = std::process::Command::new("git")
-            .args(&["rev-list", "--count", "HEAD"])
-            .current_dir(temp_dir.path())
-            .output()?;
-        let git_commit_count: u64 = String::from_utf8_lossy(&output.stdout)
-            .trim()
-            .parse()
-            .unwrap_or(0);
-        println!("git reports {} commits", git_commit_count);
+        let commit_reader = CommitStorage::for_repo(temp_dir.path());
 
         let commits = &commit_reader.list_all()?;
-        println!("the number of commits {:?}", commits.len());
         let first_commit = commit_reader.read(&commits[0])?;
-        assert_eq!(first_commit.message, "Initial commit");
+        assert_eq!(first_commit.message, "Initial commit\n");
         assert!(
             first_commit.parents.is_empty(),
             "Initial commit should have no parents"
