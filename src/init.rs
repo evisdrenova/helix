@@ -15,6 +15,11 @@ use crate::helix_index::{self, sync::SyncEngine, Header, Writer};
 pub fn init_helix_repo(repo_path: &Path, auto: Option<String>) -> Result<()> {
     let git_path = repo_path.join(".git");
 
+    create_directory_structure(repo_path)?;
+    create_empty_index(repo_path)?;
+    create_head_file(repo_path)?;
+    create_repo_config(repo_path)?;
+
     if git_path.exists() {
         detect_git(repo_path, auto)?;
     } else {
@@ -24,10 +29,6 @@ pub fn init_helix_repo(repo_path: &Path, auto: Option<String>) -> Result<()> {
         );
     }
 
-    create_directory_structure(repo_path)?;
-    create_empty_index(repo_path)?;
-    create_head_file(repo_path)?;
-    create_repo_config(repo_path)?;
     print_success_message(repo_path)?;
 
     Ok(())
@@ -184,7 +185,7 @@ patterns = [
     "*.swp",
     ".DS_Store",
     ".helix/*",
-    ".git/",
+    ".git/"
     "target"
 ]
 "#;

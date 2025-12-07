@@ -10,6 +10,8 @@ use std::path::Path;
 /// 2. .gitignore (repo-level git rules)
 /// 3. helix.toml (repo-level helix rules)
 /// 4. ~/.helix.toml (user-level helix rules)
+
+#[derive(Debug, Clone)]
 pub struct IgnoreRules {
     globset: GlobSet,
 }
@@ -30,7 +32,6 @@ impl IgnoreRules {
     pub fn load(repo_path: &Path) -> Self {
         let mut builder = GlobSetBuilder::new();
 
-        // Load in order of precedence
         Self::add_built_in_patterns(&mut builder);
         Self::add_gitignore_patterns(&mut builder, repo_path);
         Self::add_helix_repo_patterns(&mut builder, repo_path);
@@ -190,7 +191,6 @@ impl IgnoreRules {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     #[test]
     fn test_normalize_pattern_directory_slash() {

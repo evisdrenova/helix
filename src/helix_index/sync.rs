@@ -31,6 +31,7 @@ use super::reader::Reader;
 use super::writer::Writer;
 
 use crate::helix_index::hash;
+use crate::ignore::IgnoreRules;
 use crate::index::GitIndex;
 
 use anyhow::{Context, Result};
@@ -98,6 +99,8 @@ impl SyncEngine {
             return Ok(Vec::new());
         }
 
+        let ignore_rules = IgnoreRules::load(&self.repo_path);
+
         let head_tree = self.load_full_head_tree()?;
 
         let pb = ProgressBar::new(entry_count as u64);
@@ -110,21 +113,28 @@ impl SyncEngine {
         );
 
         // Build entries in parallel, updating the progress bar as we go
-        let entries: Result<Vec<Entry>> = index_entries
+        let entries: Vec<Entry> = index_entries
             .into_par_iter()
             .map_init(
-                || pb.clone(),
-                |pb, e| {
-                    let res = self.build_helix_entry_from_git_entry(&e, &head_tree);
+                || (pb.clone(), ignore_rules.clone()),
+                |(pb, ignore_rules), e| {
                     pb.inc(1);
-                    res
+
+                    // Check if ignored
+                    let path = Path::new(&e.path);
+                    if ignore_rules.should_ignore(path) {
+                        return None;
+                    }
+
+                    self.build_helix_entry_from_git_entry(&e, &head_tree).ok()
                 },
             )
+            .flatten() // Remove None values
             .collect();
 
         pb.finish_with_message("helix index built");
 
-        entries
+        Ok(entries)
     }
 
     fn build_helix_entry_from_git_entry(
