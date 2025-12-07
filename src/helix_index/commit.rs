@@ -1,5 +1,6 @@
 // Commit objects - Immutable snapshots with metadata
-//
+// defines the commits structure that we store in the ./helix folder
+
 // PURE HELIX COMMITS:
 // - BLAKE3 hashes (not SHA-1)
 // - Zstd compression (not zlib)
@@ -20,35 +21,19 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Commit - represents a snapshot in history
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Commit {
-    /// Commit hash (BLAKE3) - computed from content
-    pub hash: Hash,
-
-    /// Root tree hash (BLAKE3)
-    pub tree: Hash,
-
-    /// Parent commit hash(es) - empty for initial commit, 1 for normal, 2+ for merge
-    pub parents: Vec<Hash>,
-
-    /// Author name and email
-    pub author: String,
-
-    /// Author timestamp (seconds since Unix epoch)
-    pub author_time: u64,
-
-    /// Committer name and email (usually same as author)
-    pub committer: String,
-
-    /// Committer timestamp (seconds since Unix epoch)
-    pub commit_time: u64,
-
-    /// Commit message
-    pub message: String,
+    pub commit_hash: Hash,  // Commit hash
+    pub tree_hash: Hash,    // Root tree hash
+    pub parents: Vec<Hash>, // Parent commit hash(es) - empty for initial commit, 1 for normal, 2+ for merge
+    pub author: String,     // Author name and email
+    pub author_time: u64,   // Author timestamp (seconds since Unix epoch)
+    pub commit_time: u64,   // Committer timestamp (seconds since Unix epoch)
+    pub message: String,    // Commit message
 }
 
 impl Commit {
     /// Create new commit
     pub fn new(
-        tree: Hash,
+        tree_hash: Hash,
         parents: Vec<Hash>,
         author: String,
         committer: String,
@@ -60,23 +45,22 @@ impl Commit {
             .as_secs();
 
         let mut commit = Self {
-            hash: [0u8; 32], // Temporary, will be computed
-            tree,
+            commit_hash: [0u8; 32], // Temporary, will be computed
+            tree_hash,
             parents,
             author,
             author_time: now,
-            committer,
             commit_time: now,
             message,
         };
 
         // Compute hash from content (excluding hash field)
-        commit.hash = commit.compute_hash();
+        commit.commit_hash = commit.compute_hash();
         commit
     }
 
     /// Compute hash from commit content (for internal use)
-    fn compute_hash(&self) -> Hash {
+    pub fn compute_hash(&self) -> Hash {
         let bytes = self.to_bytes_without_hash();
         hash_bytes(&bytes)
     }
@@ -86,7 +70,7 @@ impl Commit {
         let mut bytes = Vec::new();
 
         // Tree hash (32 bytes)
-        bytes.extend_from_slice(&self.tree);
+        bytes.extend_from_slice(&self.tree_hash);
 
         // Parent count (4 bytes)
         bytes.extend_from_slice(&(self.parents.len() as u32).to_le_bytes());
@@ -103,11 +87,6 @@ impl Commit {
 
         // Author time (8 bytes)
         bytes.extend_from_slice(&self.author_time.to_le_bytes());
-
-        // Committer length (2 bytes)
-        bytes.extend_from_slice(&(self.committer.len() as u16).to_le_bytes());
-        // Committer (variable)
-        bytes.extend_from_slice(self.committer.as_bytes());
 
         // Commit time (8 bytes)
         bytes.extend_from_slice(&self.commit_time.to_le_bytes());
@@ -148,12 +127,12 @@ impl Commit {
 
     /// Get commit hash (already computed)
     pub fn hash(&self) -> Hash {
-        self.hash
+        self.commit_hash
     }
 
     /// Get short hash (first 8 hex characters)
     pub fn short_hash(&self) -> String {
-        let hex = crate::helix_index::hash::hash_to_hex(&self.hash);
+        let hex = crate::helix_index::hash::hash_to_hex(&self.commit_hash);
         hex[..8].to_string()
     }
 
@@ -172,8 +151,8 @@ impl Commit {
         let mut offset = 0;
 
         // Tree hash (32 bytes)
-        let mut tree = [0u8; 32];
-        tree.copy_from_slice(&bytes[offset..offset + 32]);
+        let mut tree_hash = [0u8; 32];
+        tree_hash.copy_from_slice(&bytes[offset..offset + 32]);
         offset += 32;
 
         // Parent count (4 bytes)
@@ -224,8 +203,6 @@ impl Commit {
         if offset + committer_len > bytes.len() {
             anyhow::bail!("Commit ended unexpectedly while reading committer");
         }
-        let committer = String::from_utf8(bytes[offset..offset + committer_len].to_vec())?;
-        offset += committer_len;
 
         // Commit time (8 bytes)
         if offset + 8 > bytes.len() {
@@ -249,18 +226,17 @@ impl Commit {
 
         // Create commit and compute hash
         let mut commit = Self {
-            hash: [0u8; 32], // Temporary
-            tree,
+            commit_hash: [0u8; 32], // Temporary
+            tree_hash,
             parents,
             author,
             author_time,
-            committer,
             commit_time,
             message,
         };
 
         // Compute hash from the content
-        commit.hash = hash_bytes(bytes);
+        commit.commit_hash = hash_bytes(bytes);
 
         Ok(commit)
     }
@@ -716,7 +692,7 @@ mod tests {
         let bytes = commit.to_bytes();
         let parsed = Commit::from_bytes(&bytes).unwrap();
 
-        assert_eq!(parsed.tree, commit.tree);
+        assert_eq!(parsed.tree_hash, commit.tree_hash);
         assert_eq!(parsed.parents, commit.parents);
         assert_eq!(parsed.author, commit.author);
         assert_eq!(parsed.message, commit.message);
@@ -756,12 +732,11 @@ mod tests {
     #[test]
     fn test_commit_hash_deterministic() {
         let commit1 = Commit {
-            hash: [2u8; 32],
-            tree: [1u8; 32],
+            commit_hash: [2u8; 32],
+            tree_hash: [1u8; 32],
             parents: vec![[2u8; 32]],
             author: "John Doe <john@example.com>".to_string(),
             author_time: 1234567890,
-            committer: "John Doe <john@example.com>".to_string(),
             commit_time: 1234567890,
             message: "Test commit".to_string(),
         };
@@ -785,7 +760,7 @@ mod tests {
         let hash = storage.write(&commit)?;
         let read_commit = storage.read(&hash)?;
 
-        assert_eq!(read_commit.tree, commit.tree);
+        assert_eq!(read_commit.tree_hash, commit.tree_hash);
         assert_eq!(read_commit.message, commit.message);
 
         Ok(())

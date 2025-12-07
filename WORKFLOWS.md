@@ -15,27 +15,27 @@
 
 - [ ] `helix init` - Existing Git repo
 
-  - [ ] Import from .git/index (one-time)
-  - [ ] Filter out .helix/ files
-  - [ ] Detect staged files (index != HEAD)
-  - [ ] Detect modified files (working != index)
+  - [x] Import from .git/index (one-time)
+  - [x] Filter out .helix/ files
+  - [x] Detect staged files (index != HEAD)
+  - [x] Detect modified files (working != index)
   - [ ] Preserve Git history
-  - [ ] Don't re-import on subsequent inits
+  - [x] Don't re-import on subsequent inits
 
-- [ ] Configuration
+- [x] Configuration
 
-  - [ ] Read global config (~/.helix.toml)
-  - [ ] Read local config (.helix/config.toml)
-  - [ ] Override priority (local > global)
-  - [ ] User name/email from config
-  - [ ] User name/email from env vars (HELIX_AUTHOR_NAME, HELIX_AUTHOR_EMAIL)
+  - [x] Read global config (~/.helix.toml)
+  - [x] Read local config (.helix/config.toml)
+  - [x] Override priority (local > global)
+  - [x] User name/email from config
+  - [x] User name/email from env vars (HELIX_AUTHOR_NAME, HELIX_AUTHOR_EMAIL)
 
-- [ ] Ignore Files
-  - [ ] Read .gitignore
-  - [ ] Read .helix/config.toml [ignore] section
-  - [ ] Built-in ignore patterns (.git, .helix, target/, node_modules/)
-  - [ ] Nested .gitignore files
-  - [ ] Negation patterns (!important.log)
+- [x] Ignore Files
+  - [x] Read .gitignore
+  - [x] Read .helix/config.toml [ignore] section
+  - [x] Built-in ignore patterns (.git, .helix, target/, node_modules/)
+  - [x] Nested .gitignore files
+  - [x] Negation patterns (!important.log)
 
 ### Staging Operations
 

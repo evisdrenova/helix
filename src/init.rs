@@ -13,31 +13,31 @@ use std::{
 use crate::helix_index::{self, sync::SyncEngine, Header, Writer};
 
 pub fn init_helix_repo(repo_path: &Path, auto: Option<String>) -> Result<()> {
-    let git_path = repo_path.join(".git");
-
     create_directory_structure(repo_path)?;
     create_empty_index(repo_path)?;
     create_head_file(repo_path)?;
     create_repo_config(repo_path)?;
-
-    if git_path.exists() {
-        detect_git(repo_path, auto)?;
-    } else {
-        println!(
-            "Initializing Helix repository at {}...",
-            repo_path.display()
-        );
-    }
-
+    detect_git(repo_path, auto)?;
     print_success_message(repo_path)?;
 
     Ok(())
 }
 
 pub fn detect_git(repo_path: &Path, auto: Option<String>) -> Result<()> {
+    let git_path = repo_path.join(".git");
     let stdin = stdin();
     let handle = stdin.lock();
-    detect_git_with_reader(repo_path, handle, auto)
+
+    if git_path.exists() {
+        detect_git_with_reader(repo_path, handle, auto)
+    } else {
+        println!(
+            "Initializing Helix repository at {}...",
+            repo_path.display()
+        );
+
+        Ok(())
+    }
 }
 
 pub fn detect_git_with_reader<R: BufRead>(
@@ -47,7 +47,7 @@ pub fn detect_git_with_reader<R: BufRead>(
 ) -> Result<()> {
     println!("Detected existing Git repo. Do you want to import your Git commits to Helix? (Y/N).");
 
-    if let Some(auto) = auto {
+    if auto.is_some() {
         import_from_git(repo_path)?;
     } else {
         let mut input = String::new();

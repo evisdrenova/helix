@@ -1,15 +1,15 @@
 // Tree building - Create directory snapshots for commits
 
 // Root Tree
-// ├── file1.txt → blob (hash)
-// ├── file2.txt → blob (hash)
+// ├── file1.txt → File (hash)
+// ├── file2.txt → File (hash)
 // └── src/ → tree (hash)
-//     ├── main.rs → blob (hash)
-//     └── lib.rs → blob (hash)
+//     ├── main.rs → File (hash)
+//     └── lib.rs → File (hash)
 //
 // Tree format:
 // - Each tree represents a directory
-// - Contains entries for files (blobs) and subdirectories (trees)
+// - Contains entries for files (Files) and subdirectories (trees)
 // - Entries are sorted by name for deterministic hashing
 // - Trees are immutable once created
 
@@ -23,10 +23,10 @@ use std::path::{Path, PathBuf};
 /// Tree entry type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryType {
-    /// Regular file (blob)
-    Blob = 0,
-    /// Executable file (blob with exec bit)
-    BlobExecutable = 1,
+    /// Regular file (File)
+    File = 0,
+    /// Executable file (File with exec bit)
+    FileExecutable = 1,
     /// Subdirectory (tree)
     Tree = 2,
     /// Symbolic link
@@ -39,20 +39,20 @@ impl EntryType {
             Self::Symlink
         } else if mode & 0o100000 == 0o100000 {
             if mode & 0o111 != 0 {
-                Self::BlobExecutable
+                Self::FileExecutable
             } else {
-                Self::Blob
+                Self::File
             }
         } else {
-            // Default to blob for unknown types
-            Self::Blob
+            // Default to File for unknown types
+            Self::File
         }
     }
 
     pub fn to_mode(&self) -> u32 {
         match self {
-            Self::Blob => 0o100644,
-            Self::BlobExecutable => 0o100755,
+            Self::File => 0o100644,
+            Self::FileExecutable => 0o100755,
             Self::Tree => 0o040000,
             Self::Symlink => 0o120000,
         }
@@ -64,7 +64,7 @@ impl EntryType {
 pub struct TreeEntry {
     /// Entry name (just the filename, not full path)
     pub name: String,
-    /// Entry type (blob, tree, etc.)
+    /// Entry type (File, tree, etc.)
     pub entry_type: EntryType,
     /// Object hash (BLAKE3)
     pub oid: Hash,
@@ -75,7 +75,7 @@ pub struct TreeEntry {
 }
 
 impl TreeEntry {
-    pub fn new_blob(name: String, oid: Hash, mode: u32, size: u64) -> Self {
+    pub fn new_file(name: String, oid: Hash, mode: u32, size: u64) -> Self {
         Self {
             name,
             entry_type: EntryType::from_mode(mode),
@@ -130,8 +130,8 @@ impl TreeEntry {
 
         // Type (1 byte)
         let entry_type = match bytes[offset] {
-            0 => EntryType::Blob,
-            1 => EntryType::BlobExecutable,
+            0 => EntryType::File,
+            1 => EntryType::FileExecutable,
             2 => EntryType::Tree,
             3 => EntryType::Symlink,
             t => anyhow::bail!("Invalid entry type: {}", t),
@@ -529,7 +529,7 @@ impl TreeBuilder {
                             .to_string_lossy()
                             .to_string();
 
-                        tree.add_entry(TreeEntry::new_blob(
+                        tree.add_entry(TreeEntry::new_file(
                             name,
                             entry.oid,
                             entry.file_mode,
@@ -574,15 +574,15 @@ mod tests {
 
     #[test]
     fn test_entry_type_from_mode() {
-        assert_eq!(EntryType::from_mode(0o100644), EntryType::Blob);
-        assert_eq!(EntryType::from_mode(0o100755), EntryType::BlobExecutable);
+        assert_eq!(EntryType::from_mode(0o100644), EntryType::File);
+        assert_eq!(EntryType::from_mode(0o100755), EntryType::FileExecutable);
         assert_eq!(EntryType::from_mode(0o120000), EntryType::Symlink);
     }
 
     #[test]
     fn test_tree_entry_serialization() {
         let entry =
-            TreeEntry::new_blob("test.txt".to_string(), hash_bytes(b"test"), 0o100644, 1024);
+            TreeEntry::new_file("test.txt".to_string(), hash_bytes(b"test"), 0o100644, 1024);
 
         let bytes = entry.to_bytes();
         let parsed = TreeEntry::from_bytes(&bytes).unwrap();
@@ -592,9 +592,9 @@ mod tests {
 
     #[test]
     fn test_tree_entry_ordering() {
-        let e1 = TreeEntry::new_blob("a.txt".to_string(), [0u8; 32], 0o100644, 0);
-        let e2 = TreeEntry::new_blob("b.txt".to_string(), [0u8; 32], 0o100644, 0);
-        let e3 = TreeEntry::new_blob("c.txt".to_string(), [0u8; 32], 0o100644, 0);
+        let e1 = TreeEntry::new_file("a.txt".to_string(), [0u8; 32], 0o100644, 0);
+        let e2 = TreeEntry::new_file("b.txt".to_string(), [0u8; 32], 0o100644, 0);
+        let e3 = TreeEntry::new_file("c.txt".to_string(), [0u8; 32], 0o100644, 0);
 
         assert!(e1 < e2);
         assert!(e2 < e3);
@@ -604,13 +604,13 @@ mod tests {
     #[test]
     fn test_tree_serialization() {
         let mut tree = Tree::new();
-        tree.add_entry(TreeEntry::new_blob(
+        tree.add_entry(TreeEntry::new_file(
             "file1.txt".to_string(),
             hash_bytes(b"content1"),
             0o100644,
             100,
         ));
-        tree.add_entry(TreeEntry::new_blob(
+        tree.add_entry(TreeEntry::new_file(
             "file2.txt".to_string(),
             hash_bytes(b"content2"),
             0o100755,
@@ -627,13 +627,13 @@ mod tests {
     #[test]
     fn test_tree_hash_deterministic() {
         let mut tree1 = Tree::new();
-        tree1.add_entry(TreeEntry::new_blob(
+        tree1.add_entry(TreeEntry::new_file(
             "a.txt".to_string(),
             [1u8; 32],
             0o100644,
             10,
         ));
-        tree1.add_entry(TreeEntry::new_blob(
+        tree1.add_entry(TreeEntry::new_file(
             "b.txt".to_string(),
             [2u8; 32],
             0o100644,
@@ -642,13 +642,13 @@ mod tests {
         tree1.sort();
 
         let mut tree2 = Tree::new();
-        tree2.add_entry(TreeEntry::new_blob(
+        tree2.add_entry(TreeEntry::new_file(
             "b.txt".to_string(),
             [2u8; 32],
             0o100644,
             20,
         ));
-        tree2.add_entry(TreeEntry::new_blob(
+        tree2.add_entry(TreeEntry::new_file(
             "a.txt".to_string(),
             [1u8; 32],
             0o100644,
@@ -665,7 +665,7 @@ mod tests {
         let storage = TreeStorage::new(temp_dir.path());
 
         let mut tree = Tree::new();
-        tree.add_entry(TreeEntry::new_blob(
+        tree.add_entry(TreeEntry::new_file(
             "test.txt".to_string(),
             hash_bytes(b"test"),
             0o100644,
@@ -687,7 +687,7 @@ mod tests {
         let storage = TreeStorage::new(temp_dir.path());
 
         let mut tree = Tree::new();
-        tree.add_entry(TreeEntry::new_blob(
+        tree.add_entry(TreeEntry::new_file(
             "test.txt".to_string(),
             hash_bytes(b"test"),
             0o100644,

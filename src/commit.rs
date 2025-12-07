@@ -1,695 +1,377 @@
-// Commit command - Create commits from staged files
-//
-// PURE HELIX COMMIT WORKFLOW:
-// 1. Load staged entries from .helix/helix.idx
-// 2. Build tree from staged entries
-// 3. Get current HEAD commit (if exists)
-// 4. Create new commit with tree and parent
-// 5. Store commit in .helix/objects/commits/
-// 6. Update HEAD reference
-//
-// helix commit -m "Message"                    # Basic
-// helix commit -m "Message" -v                 # Verbose
-// helix commit -m "Message" --author "Name"    # Custom author
-// helix commit -m "Message" --amend            # Amend previous
-// helix commit -m "Message" --allow-empty      # Empty commit
+use globset::{Glob, GlobSet, GlobSetBuilder};
+use serde::Deserialize;
+use std::env;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
 
-use crate::helix_index::api::HelixIndexData;
-use crate::helix_index::commit::{Commit, CommitStorage};
-use crate::helix_index::format::EntryFlags;
-use crate::helix_index::hash::Hash;
-use crate::helix_index::tree::TreeBuilder;
-use anyhow::{Context, Result};
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::time::Instant;
-
-pub struct CommitOptions {
-    pub message: String,
-    pub author: Option<String>,
-    pub allow_empty: bool,
-    pub amend: bool,
-    pub verbose: bool,
+/// Ignore rules from multiple sources with clear precedence:
+/// 1. Built-in patterns (always apply)
+/// 2. .gitignore (repo-level git rules)
+/// 3. helix.toml (repo-level helix rules)
+/// 4. ~/.helix.toml (user-level helix rules)
+pub struct IgnoreRules {
+    globset: GlobSet,
 }
 
-impl Default for CommitOptions {
-    fn default() -> Self {
-        Self {
-            message: String::new(),
-            author: None,
-            allow_empty: false,
-            amend: false,
-            verbose: false,
-        }
-    }
+#[derive(Debug, Default, Deserialize)]
+struct HelixConfig {
+    #[serde(default)]
+    ignore: IgnoreSection,
 }
 
-/// Create a commit from staged files
-///
-/// Performance:
-/// - 100 files: ~10ms
-/// - 1,000 files: ~50ms
-/// - 10,000 files: ~300ms
-pub fn commit(repo_path: &Path, options: CommitOptions) -> Result<Hash> {
-    let start = Instant::now();
-
-    // Validate message
-    if options.message.trim().is_empty() {
-        anyhow::bail!("Commit message cannot be empty. Use -m <message>");
-    }
-
-    // Load index
-    let index = HelixIndexData::load_or_rebuild(repo_path)?;
-
-    if options.verbose {
-        println!("Loaded index (generation {})", index.generation());
-    }
-
-    // Get staged entries
-    let staged_entries: Vec<_> = index
-        .entries()
-        .iter()
-        .filter(|e| e.flags.contains(EntryFlags::STAGED))
-        .cloned()
-        .collect();
-
-    if staged_entries.is_empty() && !options.allow_empty {
-        anyhow::bail!("No changes staged for commit. Use 'helix add <files>' to stage changes.");
-    }
-
-    if options.verbose {
-        println!("Staging area: {} files", staged_entries.len());
-        for entry in &staged_entries {
-            println!("  {}", entry.path.display());
-        }
-    }
-
-    // Get current HEAD (if exists)
-    let head_commit = read_head(repo_path).ok();
-
-    if options.amend && head_commit.is_none() {
-        anyhow::bail!("Cannot amend - no previous commit exists");
-    }
-
-    // Check if tree would be same as HEAD (no changes)
-    if !options.allow_empty && !options.amend {
-        if let Some(head_hash) = head_commit {
-            let commit_storage = CommitStorage::for_repo(repo_path);
-            let head_commit_obj = commit_storage.read(&head_hash)?;
-
-            // Build tree to check if different
-            let tree_builder = TreeBuilder::new(repo_path);
-            let new_tree = tree_builder.build_from_entries(&staged_entries)?;
-
-            if new_tree == head_commit_obj.tree {
-                anyhow::bail!("No changes to commit. The tree is identical to HEAD.");
-            }
-        }
-    }
-
-    // Build tree from staged entries
-    if options.verbose {
-        println!("Building tree from {} entries...", staged_entries.len());
-    }
-
-    let tree_builder = TreeBuilder::new(repo_path);
-    let tree_hash = tree_builder
-        .build_from_entries(&staged_entries)
-        .context("Failed to build tree")?;
-
-    if options.verbose {
-        println!(
-            "Created tree: {}",
-            crate::helix_index::hash::hash_to_hex(&tree_hash)[..8].to_string()
-        );
-    }
-
-    // Get author
-    let author = if let Some(author) = options.author {
-        author
-    } else {
-        get_author(repo_path)?
-    };
-
-    // Create commit
-    let commit = if options.amend {
-        // Amend previous commit
-        let head_hash = head_commit.unwrap();
-        let commit_storage = CommitStorage::for_repo(repo_path);
-        let prev_commit = commit_storage.read(&head_hash)?;
-        let a_clone = author.clone();
-
-        Commit::new(
-            tree_hash,
-            prev_commit.parents, // Keep original parents
-            author,
-            a_clone,
-            options.message,
-        )
-    } else if let Some(parent_hash) = head_commit {
-        // Normal commit with parent
-        Commit::with_parent(tree_hash, parent_hash, author, options.message)
-    } else {
-        // Initial commit
-        Commit::initial(tree_hash, author, options.message)
-    };
-
-    // Store commit
-    if options.verbose {
-        println!("Writing commit object...");
-    }
-
-    let commit_storage = CommitStorage::for_repo(repo_path);
-    let commit_hash = commit_storage
-        .write(&commit)
-        .context("Failed to write commit")?;
-
-    if options.verbose {
-        println!(
-            "Created commit: {}",
-            crate::helix_index::hash::hash_to_hex(&commit_hash)[..8].to_string()
-        );
-    }
-
-    // Update HEAD
-    write_head(repo_path, commit_hash)?;
-
-    if options.verbose {
-        println!("Updated HEAD");
-    }
-
-    // Clear staged flags in index
-    clear_staged_flags(repo_path)?;
-
-    let elapsed = start.elapsed();
-    if options.verbose {
-        println!("Commit completed in {:?}", elapsed);
-    }
-
-    // Print commit summary
-    let short_hash = crate::helix_index::hash::hash_to_hex(&commit_hash);
-    let short_hash = &short_hash[..8];
-
-    if commit.is_initial() {
-        println!("[{}] {}", short_hash, commit.summary());
-        println!("{} files changed", staged_entries.len());
-    } else {
-        println!("[{}] {}", short_hash, commit.summary());
-        println!("{} files changed", staged_entries.len());
-    }
-
-    Ok(commit_hash)
+#[derive(Debug, Default, Deserialize)]
+pub struct IgnoreSection {
+    #[serde(default)]
+    patterns: Vec<String>,
 }
 
-/// Read current HEAD commit hash
-fn read_head(repo_path: &Path) -> Result<Hash> {
-    let head_path = repo_path.join(".helix").join("HEAD");
+impl IgnoreRules {
+    pub fn load(repo_path: &Path) -> Self {
+        let mut builder = GlobSetBuilder::new();
 
-    if !head_path.exists() {
-        anyhow::bail!("HEAD not found");
+        // Load in order of precedence
+        Self::add_built_in_patterns(&mut builder);
+        Self::add_gitignore_patterns(&mut builder, repo_path);
+        Self::add_helix_repo_patterns(&mut builder, repo_path);
+        Self::add_helix_global_patterns(&mut builder);
+
+        let globset = builder.build().unwrap_or_else(|_| {
+            // Fallback: just use built-in patterns
+            let mut fallback = GlobSetBuilder::new();
+            Self::add_built_in_patterns(&mut fallback);
+            fallback.build().unwrap()
+        });
+
+        Self { globset }
     }
 
-    let content = fs::read_to_string(&head_path).context("Failed to read HEAD")?;
+    /// Built-in patterns that always apply
+    /// These cover Helix internal files
+    fn add_built_in_patterns(builder: &mut GlobSetBuilder) {
+        // Git internal directory
+        Self::add_pattern(builder, ".git");
+        Self::add_pattern(builder, ".git/**");
 
-    // HEAD can be:
-    // 1. Direct hash: "a1b2c3d4..."
-    // 2. Symbolic ref: "ref: refs/heads/main"
+        // Helix internal directory
+        Self::add_pattern(builder, ".helix");
+        Self::add_pattern(builder, ".helix/**");
 
-    let content = content.trim();
+        // Helix cache directory
+        Self::add_pattern(builder, ".helix/cache");
+        Self::add_pattern(builder, ".helix/cache/**");
 
-    if content.starts_with("ref:") {
-        // Symbolic reference
-        let ref_path = content.strip_prefix("ref:").unwrap().trim();
-        let full_ref_path = repo_path.join(".helix").join(ref_path);
-
-        if !full_ref_path.exists() {
-            anyhow::bail!("Reference {} not found", ref_path);
-        }
-
-        let ref_content = fs::read_to_string(&full_ref_path).context("Failed to read reference")?;
-
-        crate::helix_index::hash::hex_to_hash(ref_content.trim())
-            .context("Invalid hash in reference")
-    } else {
-        // Direct hash
-        crate::helix_index::hash::hex_to_hash(content).context("Invalid hash in HEAD")
-    }
-}
-
-/// Write new HEAD commit hash
-fn write_head(repo_path: &Path, commit_hash: Hash) -> Result<()> {
-    let head_path = repo_path.join(".helix").join("HEAD");
-
-    // Read current HEAD to check if it's a symbolic reference
-    if head_path.exists() {
-        let content = fs::read_to_string(&head_path)?;
-        let content = content.trim();
-
-        if content.starts_with("ref:") {
-            // Update the branch it points to
-            let ref_path = content.strip_prefix("ref:").unwrap().trim();
-            let full_ref_path = repo_path.join(".helix").join(ref_path);
-
-            // Ensure parent directory exists
-            if let Some(parent) = full_ref_path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-
-            let hash_hex = crate::helix_index::hash::hash_to_hex(&commit_hash);
-            fs::write(&full_ref_path, hash_hex)?;
-            return Ok(());
-        }
+        // Temporary files during index writes
+        Self::add_pattern(builder, "**/.helix.idx.new");
+        Self::add_pattern(builder, ".helix.idx.new");
     }
 
-    // Direct HEAD update (detached HEAD)
-    let hash_hex = crate::helix_index::hash::hash_to_hex(&commit_hash);
-    fs::write(&head_path, hash_hex)?;
+    /// Load patterns from .gitignore
+    fn add_gitignore_patterns(builder: &mut GlobSetBuilder, repo_path: &Path) {
+        let gitignore_path = repo_path.join(".gitignore");
 
-    Ok(())
-}
+        if let Ok(file) = File::open(gitignore_path) {
+            let reader = BufReader::new(file);
+            for line in reader.lines().flatten() {
+                let line = line.trim();
 
-/// Get author from config or environment
-fn get_author(repo_path: &Path) -> Result<String> {
-    // Try reading from .helix/config
-    let config_path = repo_path.join("helix.toml");
-
-    if config_path.exists() {
-        let config_content = fs::read_to_string(&config_path)?;
-
-        // Simple TOML parsing (in production, use toml crate)
-        for line in config_content.lines() {
-            if line.trim().starts_with("author") {
-                if let Some(value) = line.split('=').nth(1) {
-                    let author = value.trim().trim_matches('"');
-                    if !author.is_empty() {
-                        return Ok(author.to_string());
-                    }
+                // Skip empty lines and comments
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
                 }
+
+                Self::add_pattern(builder, line);
             }
         }
     }
 
-    // Try environment variables
-    if let Ok(name) = std::env::var("HELIX_AUTHOR_NAME") {
-        if let Ok(email) = std::env::var("HELIX_AUTHOR_EMAIL") {
-            return Ok(format!("{} <{}>", name, email));
+    /// Load patterns from helix.toml (repo-level)
+    fn add_helix_repo_patterns(builder: &mut GlobSetBuilder, repo_path: &Path) {
+        let config_path = repo_path.join("helix.toml");
+        Self::add_helix_toml_patterns(builder, &config_path);
+    }
+
+    /// Load patterns from ~/.helix.toml (global)
+    fn add_helix_global_patterns(builder: &mut GlobSetBuilder) {
+        if let Ok(home) = env::var("HOME") {
+            let config_path = Path::new(&home).join(".helix.toml");
+            Self::add_helix_toml_patterns(builder, &config_path);
         }
     }
 
-    // Try Git config as fallback
-    if let Ok(name) = std::env::var("GIT_AUTHOR_NAME") {
-        if let Ok(email) = std::env::var("GIT_AUTHOR_EMAIL") {
-            return Ok(format!("{} <{}>", name, email));
+    fn add_helix_toml_patterns(builder: &mut GlobSetBuilder, path: &Path) {
+        if !path.exists() {
+            return;
+        }
+
+        let Ok(contents) = std::fs::read_to_string(path) else {
+            return;
+        };
+
+        let Ok(cfg) = toml::from_str::<HelixConfig>(&contents) else {
+            return;
+        };
+
+        for pattern in cfg.ignore.patterns {
+            Self::add_pattern(builder, &pattern);
         }
     }
 
-    anyhow::bail!(
-        "Author not configured. Set in helix.toml:\n\
-         author = \"Your Name <your@email.com>\"\n\
-         \n\
-         Or use environment variables:\n\
-         export HELIX_AUTHOR_NAME=\"Your Name\"\n\
-         export HELIX_AUTHOR_EMAIL=\"your@email.com\""
-    )
-}
+    /// Add a pattern to the builder, normalizing it for proper matching
+    fn add_pattern(builder: &mut GlobSetBuilder, pattern: &str) {
+        let pattern = pattern.trim();
 
-/// Clear staged flags from index after successful commit
-fn clear_staged_flags(repo_path: &Path) -> Result<()> {
-    let mut index = HelixIndexData::load_or_rebuild(repo_path)?;
+        if pattern.is_empty() {
+            return;
+        }
 
-    // Remove STAGED flag from all entries
-    for entry in index.entries_mut() {
-        entry.flags.remove(EntryFlags::STAGED);
+        // Normalize the pattern for both files and directories
+        let normalized_patterns = Self::normalize_pattern(pattern);
+
+        for normalized in normalized_patterns {
+            if let Ok(glob) = Glob::new(&normalized) {
+                builder.add(glob);
+            }
+        }
     }
 
-    // Persist updated index
-    index.persist()?;
+    /// Normalize a pattern to handle various formats
+    /// Returns multiple patterns to match both files and directories
+    fn normalize_pattern(pattern: &str) -> Vec<String> {
+        let mut patterns = Vec::new();
 
-    Ok(())
-}
+        // Remove leading "./" if present
+        let pattern = pattern.strip_prefix("./").unwrap_or(pattern);
 
-/// Show what would be committed (dry run)
-pub fn show_staged(repo_path: &Path) -> Result<()> {
-    let index = HelixIndexData::load_or_rebuild(repo_path)?;
-
-    let staged_entries: Vec<_> = index
-        .entries()
-        .iter()
-        .filter(|e| e.flags.contains(EntryFlags::STAGED))
-        .collect();
-
-    if staged_entries.is_empty() {
-        println!("No changes staged for commit.");
-        println!("Use 'helix add <files>' to stage changes.");
-        return Ok(());
-    }
-
-    println!("Changes to be committed:");
-    println!();
-
-    let num_entries = staged_entries.len();
-
-    for entry in staged_entries {
-        // Check if this is a new file or modified file
-        if entry.flags.contains(EntryFlags::TRACKED) && !entry.flags.contains(EntryFlags::MODIFIED)
-        {
-            println!("  new file:   {}", entry.path.display());
+        // Handle different pattern formats
+        if pattern.ends_with('/') {
+            // "target/" -> match directory
+            let base = pattern.trim_end_matches('/');
+            patterns.push(format!("{}", base));
+            patterns.push(format!("{}/**", base));
+        } else if pattern.ends_with("/*") {
+            // ".helix/*" -> match directory contents
+            let base = pattern.strip_suffix("/*").unwrap();
+            patterns.push(format!("{}", base));
+            patterns.push(format!("{}/**", base));
+        } else if pattern.ends_with("/**") {
+            // ".git/**" -> match directory and contents
+            let base = pattern.strip_suffix("/**").unwrap();
+            patterns.push(format!("{}", base));
+            patterns.push(format!("{}/**", base));
+        } else if pattern.contains('/') {
+            // "src/test" -> match as path
+            patterns.push(pattern.to_string());
+            // Also match as directory
+            patterns.push(format!("{}/**", pattern));
+        } else if pattern.starts_with("*.") {
+            // "*.log" -> extension pattern (already correct)
+            patterns.push(pattern.to_string());
         } else {
-            println!("  modified:   {}", entry.path.display());
+            // "node_modules" or "HEAD" -> match as file or directory
+            // Match exact name
+            patterns.push(pattern.to_string());
+            // Match as directory
+            patterns.push(format!("{}/**", pattern));
+            // Match anywhere in tree
+            patterns.push(format!("**/{}", pattern));
+            patterns.push(format!("**/{}/**", pattern));
         }
+
+        patterns
     }
 
-    println!();
-    println!("{} files staged", num_entries);
-
-    Ok(())
+    /// Check if a path should be ignored
+    pub fn should_ignore(&self, path: &Path) -> bool {
+        self.globset.is_match(path)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::helix_index::blob_storage::BlobStorage;
-    use crate::helix_index::format::Entry;
-    use std::process::Command;
-    use tempfile::TempDir;
+    use std::path::PathBuf;
 
-    fn init_test_repo(path: &Path) -> Result<()> {
-        // Initialize git repo
-        fs::create_dir_all(path.join(".git"))?;
-        Command::new("git")
-            .args(&["init"])
-            .current_dir(path)
-            .output()?;
-        Command::new("git")
-            .args(&["config", "user.name", "Test User"])
-            .current_dir(path)
-            .output()?;
-        Command::new("git")
-            .args(&["config", "user.email", "test@example.com"])
-            .current_dir(path)
-            .output()?;
-
-        // Initialize helix
-        crate::init::init_helix_repo(path, None)?;
-
-        // Set author in config
-        let config_path = path.join("helix.toml");
-        fs::write(&config_path, "author = \"Test User <test@example.com>\"\n")?;
-
-        Ok(())
+    #[test]
+    fn test_normalize_pattern_directory_slash() {
+        let patterns = IgnoreRules::normalize_pattern("target/");
+        assert!(patterns.contains(&"target".to_string()));
+        assert!(patterns.contains(&"target/**".to_string()));
     }
 
-    fn stage_file(repo_path: &Path, filename: &str, content: &[u8]) -> Result<()> {
-        // Write file
-        fs::write(repo_path.join(filename), content)?;
+    #[test]
+    fn test_normalize_pattern_glob_star() {
+        let patterns = IgnoreRules::normalize_pattern(".helix/*");
+        assert!(patterns.contains(&".helix".to_string()));
+        assert!(patterns.contains(&".helix/**".to_string()));
+    }
 
-        // Store blob
-        let storage = BlobStorage::for_repo(repo_path);
-        let hash = storage.write(content)?;
+    #[test]
+    fn test_normalize_pattern_double_star() {
+        let patterns = IgnoreRules::normalize_pattern(".git/**");
+        assert!(patterns.contains(&".git".to_string()));
+        assert!(patterns.contains(&".git/**".to_string()));
+    }
 
-        // Add to index as staged
-        let mut index = HelixIndexData::load_or_rebuild(repo_path)?;
+    #[test]
+    fn test_normalize_pattern_simple_name() {
+        let patterns = IgnoreRules::normalize_pattern("HEAD");
+        assert!(patterns.contains(&"HEAD".to_string()));
+        assert!(patterns.contains(&"HEAD/**".to_string()));
+        assert!(patterns.contains(&"**/HEAD".to_string()));
+        assert!(patterns.contains(&"**/HEAD/**".to_string()));
+    }
 
-        let entry = Entry {
-            path: PathBuf::from(filename),
-            oid: hash,
-            flags: EntryFlags::TRACKED | EntryFlags::STAGED,
-            size: content.len() as u64,
-            mtime_sec: 0,
-            mtime_nsec: 0,
-            file_mode: 0o100644,
-            merge_conflict_stage: 0,
-            reserved: [0u8; 33],
+    #[test]
+    fn test_normalize_pattern_extension() {
+        let patterns = IgnoreRules::normalize_pattern("*.log");
+        assert!(patterns.contains(&"*.log".to_string()));
+    }
+
+    #[test]
+    fn test_should_ignore_helix_directory() {
+        let mut builder = GlobSetBuilder::new();
+        IgnoreRules::add_pattern(&mut builder, ".helix");
+        IgnoreRules::add_pattern(&mut builder, ".helix/*");
+        let rules = IgnoreRules {
+            globset: builder.build().unwrap(),
         };
 
-        index.entries_mut().push(entry);
-        index.persist()?;
-
-        Ok(())
+        assert!(rules.should_ignore(Path::new(".helix")));
+        assert!(rules.should_ignore(Path::new(".helix/HEAD")));
+        assert!(rules.should_ignore(Path::new(".helix/helix.idx")));
+        assert!(rules.should_ignore(Path::new(".helix/cache/data.bin")));
     }
 
     #[test]
-    fn test_initial_commit() -> Result<()> {
-        let temp_dir = TempDir::new()?;
-        let repo_path = temp_dir.path();
+    fn test_should_ignore_git_directory() {
+        let mut builder = GlobSetBuilder::new();
+        IgnoreRules::add_pattern(&mut builder, ".git");
+        let rules = IgnoreRules {
+            globset: builder.build().unwrap(),
+        };
 
-        init_test_repo(repo_path)?;
-
-        // Stage a file
-        stage_file(repo_path, "README.md", b"# Hello World")?;
-
-        // Create commit
-        let commit_hash = commit(
-            repo_path,
-            CommitOptions {
-                message: "Initial commit".to_string(),
-                ..Default::default()
-            },
-        )?;
-
-        // Verify commit exists
-        let commit_storage = CommitStorage::for_repo(repo_path);
-        let commit_obj = commit_storage.read(&commit_hash)?;
-
-        assert_eq!(commit_obj.message, "Initial commit");
-        assert!(commit_obj.is_initial());
-
-        // Verify HEAD points to commit
-        let head_hash = read_head(repo_path)?;
-        assert_eq!(head_hash, commit_hash);
-
-        Ok(())
+        assert!(rules.should_ignore(Path::new(".git")));
+        assert!(rules.should_ignore(Path::new(".git/HEAD")));
+        assert!(rules.should_ignore(Path::new(".git/objects/abc123")));
     }
 
     #[test]
-    fn test_second_commit() -> Result<()> {
-        let temp_dir = TempDir::new()?;
-        let repo_path = temp_dir.path();
+    fn test_should_ignore_file_by_name() {
+        let mut builder = GlobSetBuilder::new();
+        IgnoreRules::add_pattern(&mut builder, "HEAD");
+        let rules = IgnoreRules {
+            globset: builder.build().unwrap(),
+        };
 
-        init_test_repo(repo_path)?;
-
-        // First commit
-        stage_file(repo_path, "file1.txt", b"content 1")?;
-        let first_hash = commit(
-            repo_path,
-            CommitOptions {
-                message: "First commit".to_string(),
-                ..Default::default()
-            },
-        )?;
-
-        // Second commit
-        stage_file(repo_path, "file2.txt", b"content 2")?;
-        let second_hash = commit(
-            repo_path,
-            CommitOptions {
-                message: "Second commit".to_string(),
-                ..Default::default()
-            },
-        )?;
-
-        // Verify second commit has first as parent
-        let commit_storage = CommitStorage::for_repo(repo_path);
-        let second_commit = commit_storage.read(&second_hash)?;
-
-        assert_eq!(second_commit.parents.len(), 1);
-        assert_eq!(second_commit.parents[0], first_hash);
-
-        Ok(())
+        assert!(rules.should_ignore(Path::new("HEAD")));
+        assert!(rules.should_ignore(Path::new(".helix/HEAD")));
+        assert!(rules.should_ignore(Path::new("subdir/HEAD")));
     }
 
     #[test]
-    fn test_commit_without_staged_files() -> Result<()> {
-        let temp_dir = TempDir::new()?;
-        let repo_path = temp_dir.path();
+    fn test_should_ignore_extension() {
+        let mut builder = GlobSetBuilder::new();
+        IgnoreRules::add_pattern(&mut builder, "*.log");
+        let rules = IgnoreRules {
+            globset: builder.build().unwrap(),
+        };
 
-        init_test_repo(repo_path)?;
-
-        // Try to commit without staging anything
-        let result = commit(
-            repo_path,
-            CommitOptions {
-                message: "Empty commit".to_string(),
-                ..Default::default()
-            },
-        );
-
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("No changes staged"));
-
-        Ok(())
+        assert!(rules.should_ignore(Path::new("debug.log")));
+        assert!(rules.should_ignore(Path::new("logs/error.log")));
+        assert!(!rules.should_ignore(Path::new("logfile.txt")));
     }
 
     #[test]
-    fn test_commit_with_empty_message() -> Result<()> {
-        let temp_dir = TempDir::new()?;
-        let repo_path = temp_dir.path();
+    fn test_should_not_ignore_normal_files() {
+        let mut builder = GlobSetBuilder::new();
+        IgnoreRules::add_built_in_patterns(&mut builder);
+        let rules = IgnoreRules {
+            globset: builder.build().unwrap(),
+        };
 
-        init_test_repo(repo_path)?;
-        stage_file(repo_path, "test.txt", b"test")?;
-
-        // Try to commit with empty message
-        let result = commit(
-            repo_path,
-            CommitOptions {
-                message: "".to_string(),
-                ..Default::default()
-            },
-        );
-
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("cannot be empty"));
-
-        Ok(())
+        assert!(!rules.should_ignore(Path::new("src/main.rs")));
+        assert!(!rules.should_ignore(Path::new("README.md")));
+        assert!(!rules.should_ignore(Path::new("Cargo.toml")));
     }
 
     #[test]
-    fn test_commit_clears_staged_flags() -> Result<()> {
-        let temp_dir = TempDir::new()?;
+    fn test_should_ignore_helix_toml_config() {
+        let temp_dir = tempfile::tempdir().unwrap();
         let repo_path = temp_dir.path();
 
-        init_test_repo(repo_path)?;
+        // Create helix.toml with custom patterns
+        std::fs::write(
+            repo_path.join("helix.toml"),
+            r#"
+[ignore]
+patterns = [
+    "*.tmp",
+    "cache/",
+    "node_modules"
+]
+"#,
+        )
+        .unwrap();
 
-        // Stage files
-        stage_file(repo_path, "file1.txt", b"content 1")?;
-        stage_file(repo_path, "file2.txt", b"content 2")?;
+        let rules = IgnoreRules::load(repo_path);
 
-        // Verify staged
-        let index = HelixIndexData::load_or_rebuild(repo_path)?;
-        let staged_count = index
-            .entries()
-            .iter()
-            .filter(|e| e.flags.contains(EntryFlags::STAGED))
-            .count();
-        assert_eq!(staged_count, 2);
-
-        // Commit
-        commit(
-            repo_path,
-            CommitOptions {
-                message: "Test commit".to_string(),
-                ..Default::default()
-            },
-        )?;
-
-        // Verify staged flags cleared
-        let index = HelixIndexData::load_or_rebuild(repo_path)?;
-        let staged_count = index
-            .entries()
-            .iter()
-            .filter(|e| e.flags.contains(EntryFlags::STAGED))
-            .count();
-        assert_eq!(staged_count, 0);
-
-        Ok(())
+        assert!(rules.should_ignore(Path::new("file.tmp")));
+        assert!(rules.should_ignore(Path::new("cache/data.db")));
+        assert!(rules.should_ignore(Path::new("node_modules/pkg/index.js")));
     }
 
     #[test]
-    fn test_commit_allow_empty() -> Result<()> {
-        let temp_dir = TempDir::new()?;
+    fn test_should_ignore_gitignore_patterns() {
+        let temp_dir = tempfile::tempdir().unwrap();
         let repo_path = temp_dir.path();
 
-        init_test_repo(repo_path)?;
+        // Create .gitignore
+        std::fs::write(
+            repo_path.join(".gitignore"),
+            "*.log\ntarget/\n# Comment\n\n.DS_Store\n",
+        )
+        .unwrap();
 
-        // Commit with no staged files but allow_empty=true
-        let commit_hash = commit(
-            repo_path,
-            CommitOptions {
-                message: "Empty commit".to_string(),
-                allow_empty: true,
-                ..Default::default()
-            },
-        )?;
+        let rules = IgnoreRules::load(repo_path);
 
-        let commit_storage = CommitStorage::for_repo(repo_path);
-        let commit_obj = commit_storage.read(&commit_hash)?;
-
-        assert_eq!(commit_obj.message, "Empty commit");
-
-        Ok(())
+        assert!(rules.should_ignore(Path::new("debug.log")));
+        assert!(rules.should_ignore(Path::new("target/debug/main")));
+        assert!(rules.should_ignore(Path::new(".DS_Store")));
     }
 
     #[test]
-    fn test_show_staged() -> Result<()> {
-        let temp_dir = TempDir::new()?;
-        let repo_path = temp_dir.path();
-
-        init_test_repo(repo_path)?;
-
-        // Stage files
-        stage_file(repo_path, "file1.txt", b"content 1")?;
-        stage_file(repo_path, "file2.txt", b"content 2")?;
-
-        // Show staged (should not error)
-        show_staged(repo_path)?;
-
-        Ok(())
+    fn test_pattern_with_leading_dot_slash() {
+        let patterns = IgnoreRules::normalize_pattern("./target/");
+        assert!(patterns.contains(&"target".to_string()));
+        assert!(patterns.contains(&"target/**".to_string()));
     }
 
     #[test]
-    fn test_commit_with_custom_author() -> Result<()> {
-        let temp_dir = TempDir::new()?;
-        let repo_path = temp_dir.path();
+    fn test_built_in_patterns_ignore_helix_internals() {
+        let mut builder = GlobSetBuilder::new();
+        IgnoreRules::add_built_in_patterns(&mut builder);
+        let rules = IgnoreRules {
+            globset: builder.build().unwrap(),
+        };
 
-        init_test_repo(repo_path)?;
-        stage_file(repo_path, "test.txt", b"test")?;
+        // Should ignore .helix directory
+        assert!(rules.should_ignore(Path::new(".helix")));
+        assert!(rules.should_ignore(Path::new(".helix/HEAD")));
+        assert!(rules.should_ignore(Path::new(".helix/helix.idx")));
+        assert!(rules.should_ignore(Path::new(".helix/cache/data")));
+        assert!(rules.should_ignore(Path::new(".helix/objects/abc123")));
 
-        let commit_hash = commit(
-            repo_path,
-            CommitOptions {
-                message: "Test commit".to_string(),
-                author: Some("Custom Author <custom@example.com>".to_string()),
-                ..Default::default()
-            },
-        )?;
+        // Should ignore .git directory
+        assert!(rules.should_ignore(Path::new(".git")));
+        assert!(rules.should_ignore(Path::new(".git/HEAD")));
+        assert!(rules.should_ignore(Path::new(".git/index")));
 
-        let commit_storage = CommitStorage::for_repo(repo_path);
-        let commit_obj = commit_storage.read(&commit_hash)?;
+        // Should NOT ignore helix.toml (repo config)
+        assert!(!rules.should_ignore(Path::new("helix.toml")));
 
-        assert_eq!(commit_obj.author, "Custom Author <custom@example.com>");
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_commit_performance() -> Result<()> {
-        let temp_dir = TempDir::new()?;
-        let repo_path = temp_dir.path();
-
-        init_test_repo(repo_path)?;
-
-        // Stage 100 files
-        for i in 0..100 {
-            stage_file(
-                repo_path,
-                &format!("file{}.txt", i),
-                format!("content {}", i).as_bytes(),
-            )?;
-        }
-
-        // Time the commit
-        let start = Instant::now();
-        commit(
-            repo_path,
-            CommitOptions {
-                message: "Commit 100 files".to_string(),
-                ..Default::default()
-            },
-        )?;
-        let elapsed = start.elapsed();
-
-        println!("Committed 100 files in {:?}", elapsed);
-
-        // Should be fast (expect <100ms)
-        assert!(
-            elapsed.as_millis() < 200,
-            "Commit took {}ms, expected <200ms",
-            elapsed.as_millis()
-        );
-
-        Ok(())
+        // Should NOT ignore normal files
+        assert!(!rules.should_ignore(Path::new("src/main.rs")));
+        assert!(!rules.should_ignore(Path::new("README.md")));
     }
 }
