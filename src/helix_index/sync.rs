@@ -1,29 +1,68 @@
 /*
-This file defines the sync engine that handles one-time import from .git/index during 'helix init'.
+Sync engine for bootstrapping a Helix repo from an existing Git repo.
 
-After initialization, Helix operates independently:
-- .helix/helix.idx is the ONLY canonical source of truth
-- No ongoing sync with .git/index
-- All Helix operations update .helix/helix.idx only
+This module is only used during `helix init`. It performs a one-shot import of
+Git state into Helix’s own storage. After that, Helix runs independently of
+`.git`.
 
-State model for EntryFlags:
+High-level responsibilities
+---------------------------
+SyncEngine::import_from_git wires together the full import pipeline:
 
-We model three worlds:
-- HEAD         (last committed state from Git)
-- helix.idx    (Helix's canonical index, replaces .git/index)
-- working tree (files on disk)
+1. Waits for `.git/index.lock` to disappear (wait_for_git_lock).
+2. Imports the Git index into `.helix/helix.idx`:
+   - Reads `.git/index` via GitIndex.
+   - Applies ignore rules (IgnoreRules).
+   - Compares index entries against the current HEAD tree to set flags.
+3. Imports the entire commit graph:
+   - Walks commits with gix (oldest to newest).
+   - Builds Helix commits (Helix_Commit) and trees (TreeBuilder).
+   - Writes them to `.helix/objects/commits` and `.helix/objects/trees`.
+   - Builds a git_hash_to_helix_hash map (Git SHA -> Helix commit hash).
+   - Updates `.helix/HEAD` to point at the latest commit.
+4. Imports refs:
+   - Branches: copies `.git/refs/heads/...` to `.helix/refs/heads/...`
+     using the Git->Helix commit map.
+   - Tags: copies `.git/refs/tags/...` to `.helix/refs/tags/...`
+     (nested paths preserved), also via the Git->Helix map.
+   - HEAD:
+     - If symbolic (for example `ref: refs/heads/main`), mirror it into `.helix/HEAD`.
+     - If detached, rewrite the Git SHA to the corresponding Helix commit hash.
+5. Imports remotes:
+   - Reads Git remotes via gix.
+   - Writes them into `helix.toml` under a `[remotes]` table as
+     `[remotes.<name>]` entries with URLs and refspecs.
 
-Bits:
+After this import
+-----------------
+- `.helix/helix.idx` is the canonical index; Helix never writes `.git/index`.
+- `.helix/objects/...` and `.helix/refs/...` form Helix’s own commit / tree /
+  ref namespace, detached from Git.
+- `helix.toml` becomes the persisted configuration source for remotes.
 
-- TRACKED   -> this path exists in helix.idx (was in .git/index during import)
-- STAGED    -> helix.idx differs from HEAD for this path (index != HEAD)
-- MODIFIED  -> working tree differs from helix.idx (working != helix.idx)
-- DELETED   -> tracked in helix.idx but missing from working tree
-- UNTRACKED -> not in helix.idx, but discovered via FSMonitor
+EntryFlags state model
+----------------------
+We model three "worlds" for each path:
 
-This file (sync.rs) only handles the one-time import during 'helix init'.
-It compares **index vs HEAD** to set TRACKED and STAGED flags.
-MODIFIED / DELETED / UNTRACKED are set by FSMonitor / working-tree operations.
+- HEAD         : last committed state from Git.
+- helix.idx    : Helix’s canonical index (replaces `.git/index`).
+- working tree : files on disk.
+
+Flags are derived during import_git_index as follows:
+
+- TRACKED   -> this path exists in helix.idx
+               (was present in `.git/index` during import).
+- STAGED    -> index vs HEAD: the blob in `.git/index` differs from the blob
+               in the HEAD tree (or the path is new and only in index).
+- MODIFIED  -> working tree vs index: on-disk contents differ from the snapshot
+               in `.git/index`.
+- DELETED   -> file existed in HEAD but is missing from the working tree.
+- UNTRACKED -> not handled here; only set later by FSMonitor / working-tree
+               discovery for paths not in helix.idx.
+
+This file is intentionally read-only with respect to Git: it never mutates
+`.git/`. It only reads Git state and materializes the corresponding Helix view
+under `.helix/` and `helix.toml`.
 */
 
 use super::format::{Entry, EntryFlags, Header};
