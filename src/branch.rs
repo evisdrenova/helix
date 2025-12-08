@@ -6,11 +6,12 @@
 //   helix branch -d <name>        - Delete branch
 //   helix branch -m <old> <new>   - Rename branch
 
-use crate::branch_tui;
-use crate::helix_index::hash::Hash;
 use anyhow::{anyhow, Context, Result};
 use std::fs;
 use std::path::Path;
+
+use crate::branch_tui;
+use crate::helix_index::hash::Hash;
 
 pub struct BranchOptions {
     pub delete: bool,
@@ -37,35 +38,6 @@ pub fn run_branch_tui(repo_path: Option<&Path>) -> Result<()> {
 
     let mut app = branch_tui::app::App::new(&repo_path)?;
     app.run()?;
-
-    Ok(())
-}
-
-/// List all branches, with current branch highlighted
-pub fn list_branches(repo_path: &Path) -> Result<()> {
-    let refs_dir = repo_path.join(".helix/refs/heads");
-
-    if !refs_dir.exists() {
-        println!("No branches yet (make your first commit to create 'main')");
-        return Ok(());
-    }
-
-    let current_branch = get_current_branch(repo_path)?;
-    let mut branches = get_all_branches(repo_path)?;
-    branches.sort();
-
-    if branches.is_empty() {
-        println!("No branches yet (make your first commit to create 'main')");
-        return Ok(());
-    }
-
-    for branch in branches {
-        if branch == current_branch {
-            println!("* {}", branch); // Current branch
-        } else {
-            println!("  {}", branch);
-        }
-    }
 
     Ok(())
 }
@@ -354,11 +326,16 @@ fn short_hash(hash: &Hash) -> String {
 mod tests {
     use std::path::PathBuf;
 
+    use crate::{
+        commit::{commit, CommitOptions},
+        init::init_helix_repo,
+    };
+
     use super::*;
     use tempfile::TempDir;
 
     fn init_test_repo(path: &Path) -> Result<()> {
-        crate::init::init_helix_repo(path, None)?;
+        init_helix_repo(path, None)?;
 
         // Set up config
         let config_path = path.join("helix.toml");
@@ -376,7 +353,6 @@ email = "test@test.com"
 
     fn make_initial_commit(repo_path: &Path) -> Result<Hash> {
         use crate::add::{add, AddOptions};
-        use crate::commit::{commit, CommitOptions};
 
         // Create and add a file
         fs::write(repo_path.join("test.txt"), "content")?;

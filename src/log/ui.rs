@@ -1,3 +1,5 @@
+// ui command for log.rs
+
 use helix::helix_index::commit::{format_timestamp, Commit};
 use helix::helix_index::hash::hash_to_hex;
 use ratatui::{

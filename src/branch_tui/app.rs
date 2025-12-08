@@ -4,118 +4,106 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use helix::helix_index::commit::{Commit, CommitLoader};
-use helix::helix_index::hash::Hash;
 use ratatui::{backend::CrosstermBackend, Terminal};
+use std::collections::HashSet;
 use std::io;
 use std::path::Path;
 
-use super::actions::Action;
 use super::ui;
+use crate::helix_index::commit::{Commit, CommitStorage};
+use crate::helix_index::hash;
+
+pub struct BranchInfo {
+    pub name: String,
+    pub is_current: bool,
+    pub last_commit_hash: Option<[u8; 32]>,
+    pub last_commit: Option<Commit>,
+    pub commit_count: usize,
+}
 
 pub struct App {
+    pub branches: Vec<BranchInfo>,
     pub selected_index: usize,
     pub scroll_offset: usize,
-    pub current_branch_name: String,
     pub should_quit: bool,
-    pub split_ratio: f32,
-    pub loader: CommitLoader,
-    pub total_loaded: usize,
-    pub initial_limit: usize,
+    pub repo_path: std::path::PathBuf,
     pub repo_name: String,
-    pub remote_branch: Option<String>,
-    pub ahead: usize,
-    pub behind: usize,
+    pub commit_storage: CommitStorage,
     pub visible_height: usize,
-    pub search_mode: bool,
-    pub vim_mode: bool,
-    pub search_query: String,
-    pub filtered_indices: Vec<usize>,
-    pub branch_name_input: String,
-    pub branch_name_mode: bool,
-    pub pending_checkout_hash: Option<Hash>,
+    pub checkout_mode: bool,
+    pub delete_mode: bool,
+    pub rename_mode: bool,
+    pub new_branch_name: String,
 }
 
 impl App {
     pub fn new(repo_path: &Path) -> Result<Self> {
-        let loader = CommitLoader::new(repo_path)?;
-        let current_branch_name = loader.get_current_branch_name()?;
+        let repo_name = repo_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
 
-        let initial_limit = 50;
-        let commits = loader.load_commits(initial_limit)?;
-        let total_loaded = commits.len();
-        let repo_name = loader.get_repo_name();
+        let commit_storage = CommitStorage::for_repo(repo_path);
+        let current_branch = crate::branch::get_current_branch(repo_path).unwrap_or_default();
+        let branch_names = crate::branch::get_all_branches(repo_path)?;
 
-        let (remote_branch, ahead, behind) = loader
-            .remote_tracking_info()
-            .map(|(branch, ahead, behind)| (Some(branch), ahead, behind))
-            .unwrap_or((None, 0, 0));
+        let mut branches = Vec::new();
+
+        for branch_name in branch_names {
+            let is_current = branch_name == current_branch;
+
+            // Read branch ref to get commit hash
+            let branch_ref_path = repo_path.join(".helix/refs/heads").join(&branch_name);
+
+            let (last_commit_hash, last_commit, commit_count) =
+                if let Ok(hash_hex) = std::fs::read_to_string(&branch_ref_path) {
+                    if let Ok(commit_hash) = hash::hex_to_hash(hash_hex.trim()) {
+                        if let Ok(commit) = commit_storage.read(&commit_hash) {
+                            let count = count_commits(&commit_storage, &commit_hash);
+                            (Some(commit_hash), Some(commit), count)
+                        } else {
+                            (Some(commit_hash), None, 0)
+                        }
+                    } else {
+                        (None, None, 0)
+                    }
+                } else {
+                    (None, None, 0)
+                };
+
+            branches.push(BranchInfo {
+                name: branch_name,
+                is_current,
+                last_commit_hash,
+                last_commit,
+                commit_count,
+            });
+        }
+
+        // Sort: current branch first, then by name
+        branches.sort_by(|a, b| match (a.is_current, b.is_current) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.name.cmp(&b.name),
+        });
+
+        let selected_index = branches.iter().position(|b| b.is_current).unwrap_or(0);
 
         Ok(Self {
-            commits,
-            selected_index: 0,
+            branches,
+            selected_index,
             scroll_offset: 0,
-            current_branch_name,
             should_quit: false,
-            split_ratio: 0.35, // 35% for timeline, 65% for details
-            loader,
-            total_loaded,
-            initial_limit,
+            repo_path: repo_path.to_path_buf(),
             repo_name,
-            remote_branch,
-            ahead,
-            behind,
+            commit_storage,
             visible_height: 20,
-            search_mode: false,
-            vim_mode: false,
-            search_query: String::new(),
-            filtered_indices: Vec::new(),
-            branch_name_input: String::new(),
-            branch_name_mode: false,
-            pending_checkout_hash: None,
+            checkout_mode: false,
+            delete_mode: false,
+            rename_mode: false,
+            new_branch_name: String::new(),
         })
-    }
-
-    pub fn update_search(&mut self) {
-        if self.search_query.is_empty() {
-            self.filtered_indices.clear();
-            return;
-        }
-
-        let query = self.search_query.to_lowercase();
-        self.filtered_indices = self
-            .commits
-            .iter()
-            .enumerate()
-            .filter(|(_, commit)| {
-                commit.summary().to_lowercase().contains(&query)
-                    || commit.author.to_lowercase().contains(&query)
-                    || commit.message.to_lowercase().contains(&query)
-            })
-            .map(|(idx, _)| idx)
-            .collect();
-
-        // Reset selection to first match
-        if !self.filtered_indices.is_empty() {
-            self.selected_index = self.filtered_indices[0];
-            self.scroll_offset = 0;
-        }
-    }
-
-    pub fn visible_commits(&self) -> Vec<(usize, &Commit)> {
-        if self.filtered_indices.is_empty() && !self.search_query.is_empty() {
-            // Search active but no matches
-            Vec::new()
-        } else if !self.filtered_indices.is_empty() {
-            // Show filtered results
-            self.filtered_indices
-                .iter()
-                .map(|&idx| (idx, &self.commits[idx]))
-                .collect()
-        } else {
-            // Show all commits
-            self.commits.iter().enumerate().collect()
-        }
     }
 
     pub fn update_visible_height(&mut self, terminal_height: u16) {
@@ -124,131 +112,43 @@ impl App {
         self.visible_height = (inner_height / 4).max(1) as usize;
     }
 
-    pub fn get_selected_commit(&self) -> Option<&Commit> {
-        self.commits.get(self.selected_index)
+    pub fn selected_branch(&self) -> Option<&BranchInfo> {
+        self.branches.get(self.selected_index)
     }
 
-    /// Handle user actions
-    pub fn handle_action(&mut self, action: Action) -> Result<()> {
-        // always allow quitting even if there are no visible commits
-        if let Action::Quit = action {
-            self.should_quit = true;
-            return Ok(());
+    pub fn next(&mut self) {
+        if !self.branches.is_empty() {
+            self.selected_index = (self.selected_index + 1) % self.branches.len();
+            self.adjust_scroll();
         }
+    }
 
-        // Get the list we're navigating
-        let visible = self.visible_commits();
-        let visible_count = visible.len();
-
-        if visible_count == 0 {
-            return Ok(()); // No commits to navigate
+    pub fn previous(&mut self) {
+        if !self.branches.is_empty() {
+            self.selected_index = if self.selected_index == 0 {
+                self.branches.len() - 1
+            } else {
+                self.selected_index - 1
+            };
+            self.adjust_scroll();
         }
+    }
 
-        match action {
-            Action::Quit => {
-                self.should_quit = true;
-            }
-            Action::MoveUp => {
-                // Find current position in visible list
-                if let Some(pos) = visible
-                    .iter()
-                    .position(|(idx, _)| *idx == self.selected_index)
-                {
-                    if pos > 0 {
-                        self.selected_index = visible[pos - 1].0;
-                        self.adjust_scroll();
-                    }
-                }
-            }
-            Action::MoveDown => {
-                // Find current position in visible list
-                if let Some(pos) = visible
-                    .iter()
-                    .position(|(idx, _)| *idx == self.selected_index)
-                {
-                    if pos < visible_count - 1 {
-                        self.selected_index = visible[pos + 1].0;
-                        self.adjust_scroll();
-                    }
-                } else if !visible.is_empty() {
-                    // Selection not in visible list, jump to first
-                    self.selected_index = visible[0].0;
-                    self.scroll_offset = 0;
-                }
-
-                // Load more commits if we're near the end (only when not filtering)
-                if self.filtered_indices.is_empty()
-                    && self.selected_index >= self.commits.len().saturating_sub(10)
-                {
-                    self.load_more_commits()?;
-                }
-            }
-            Action::PageUp => {
-                if let Some(pos) = visible
-                    .iter()
-                    .position(|(idx, _)| *idx == self.selected_index)
-                {
-                    let new_pos = pos.saturating_sub(10);
-                    self.selected_index = visible[new_pos].0;
-                    self.adjust_scroll();
-                }
-            }
-            Action::PageDown => {
-                if let Some(pos) = visible
-                    .iter()
-                    .position(|(idx, _)| *idx == self.selected_index)
-                {
-                    let new_pos = (pos + 10).min(visible_count - 1);
-                    self.selected_index = visible[new_pos].0;
-                    self.adjust_scroll();
-                }
-
-                // Load more if needed (only when not filtering)
-                if self.filtered_indices.is_empty()
-                    && self.selected_index >= self.commits.len().saturating_sub(10)
-                {
-                    self.load_more_commits()?;
-                }
-            }
-            Action::CheckoutCommit => {
-                if let Some(commit) = self.get_selected_commit() {
-                    let branch_name = format!("checkout-{}", commit.short_hash());
-
-                    match self
-                        .loader
-                        .checkout_commit(&commit.commit_hash, Some(&branch_name))
-                    {
-                        Ok(_) => {
-                            self.should_quit = true;
-                        }
-                        Err(e) => {
-                            eprintln!("Failed to checkout commit: {}", e);
-                        }
-                    }
-                }
-            }
-            Action::GoToTop => {
-                if !visible.is_empty() {
-                    self.selected_index = visible[0].0;
-                    self.scroll_offset = 0;
-                }
-            }
-            Action::GoToBottom => {
-                if !visible.is_empty() {
-                    self.selected_index = visible[visible_count - 1].0;
-                    self.adjust_scroll();
-                }
-            }
-            Action::EnterSearchMode | Action::ExitSearchMode => {
-                // handled in event_loop
-            }
+    pub fn go_to_top(&mut self) {
+        if !self.branches.is_empty() {
+            self.selected_index = 0;
+            self.scroll_offset = 0;
         }
+    }
 
-        Ok(())
+    pub fn go_to_bottom(&mut self) {
+        if !self.branches.is_empty() {
+            self.selected_index = self.branches.len() - 1;
+            self.adjust_scroll();
+        }
     }
 
     fn adjust_scroll(&mut self) {
-        // Ensure visible_height is at least 1
         let visible_height = self.visible_height.max(1);
 
         // If selected is above visible area, scroll up
@@ -261,22 +161,73 @@ impl App {
         }
 
         // Ensure scroll doesn't go past the end
-        let max_scroll = self.commits.len().saturating_sub(visible_height);
+        let max_scroll = self.branches.len().saturating_sub(visible_height);
         self.scroll_offset = self.scroll_offset.min(max_scroll);
     }
 
-    /// Load more commits (lazy loading)
-    fn load_more_commits(&mut self) -> Result<()> {
-        if self.total_loaded < self.commits.len() + 50 {
-            let new_limit = self.total_loaded + 50;
-            let new_commits = self.loader.load_commits(new_limit)?;
-
-            if new_commits.len() > self.commits.len() {
-                self.commits = new_commits;
-                self.total_loaded = self.commits.len();
+    pub fn checkout_branch(&mut self) -> Result<()> {
+        if let Some(branch) = self.selected_branch() {
+            if !branch.is_current {
+                crate::branch::switch_branch(&self.repo_path, &branch.name)?;
+                self.should_quit = true;
             }
         }
+        Ok(())
+    }
 
+    pub fn delete_branch(&mut self) -> Result<()> {
+        if let Some(branch) = self.selected_branch() {
+            if branch.is_current {
+                // Can't delete current branch
+                return Ok(());
+            }
+
+            let branch_name = branch.name.clone();
+            crate::branch::delete_branch(
+                &self.repo_path,
+                &branch_name,
+                crate::branch::BranchOptions {
+                    force: true,
+                    ..Default::default()
+                },
+            )?;
+
+            // Remove from list
+            self.branches.retain(|b| b.name != branch_name);
+
+            // Adjust selection
+            if self.selected_index >= self.branches.len() && !self.branches.is_empty() {
+                self.selected_index = self.branches.len() - 1;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn create_branch(&mut self, name: String) -> Result<()> {
+        crate::branch::create_branch(
+            &self.repo_path,
+            &name,
+            crate::branch::BranchOptions::default(),
+        )?;
+
+        // Reload branches
+        *self = Self::new(&self.repo_path)?;
+        Ok(())
+    }
+
+    pub fn rename_branch(&mut self, new_name: String) -> Result<()> {
+        if let Some(branch) = self.selected_branch() {
+            let old_name = branch.name.clone();
+            crate::branch::rename_branch(
+                &self.repo_path,
+                &old_name,
+                &new_name,
+                crate::branch::BranchOptions::default(),
+            )?;
+
+            // Reload branches
+            *self = Self::new(&self.repo_path)?;
+        }
         Ok(())
     }
 
@@ -299,127 +250,136 @@ impl App {
 
         result
     }
-
     fn event_loop(&mut self, terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
         loop {
             let terminal_height = terminal.size()?.height;
             self.update_visible_height(terminal_height);
 
             terminal.draw(|f| {
-                ui::draw(f, self);
+                ui::draw(f, &self);
             })?;
 
             if event::poll(std::time::Duration::from_millis(100))? {
                 if let Event::Key(key) = event::read()? {
-                    // Handle branch name input mode
-                    if self.branch_name_mode {
+                    // Handle rename mode
+                    if self.rename_mode {
                         match key.code {
                             KeyCode::Esc => {
-                                self.branch_name_mode = false;
-                                self.branch_name_input.clear();
-                                self.pending_checkout_hash = None;
+                                self.rename_mode = false;
+                                self.new_branch_name.clear();
                             }
                             KeyCode::Char(c) => {
-                                self.branch_name_input.push(c);
+                                self.new_branch_name.push(c);
                             }
                             KeyCode::Backspace => {
-                                self.branch_name_input.pop();
+                                self.new_branch_name.pop();
                             }
                             KeyCode::Enter => {
-                                if !self.branch_name_input.is_empty() {
-                                    if let Some(ref hash) = self.pending_checkout_hash {
-                                        match self
-                                            .loader
-                                            .checkout_commit(hash, Some(&self.branch_name_input))
-                                        {
-                                            Ok(_) => {
-                                                self.should_quit = true;
-                                            }
-                                            Err(e) => {
-                                                eprintln!("Failed to checkout commit: {}", e);
-                                                self.branch_name_mode = false;
-                                                self.branch_name_input.clear();
-                                                self.pending_checkout_hash = None;
-                                            }
-                                        }
+                                if !self.new_branch_name.is_empty() {
+                                    if let Err(e) = self.rename_branch(self.new_branch_name.clone())
+                                    {
+                                        eprintln!("Failed to rename branch: {}", e);
                                     }
                                 }
+                                self.rename_mode = false;
+                                self.new_branch_name.clear();
                             }
                             _ => {}
                         }
                         continue;
                     }
 
-                    // Handle search mode input
-                    if self.search_mode {
+                    // Handle checkout confirmation mode
+                    if self.checkout_mode {
                         match key.code {
-                            KeyCode::Esc => {
-                                self.search_mode = false;
-                                self.search_query.clear();
-                                self.filtered_indices.clear();
+                            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                                if let Err(e) = self.checkout_branch() {
+                                    eprintln!("Failed to checkout branch: {}", e);
+                                }
+                                self.checkout_mode = false;
                             }
-                            KeyCode::Char(c) => {
-                                self.search_query.push(c);
-                                self.update_search()
-                            }
-                            KeyCode::Backspace => {
-                                self.search_query.pop();
-                                self.update_search();
-                            }
-                            KeyCode::Enter => {
-                                self.search_mode = false;
+                            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                                self.checkout_mode = false;
                             }
                             _ => {}
                         }
                         continue;
                     }
 
-                    let action = match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => Some(Action::Quit),
+                    // Handle delete confirmation mode
+                    if self.delete_mode {
+                        match key.code {
+                            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                                if let Err(e) = self.delete_branch() {
+                                    eprintln!("Failed to delete branch: {}", e);
+                                }
+                                self.delete_mode = false;
+                            }
+                            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                                self.delete_mode = false;
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
+
+                    // Normal mode
+                    match key.code {
+                        KeyCode::Char('q') | KeyCode::Esc => {
+                            self.should_quit = true;
+                        }
                         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            Some(Action::Quit)
+                            self.should_quit = true;
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            self.next();
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            self.previous();
+                        }
+                        KeyCode::Char('g') => {
+                            self.go_to_top();
+                        }
+                        KeyCode::Char('G') => {
+                            self.go_to_bottom();
                         }
                         KeyCode::Char('c') => {
-                            if let Some(commit) = self.get_selected_commit() {
-                                let hash = commit.commit_hash;
-                                let short_hash = commit.short_hash();
-                                self.branch_name_mode = true;
-                                self.pending_checkout_hash = Some(hash);
-                                self.branch_name_input = format!("checkout-{}", short_hash);
+                            // Checkout branch
+                            if let Some(branch) = self.selected_branch() {
+                                if !branch.is_current {
+                                    self.checkout_mode = true;
+                                }
                             }
-                            continue;
                         }
-                        KeyCode::Char('s') => {
-                            self.search_mode = true;
-                            continue;
+                        KeyCode::Char('d') => {
+                            // Delete branch
+                            if let Some(branch) = self.selected_branch() {
+                                if !branch.is_current {
+                                    self.delete_mode = true;
+                                }
+                            }
                         }
-                        KeyCode::Char('/') => {
-                            self.search_query.clear();
-                            self.filtered_indices.clear();
-                            continue;
+                        KeyCode::Char('r') => {
+                            // Rename branch
+                            if let Some(branch) = self.selected_branch() {
+                                let branch_name = branch.name.clone(); // Clone before dropping the borrow
+                                drop(branch); // Explicitly drop the borrow (optional, happens automatically)
+                                self.rename_mode = true;
+                                self.new_branch_name = branch_name;
+                            }
                         }
-                        KeyCode::Char('v') => {
-                            self.vim_mode = true;
-                            continue;
+                        KeyCode::Char('n') => {
+                            // New branch
+                            self.rename_mode = true;
+                            self.new_branch_name = String::from("new-branch");
                         }
-                        KeyCode::Char('j') | KeyCode::Down => Some(Action::MoveDown),
-                        KeyCode::Char('k') | KeyCode::Up => Some(Action::MoveUp),
-                        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            Some(Action::PageDown)
+                        KeyCode::Enter => {
+                            // Quick checkout (no confirmation)
+                            if let Err(e) = self.checkout_branch() {
+                                eprintln!("Failed to checkout branch: {}", e);
+                            }
                         }
-                        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            Some(Action::PageUp)
-                        }
-                        KeyCode::Char('g') => Some(Action::GoToTop),
-                        KeyCode::Char('G') => Some(Action::GoToBottom),
-                        KeyCode::PageDown => Some(Action::PageDown),
-                        KeyCode::PageUp => Some(Action::PageUp),
-                        KeyCode::Home => Some(Action::GoToTop),
-                        KeyCode::End => Some(Action::GoToBottom),
-                        _ => None,
-                    };
-                    if let Some(action) = action {
-                        self.handle_action(action)?;
+                        _ => {}
                     }
                 }
             }
@@ -431,4 +391,26 @@ impl App {
 
         Ok(())
     }
+}
+
+fn count_commits(storage: &CommitStorage, start_hash: &[u8; 32]) -> usize {
+    let mut count = 0;
+    let mut to_visit = vec![*start_hash];
+    let mut seen = HashSet::new();
+
+    while let Some(hash) = to_visit.pop() {
+        if !seen.insert(hash) {
+            continue;
+        }
+
+        count += 1;
+
+        if let Ok(commit) = storage.read(&hash) {
+            for parent in &commit.parents {
+                to_visit.push(*parent);
+            }
+        }
+    }
+
+    count
 }

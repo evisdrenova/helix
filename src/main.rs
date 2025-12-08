@@ -6,6 +6,8 @@ mod config;
 mod git;
 
 mod branch;
+mod branch_tui;
+mod helix_index;
 mod llm;
 mod log;
 mod status;
@@ -123,7 +125,7 @@ async fn main() -> Result<()> {
 
             // If no name and no flags, or explicit --list, show TUI
             if (name.is_none() && !delete && !rename) || list {
-                branch::run_branch_tui(&repo_path)?;
+                branch::run_branch_tui(Some(&repo_path))?;
             } else if let Some(branch_name) = name {
                 // Handle specific branch operations
                 if delete {

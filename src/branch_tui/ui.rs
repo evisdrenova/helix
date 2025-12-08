@@ -1,8 +1,10 @@
+use crate::helix_index::hash;
+use chrono::{Local, TimeZone};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
     Frame,
 };
 
@@ -25,26 +27,12 @@ pub fn draw(f: &mut Frame, app: &App) {
 
 fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     let repo_text = format!(" {} ", app.repo_name);
+    let branch_count = format!(" {} branches ", app.branches.len());
 
-    let branch_text = if let Some(ref remote) = app.remote_branch {
-        let mut text = format!(" ◉ {} → {} ", app.current_branch_name, remote);
-
-        if app.ahead > 0 {
-            text.push_str(&format!("↑{} ", app.ahead));
-        }
-        if app.behind > 0 {
-            text.push_str(&format!("↓{} ", app.behind));
-        }
-        text
+    let current_branch_text = if let Some(branch) = app.branches.iter().find(|b| b.is_current) {
+        format!(" ● {} ", branch.name)
     } else {
-        format!(" ◉ {} ", app.current_branch_name)
-    };
-
-    let commit_count = format!(" {} commits ", app.commits.len());
-    let last_commit_text = if let Some(commit) = app.commits.first() {
-        format!(" Last: {} ", commit.relative_time())
-    } else {
-        " No commits ".to_string()
+        " No branch ".to_string()
     };
 
     let header = Paragraph::new(Line::from(vec![
@@ -56,30 +44,22 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         ),
         Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
         Span::styled(
-            branch_text,
+            current_branch_text,
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
-        Span::styled(commit_count, Style::default().fg(Color::White)),
-        Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
-        Span::styled(last_commit_text, Style::default().fg(Color::DarkGray)),
+        Span::styled(branch_count, Style::default().fg(Color::White)),
     ]))
-    .block(
-        Block::default().borders(Borders::ALL).title_style(
-            Style::default()
-                .fg(Color::Blue)
-                .add_modifier(Modifier::BOLD),
-        ),
-    );
+    .block(Block::default().borders(Borders::ALL));
 
     f.render_widget(header, area);
 }
 
 fn draw_main_content(f: &mut Frame, area: Rect, app: &App) {
-    // calculate split ratio
-    let timeline_width = (area.width as f32 * app.split_ratio) as u16;
+    // 35% for branch list, 65% for details (same as log)
+    let timeline_width = (area.width as f32 * 0.35) as u16;
     let details_width = area.width.saturating_sub(timeline_width);
 
     let chunks = Layout::default()
@@ -90,134 +70,98 @@ fn draw_main_content(f: &mut Frame, area: Rect, app: &App) {
         ])
         .split(area);
 
-    draw_timeline(f, chunks[0], app);
-    draw_details(f, chunks[1], app);
+    draw_branch_list(f, chunks[0], app);
+    draw_branch_details(f, chunks[1], app);
 }
 
-fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
-    let inner_height = area.height.saturating_sub(2) as usize;
-
-    let visible_commits = app.visible_commits();
-
-    if visible_commits.is_empty() {
-        let empty: Vec<ListItem<'_>> = Vec::new();
-        let list = List::new(empty).block(
+fn draw_branch_list(f: &mut Frame, area: Rect, app: &App) {
+    if app.branches.is_empty() {
+        let empty_list = List::new(Vec::<ListItem>::new()).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" Timeline ")
+                .title(" Branches ")
                 .title_style(Style::default().fg(Color::Blue)),
         );
-        f.render_widget(list, area);
+        f.render_widget(empty_list, area);
         return;
     }
 
-    // Find the position of selected_index in the filtered list
-    let selected_pos = visible_commits
+    let items: Vec<ListItem> = app
+        .branches
         .iter()
-        .position(|(idx, _)| *idx == app.selected_index)
-        .unwrap_or(0);
-
-    let scroll_offset = if app.search_query.is_empty() {
-        let mut offset = app
-            .scroll_offset
-            .min(visible_commits.len().saturating_sub(1));
-
-        // Adjust offset if selected item is outside the visible window
-        if selected_pos < offset {
-            // Selected item is above the visible area
-            offset = selected_pos;
-        } else if selected_pos >= offset + inner_height {
-            // Selected item is below the visible area
-            offset = selected_pos.saturating_sub(inner_height - 1);
-        }
-
-        offset
-    } else {
-        // Filtering active: center on selected item
-        if selected_pos < inner_height / 2 {
-            0
-        } else {
-            selected_pos.saturating_sub(inner_height / 2)
-        }
-    };
-
-    let visible_start = scroll_offset;
-    let visible_end = (visible_start + inner_height).min(visible_commits.len());
-
-    let items: Vec<ListItem> = visible_commits[visible_start..visible_end]
-        .iter()
-        .map(|(actual_idx, commit)| {
-            let is_selected = *actual_idx == app.selected_index;
-            create_timeline_item(commit, is_selected)
+        .enumerate()
+        .map(|(i, branch)| {
+            let is_selected = i == app.selected_index;
+            create_branch_item(branch, is_selected)
         })
         .collect();
 
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" Timeline ")
-            .title_style(Style::default().fg(Color::Blue)),
-    );
+    let mut state = ListState::default();
+    state.select(Some(app.selected_index));
 
-    f.render_widget(list, area);
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Branches ")
+                .title_style(Style::default().fg(Color::Blue)),
+        )
+        .highlight_style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        );
+
+    f.render_stateful_widget(list, area, &mut state);
 }
 
-fn create_timeline_item(commit: &Br, is_selected: bool) -> ListItem {
-    let current_user_email = std::env::var("USER").unwrap_or_default();
-    let is_current_user = commit.author.contains(&current_user_email)
-        || commit
-            .author
-            .to_lowercase()
-            .contains(&current_user_email.to_lowercase());
+fn create_branch_item(branch: &super::app::BranchInfo, is_selected: bool) -> ListItem {
+    let indicator = if branch.is_current { "● " } else { "  " };
 
-    let time_str = format_timestamp(commit.commit_time);
-    let author_indicator = if is_current_user { "●" } else { "○" };
-    let author_color = if is_current_user {
-        Color::Cyan
+    let indicator_style = if branch.is_current {
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD)
     } else {
-        Color::Gray
+        Style::default().fg(Color::DarkGray)
     };
 
-    let line1 = Line::from(vec![
-        Span::raw(" "),
-        Span::styled(
-            author_indicator,
-            Style::default()
-                .fg(author_color)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" "),
-        Span::styled(time_str, Style::default().fg(Color::White)),
-    ]);
-
-    let line2 = Line::from(vec![
-        Span::raw("   "),
-        Span::styled(&commit.author, Style::default().fg(author_color)),
-        Span::raw(" · "),
-        Span::styled(commit.short_hash(), Style::default().fg(Color::Green)),
-    ]);
-
-    let max_len = 45;
-    let summary = commit.summary();
-    let summary_display = if summary.len() > max_len {
-        format!("{}...", &summary[..max_len])
-    } else {
-        summary.to_string()
-    };
-
-    let summary_style = if is_selected {
+    let name_style = if is_selected {
         Style::default()
             .fg(Color::Yellow)
             .add_modifier(Modifier::BOLD)
+    } else if branch.is_current {
+        Style::default().fg(Color::Green)
     } else {
         Style::default().fg(Color::White)
     };
 
-    let line3 = Line::from(vec![
-        Span::raw("   "),
-        Span::styled(summary_display, summary_style),
+    let time_str = if let Some(ref commit) = branch.last_commit {
+        format_relative_time(commit.commit_time)
+    } else {
+        "no commits".to_string()
+    };
+
+    let line1 = Line::from(vec![
+        Span::styled(indicator, indicator_style),
+        Span::styled(&branch.name, name_style),
     ]);
+
+    let line2 = Line::from(vec![
+        Span::raw("  "),
+        Span::styled(
+            format!("{} commits", branch.commit_count),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]);
+
+    let line3 = Line::from(vec![
+        Span::raw("  "),
+        Span::styled(time_str, Style::default().fg(Color::Cyan)),
+    ]);
+
     let line4 = Line::from(vec![Span::raw("")]);
+
     let lines = vec![line1, line2, line3, line4];
 
     let style = if is_selected {
@@ -226,12 +170,12 @@ fn create_timeline_item(commit: &Br, is_selected: bool) -> ListItem {
         Style::default()
     };
 
-    ListItem::new(Text::from(lines)).style(style)
+    ListItem::new(lines).style(style)
 }
 
-fn draw_details(f: &mut Frame, area: Rect, app: &App) {
-    if let Some(commit) = app.get_selected_commit() {
-        let details_text = format_commit_details(commit);
+fn draw_branch_details(f: &mut Frame, area: Rect, app: &App) {
+    if let Some(branch) = app.selected_branch() {
+        let details_text = format_branch_details(branch);
 
         let paragraph = Paragraph::new(details_text)
             .block(
@@ -244,22 +188,27 @@ fn draw_details(f: &mut Frame, area: Rect, app: &App) {
 
         f.render_widget(paragraph, area);
     } else {
-        let empty = Paragraph::new("No commit selected")
-            .block(Block::default().borders(Borders::ALL).title(" Details "))
+        let empty = Paragraph::new("No branch selected")
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Details ")
+                    .title_style(Style::default().fg(Color::Blue)),
+            )
             .style(Style::default().fg(Color::DarkGray));
 
         f.render_widget(empty, area);
     }
 }
 
-fn format_commit_details(commit: &Commit) -> Text<'static> {
+fn format_branch_details(branch: &super::app::BranchInfo) -> ratatui::text::Text<'static> {
     let mut lines = vec![];
 
-    // Title (commit summary)
+    // Branch name
     lines.push(Line::from(vec![
         Span::raw(" "),
         Span::styled(
-            commit.summary().to_string(),
+            branch.name.clone(), // Clone to own the data
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
@@ -267,176 +216,241 @@ fn format_commit_details(commit: &Commit) -> Text<'static> {
     ]));
     lines.push(Line::from(""));
 
-    // Message body (if exists)
-    let message_body = commit
-        .message
-        .strip_prefix(commit.summary())
-        .unwrap_or("")
-        .trim();
-
-    if !message_body.is_empty() {
-        for line in message_body.lines() {
-            lines.push(Line::from(vec![
-                Span::raw(" "),
-                Span::styled(line.to_string(), Style::default().fg(Color::White)),
-            ]));
-        }
-        lines.push(Line::from(""));
-    }
-
-    // Commit hash
-    lines.push(Line::from(vec![
-        Span::raw(" "),
-        Span::styled(
-            "Commit:",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("  "),
-        Span::styled(commit.short_hash(), Style::default().fg(Color::Green)),
-        Span::raw(" ("),
-        Span::styled(
-            hash_to_hex(&commit.commit_hash),
-            Style::default().fg(Color::DarkGray),
-        ),
-        Span::raw(")"),
-    ]));
-
-    // Author
-    lines.push(Line::from(vec![
-        Span::raw(" "),
-        Span::styled(
-            "Author:",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" "),
-        Span::styled(commit.author.clone(), Style::default().fg(Color::White)),
-    ]));
-
-    // Date
-    lines.push(Line::from(vec![
-        Span::raw(" "),
-        Span::styled(
-            "Date:",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("   "),
-        Span::styled(
-            format_timestamp(commit.commit_time),
-            Style::default().fg(Color::White),
-        ),
-        Span::raw(" ("),
-        Span::styled(commit.relative_time(), Style::default().fg(Color::DarkGray)),
-        Span::raw(")"),
-    ]));
-
-    lines.push(Line::from(""));
-
-    // Tree hash
-    lines.push(Line::from(vec![
-        Span::raw(" "),
-        Span::styled(
-            "Tree:",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("   "),
-        Span::styled(
-            hash_to_hex(&commit.tree_hash)[..8].to_string(),
-            Style::default().fg(Color::Magenta),
-        ),
-    ]));
-
-    // Parents (if any)
-    if !commit.parents.is_empty() {
+    // Status
+    if branch.is_current {
         lines.push(Line::from(vec![
             Span::raw(" "),
             Span::styled(
-                "Parents:",
+                "Status:",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+            Span::styled("● Current branch", Style::default().fg(Color::Green)),
+        ]));
+        lines.push(Line::from(""));
+    }
+
+    // Commit count
+    lines.push(Line::from(vec![
+        Span::raw(" "),
+        Span::styled(
+            "Commits:",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            format!("{}", branch.commit_count),
+            Style::default().fg(Color::White),
+        ),
+    ]));
+    lines.push(Line::from(""));
+
+    // Latest commit details
+    if let Some(ref commit) = branch.last_commit {
+        lines.push(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                "Latest Commit",
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             ),
         ]));
+        lines.push(Line::from(""));
 
-        for parent in &commit.parents {
+        // Commit hash
+        let commit_hash_full = hash::hash_to_hex(&commit.commit_hash);
+        lines.push(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                "Commit:",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(
+                short_hash(&commit.commit_hash),
+                Style::default().fg(Color::Green),
+            ),
+            Span::raw(" ("),
+            Span::styled(
+                commit_hash_full.clone(), // Clone to own it
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::raw(")"),
+        ]));
+
+        // Author
+        lines.push(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                "Author:",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+            Span::styled(commit.author.clone(), Style::default().fg(Color::White)),
+        ]));
+
+        // Date
+        let date_str = format_full_time(commit.commit_time);
+        let relative_str = format_relative_time(commit.commit_time);
+        lines.push(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                "Date:",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("   "),
+            Span::styled(date_str, Style::default().fg(Color::White)), // Already owned
+            Span::raw(" ("),
+            Span::styled(relative_str, Style::default().fg(Color::DarkGray)), // Already owned
+            Span::raw(")"),
+        ]));
+        lines.push(Line::from(""));
+
+        // Tree
+        let tree_hash_short = hash::hash_to_hex(&commit.tree_hash)[..8].to_string();
+        lines.push(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                "Tree:",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("   "),
+            Span::styled(tree_hash_short, Style::default().fg(Color::Magenta)),
+        ]));
+        lines.push(Line::from(""));
+
+        // Message
+        lines.push(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                "Message:",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+        lines.push(Line::from(""));
+
+        for line in commit.message.lines() {
             lines.push(Line::from(vec![
                 Span::raw("   "),
+                Span::styled(line.to_string(), Style::default().fg(Color::White)),
+            ]));
+        }
+
+        // Parents (if any)
+        if !commit.parents.is_empty() {
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::raw(" "),
                 Span::styled(
-                    hash_to_hex(parent)[..8].to_string(),
-                    Style::default().fg(Color::Blue),
+                    "Parents:",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]));
+
+            for parent in &commit.parents {
+                let parent_hash_short = hash::hash_to_hex(parent)[..8].to_string();
+                lines.push(Line::from(vec![
+                    Span::raw("   "),
+                    Span::styled(parent_hash_short, Style::default().fg(Color::Blue)),
+                ]));
+            }
+        }
+
+        // Merge commit indicator
+        if commit.parents.len() > 1 {
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::raw(" "),
+                Span::styled(
+                    "⚠ Merge commit",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
                 ),
             ]));
         }
-    }
 
-    // Merge commit indicator
-    if commit.is_merge() {
-        lines.push(Line::from(""));
+        // Initial commit indicator
+        if commit.parents.is_empty() {
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::raw(" "),
+                Span::styled(
+                    "✨ Initial commit",
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]));
+        }
+    } else {
         lines.push(Line::from(vec![
             Span::raw(" "),
-            Span::styled(
-                "⚠ Merge commit",
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            ),
+            Span::styled("No commits yet", Style::default().fg(Color::DarkGray)),
         ]));
     }
 
-    // Initial commit indicator
-    if commit.is_initial() {
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Span::raw(" "),
-            Span::styled(
-                "✨ Initial commit",
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]));
-    }
-
-    Text::from(lines)
+    ratatui::text::Text::from(lines)
 }
 
 fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
-    let help_text = if app.branch_name_mode {
+    let help_text = if app.rename_mode {
         Line::from(vec![
             Span::styled(" Branch name: ", Style::default().fg(Color::Cyan)),
-            Span::styled(&app.branch_name_input, Style::default().fg(Color::Yellow)),
+            Span::styled(&app.new_branch_name, Style::default().fg(Color::Yellow)),
             Span::styled("_", Style::default().fg(Color::Yellow)),
             Span::raw("  "),
             Span::styled("Enter", Style::default().fg(Color::Green)),
-            Span::raw(" to checkout  "),
+            Span::raw(" to confirm  "),
             Span::styled("Esc", Style::default().fg(Color::DarkGray)),
             Span::raw(" to cancel"),
         ])
-    } else if app.search_mode {
+    } else if app.checkout_mode {
         Line::from(vec![
-            Span::styled(" Search: ", Style::default().fg(Color::Cyan)),
-            Span::styled(&app.search_query, Style::default().fg(Color::Yellow)),
-            Span::styled("_", Style::default().fg(Color::Yellow)),
-            Span::raw("  "),
-            Span::styled("Esc", Style::default().fg(Color::DarkGray)),
-            Span::raw(" to cancel"),
-        ])
-    } else if app.vim_mode {
-        Line::from(vec![
+            Span::styled(" Checkout ", Style::default().fg(Color::Yellow)),
             Span::styled(
-                " VIM MODE ",
+                app.selected_branch().map(|b| b.name.as_str()).unwrap_or(""),
                 Style::default()
-                    .fg(Color::Magenta)
+                    .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(" (not implemented yet)"),
+            Span::raw("?  "),
+            Span::styled("y/Enter", Style::default().fg(Color::Green)),
+            Span::raw(" yes  "),
+            Span::styled("n/Esc", Style::default().fg(Color::DarkGray)),
+            Span::raw(" no"),
+        ])
+    } else if app.delete_mode {
+        Line::from(vec![
+            Span::styled(" Delete ", Style::default().fg(Color::Red)),
+            Span::styled(
+                app.selected_branch().map(|b| b.name.as_str()).unwrap_or(""),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("?  "),
+            Span::styled("y/Enter", Style::default().fg(Color::Green)),
+            Span::raw(" yes  "),
+            Span::styled("n/Esc", Style::default().fg(Color::DarkGray)),
+            Span::raw(" no"),
         ])
     } else {
         Line::from(vec![
@@ -455,12 +469,33 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
             ),
             Span::raw(" top/bottom  "),
             Span::styled(
-                "s",
+                "c",
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(" type to search  "),
+            Span::raw(" checkout  "),
+            Span::styled(
+                "d",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" delete  "),
+            Span::styled(
+                "r",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" rename  "),
+            Span::styled(
+                "n",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" new  "),
             Span::styled(
                 "q",
                 Style::default()
@@ -474,4 +509,35 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
     let footer = Paragraph::new(help_text).style(Style::default().bg(Color::DarkGray));
 
     f.render_widget(footer, area);
+}
+
+fn format_relative_time(timestamp: u64) -> String {
+    let now = chrono::Utc::now().timestamp() as u64;
+    let seconds = now.saturating_sub(timestamp);
+
+    if seconds < 60 {
+        format!("{} seconds ago", seconds)
+    } else if seconds < 3600 {
+        format!("{} minutes ago", seconds / 60)
+    } else if seconds < 86400 {
+        format!("{} hours ago", seconds / 3600)
+    } else if seconds < 2592000 {
+        format!("{} days ago", seconds / 86400)
+    } else if seconds < 31536000 {
+        format!("{} months ago", seconds / 2592000)
+    } else {
+        format!("{} years ago", seconds / 31536000)
+    }
+}
+
+fn format_full_time(timestamp: u64) -> String {
+    if let Some(dt) = Local.timestamp_opt(timestamp as i64, 0).single() {
+        dt.format("%a %b %d %H:%M:%S %Y").to_string()
+    } else {
+        "Unknown time".to_string()
+    }
+}
+
+fn short_hash(hash: &[u8; 32]) -> String {
+    hash::hash_to_hex(hash)[..8].to_string()
 }
