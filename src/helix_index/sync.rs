@@ -266,45 +266,54 @@ impl SyncEngine {
             }
         };
 
-        let mut helix_commits: Vec<Helix_Commit> = Vec::new();
         let mut seen = HashSet::new();
+        let mut git_hash_to_helix_hash: HashMap<Vec<u8>, [u8; 32]> = HashMap::new();
+        let mut collected_git_commits: Vec<(Vec<u8>, gix::Commit)> = Vec::new();
 
-        // Walk commit history starting with the newest first
         let commit_iter = head_commit.ancestors().sorting(Sorting::ByCommitTime(
             gix::traverse::commit::simple::CommitTimeOrder::NewestFirst,
         ));
 
-        // 🔹 Clone iterator to count commits before consuming
-        let count_iter = head_commit.ancestors().sorting(Sorting::ByCommitTime(
-            gix::traverse::commit::simple::CommitTimeOrder::NewestFirst,
-        ));
-        let total_commits = count_iter.all()?.count();
-        println!("Git reports {} commits in history", total_commits);
-
-        let pb = ProgressBar::new_spinner();
-        pb.set_message(format!("Importing commits",));
-
-        for (i, commit_result) in commit_iter.all()?.enumerate() {
+        for commit_result in commit_iter.all()? {
             let commit_info = commit_result?;
+            let git_id_bytes = commit_info.id().as_bytes().to_vec();
 
-            // Convert to Vec<u8> which implements Eq + Hash
-            let git_commit_id = commit_info.id().as_bytes().to_vec();
-
-            // Skip if already processed
-            if !seen.insert(git_commit_id) {
+            if !seen.insert(git_id_bytes.clone()) {
                 continue;
             }
 
             let git_commit = commit_info.object()?;
-
-            pb.set_message(format!("Importing commit {}", i + 1));
-
-            let helix_commit = self.build_helix_commit_from_git_commit(&git_commit, &repo)?;
-            helix_commits.push(helix_commit);
+            collected_git_commits.push((git_id_bytes, git_commit));
         }
 
-        // Reverse to get oldest-first order
-        helix_commits.reverse();
+        // Sort oldest → newest by commit time
+        collected_git_commits.sort_by_key(|(_, c)| c.time().unwrap().seconds);
+
+        println!(
+            "Git reports {} commits in history",
+            collected_git_commits.len()
+        );
+
+        let pb = ProgressBar::new_spinner();
+        pb.set_message("Importing commits...");
+
+        // Build Helix commits in oldest to newest order
+        let mut helix_commits: Vec<Helix_Commit> = Vec::with_capacity(collected_git_commits.len());
+
+        for (i, (git_id_bytes, git_commit)) in collected_git_commits.into_iter().enumerate() {
+            pb.set_message(format!("Importing commit {}", i + 1));
+
+            let helix_commit = self.build_helix_commit_from_git_commit(
+                &git_commit,
+                &repo,
+                &git_hash_to_helix_hash,
+            )?;
+
+            // Now we know this commit's helix hash, so map git → helix for children
+            git_hash_to_helix_hash.insert(git_id_bytes, helix_commit.commit_hash);
+
+            helix_commits.push(helix_commit);
+        }
 
         self.store_imported_commits(&helix_commits)?;
 
@@ -321,17 +330,13 @@ impl SyncEngine {
         &self,
         git_commit: &gix::Commit,
         repo: &gix::Repository,
+        git_to_helix: &HashMap<Vec<u8>, [u8; 32]>,
     ) -> Result<Helix_Commit> {
         let message = git_commit.message()?;
         let author_name = git_commit.author()?.name.to_string();
         let author_email = git_commit.author()?.email.to_string();
-        let timestamp = git_commit.author()?.time;
+        let author_timestamp = git_commit.author()?.time()?.seconds;
         let commit_time = git_commit.time()?.seconds;
-
-        let timestamp_u64 = match timestamp.parse::<u64>() {
-            Ok(n) => n,
-            Err(_) => 0,
-        };
 
         let full_message = format!(
             "{}{}{}",
@@ -342,7 +347,10 @@ impl SyncEngine {
 
         let parent_commits: Vec<[u8; 32]> = git_commit
             .parent_ids()
-            .map(|id_bytes| hash::hash_bytes(id_bytes.as_bytes()))
+            .filter_map(|git_parent_id| {
+                let git_parent_bytes = git_parent_id.as_bytes().to_vec();
+                git_to_helix.get(&git_parent_bytes).copied()
+            })
             .collect();
 
         let tree_id = git_commit.tree()?.id;
@@ -355,21 +363,18 @@ impl SyncEngine {
             .breadthfirst(&mut recorder)
             .context("Failed to traverse tree")?;
 
-        // Build Helix tree from recorded entries
         let tree = self.build_helix_tree_from_recorder(recorder)?;
 
-        // Create Helix commit
         let mut commit = Helix_Commit {
             commit_hash: ZERO_HASH,
             tree_hash: tree.into(),
             parents: parent_commits,
             author: author_email + &author_name,
-            author_time: timestamp_u64,
+            author_time: author_timestamp as u64,
             commit_time: commit_time as u64,
             message: full_message,
         };
 
-        // Compute commit hash
         commit.commit_hash = commit.compute_hash();
 
         Ok(commit)
@@ -976,318 +981,287 @@ mod tests {
         Ok(())
     }
 
+    fn import_commits(repo_dir: &Path) -> Result<Vec<Helix_Commit>> {
+        let syncer = SyncEngine::new(repo_dir);
+        syncer.import_git_commits()?;
+        let commit_reader = CommitStorage::for_repo(repo_dir);
+        let commits = &commit_reader.list_all()?;
+
+        let mut commits: Vec<_> = commits
+            .iter()
+            .map(|hash| commit_reader.read(hash).unwrap())
+            .collect();
+
+        commits.sort_by_key(|c| c.commit_time);
+
+        Ok(commits)
+    }
+
     #[test]
     fn test_import_git_commits_multiple_commits() -> Result<()> {
         let temp_dir = TempDir::new()?;
         init_test_repo(temp_dir.path())?;
 
-        // First commit
         fs::write(temp_dir.path().join("file1.txt"), "content1")?;
         git(temp_dir.path(), &["add", "file1.txt"])?;
         git(temp_dir.path(), &["commit", "-m", "First commit"])?;
+        std::thread::sleep(std::time::Duration::from_secs(1));
 
-        // Second commit
         fs::write(temp_dir.path().join("file2.txt"), "content2")?;
         git(temp_dir.path(), &["add", "file2.txt"])?;
         git(temp_dir.path(), &["commit", "-m", "Second commit"])?;
+        std::thread::sleep(std::time::Duration::from_secs(1));
 
-        // Third commit
         fs::write(temp_dir.path().join("file3.txt"), "content3")?;
         git(temp_dir.path(), &["add", "file3.txt"])?;
         git(temp_dir.path(), &["commit", "-m", "Third commit"])?;
 
-        // Import commits
-        let syncer = SyncEngine::new(temp_dir.path());
-        syncer.import_git_commits()?;
-        let commit_reader = CommitStorage::for_repo(temp_dir.path());
-        let commits = &commit_reader.list_all()?;
+        let commits = import_commits(temp_dir.path())?;
 
-        assert_eq!(commits.len(), 3, "Should have 3 commits");
+        assert_eq!(commits[0].message, "First commit\n");
+        assert_eq!(commits[1].message, "Second commit\n");
+        assert_eq!(commits[2].message, "Third commit\n");
 
-        // Verify order (oldest first)
-        assert_eq!(commit_reader.read(&commits[0])?.message, "First commit");
-        assert_eq!(commit_reader.read(&commits[1])?.message, "Second commit");
-        assert_eq!(commit_reader.read(&commits[2])?.message, "Third commit");
+        assert!(commits[0].parents.is_empty(), "First commit has no parent");
+        assert_eq!(commits[1].parents.len(), 1, "Second commit has 1 parent");
+        assert_eq!(commits[2].parents.len(), 1, "Third commit has 1 parent");
 
-        // Verify parent relationships
-        assert!(
-            commit_reader.read(&commits[0])?.parents.is_empty(),
-            "First commit has no parent"
-        );
         assert_eq!(
-            commit_reader.read(&commits[1])?.parents.len(),
-            1,
-            "Second commit has 1 parent"
-        );
-        assert_eq!(
-            commit_reader.read(&commits[2])?.parents.len(),
-            1,
-            "Third commit has 1 parent"
-        );
-
-        // Verify parent hashes match
-        assert_eq!(
-            commit_reader.read(&commits[1])?.parents[0],
-            commit_reader.read(&commits[0])?.commit_hash,
+            commits[1].parents[0], commits[0].commit_hash,
             "Second commit's parent should be first commit"
         );
         assert_eq!(
-            commit_reader.read(&commits[2])?.parents[0],
-            commit_reader.read(&commits[1])?.commit_hash,
+            commits[2].parents[0], commits[1].commit_hash,
             "Third commit's parent should be second commit"
         );
 
         Ok(())
     }
 
-    // #[test]
-    // fn test_import_git_commits_with_multiline_message() -> Result<()> {
-    //     let temp_dir = TempDir::new()?;
-    //     init_test_repo(temp_dir.path())?;
+    #[test]
+    fn test_import_git_commits_with_multiline_message() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        init_test_repo(temp_dir.path())?;
 
-    //     // Create commit with multiline message
-    //     fs::write(temp_dir.path().join("test.txt"), "hello")?;
-    //     Command::new("git")
-    //         .args(&["add", "test.txt"])
-    //         .current_dir(temp_dir.path())
-    //         .output()?;
+        // Create commit with multiline message
+        fs::write(temp_dir.path().join("test.txt"), "hello")?;
+        git(temp_dir.path(), &["add", "test.txt"])?;
 
-    //     let multiline_msg = "Short summary\n\nLonger description here.\nWith multiple lines.";
-    //     Command::new("git")
-    //         .args(&["commit", "-m", multiline_msg])
-    //         .current_dir(temp_dir.path())
-    //         .output()?;
+        let multiline_msg = "Short summary\n\nLonger description here.\nWith multiple lines.\n";
+        git(temp_dir.path(), &["commit", "-m", multiline_msg])?;
 
-    //     // Import commits
-    //     let syncer = SyncEngine::new(temp_dir.path());
-    //     let commits = syncer.import_git_commits()?;
+        let commits = import_commits(temp_dir.path())?;
 
-    //     assert_eq!(commits.len(), 1);
-    //     assert_eq!(commits[0].message, multiline_msg);
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].message, multiline_msg);
 
-    //     Ok(())
-    // }
+        Ok(())
+    }
 
-    // #[test]
-    // fn test_import_git_commits_preserves_tree_structure() -> Result<()> {
-    //     let temp_dir = TempDir::new()?;
-    //     init_test_repo(temp_dir.path())?;
+    #[test]
+    fn test_import_git_commits_preserves_tree_structure() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        init_test_repo(temp_dir.path())?;
 
-    //     // Create nested directory structure
-    //     fs::create_dir_all(temp_dir.path().join("src/lib"))?;
-    //     fs::write(temp_dir.path().join("README.md"), "# Project")?;
-    //     fs::write(temp_dir.path().join("src/main.rs"), "fn main() {}")?;
-    //     fs::write(temp_dir.path().join("src/lib/mod.rs"), "pub mod lib;")?;
+        // Create nested directory structure
+        fs::create_dir_all(temp_dir.path().join("src/lib"))?;
+        fs::write(temp_dir.path().join("README.md"), "# Project")?;
+        fs::write(temp_dir.path().join("src/main.rs"), "fn main() {}")?;
+        fs::write(temp_dir.path().join("src/lib/mod.rs"), "pub mod lib;")?;
 
-    //     Command::new("git")
-    //         .args(&["add", "."])
-    //         .current_dir(temp_dir.path())
-    //         .output()?;
-    //     Command::new("git")
-    //         .args(&["commit", "-m", "Initial structure"])
-    //         .current_dir(temp_dir.path())
-    //         .output()?;
+        git(temp_dir.path(), &["add", "."])?;
+        git(temp_dir.path(), &["commit", "-m", "Initial structure"])?;
 
-    //     // Import commits
-    //     let syncer = SyncEngine::new(temp_dir.path());
-    //     let commits = syncer.import_git_commits()?;
+        // Whatever helper you have that triggers import + returns commits
+        let commits = import_commits(temp_dir.path())?;
+        assert_eq!(commits.len(), 1);
 
-    //     assert_eq!(commits.len(), 1);
+        // Verify tree was created and stored
+        let tree_hash = commits[0].tree_hash;
+        assert_ne!(
+            tree_hash.as_ref(),
+            &ZERO_HASH,
+            "Tree hash should be computed"
+        );
 
-    //     // Verify tree was created and stored
-    //     let tree_hash = commits[0].tree_hash;
-    //     assert_ne!(
-    //         tree_hash.as_ref(),
-    //         &ZERO_HASH,
-    //         "Tree hash should be computed"
-    //     );
+        use crate::helix_index::tree::TreeStorage;
+        let tree_storage = TreeStorage::for_repo(temp_dir.path());
+        let tree_hash_array: [u8; 32] = tree_hash.into();
+        let root_tree = tree_storage.read(&tree_hash_array)?;
 
-    //     // Verify tree can be loaded from storage
-    //     use crate::helix_index::tree::TreeStorage;
-    //     let tree_storage = TreeStorage::for_repo(temp_dir.path());
-    //     let tree_hash_array: [u8; 32] = tree_hash.into();
-    //     let tree = tree_storage.read(&tree_hash_array)?;
+        println!("root tree entries {:?}", root_tree.entries);
 
-    //     // Tree should contain entries
-    //     assert!(
-    //         tree.entries.len() >= 3,
-    //         "Tree should have at least 3 entries (README.md, src/main.rs, src/lib/mod.rs)"
-    //     );
+        // Root should have README.md and src (directory)
+        assert!(
+            root_tree.entries.iter().any(|e| e.name == "README.md"),
+            "Root tree should contain README.md"
+        );
+        let src_entry = root_tree
+            .entries
+            .iter()
+            .find(|e| e.name == "src")
+            .expect("Root tree should contain 'src' subtree");
 
-    //     Ok(())
-    // }
+        // Load src tree
+        let src_tree_hash: [u8; 32] = src_entry.oid;
+        let src_tree = tree_storage.read(&src_tree_hash)?;
+        println!("src tree entries {:?}", src_tree.entries);
 
-    // #[test]
-    // fn test_import_git_commits_deduplication() -> Result<()> {
-    //     let temp_dir = TempDir::new()?;
-    //     init_test_repo(temp_dir.path())?;
+        assert!(
+            src_tree.entries.iter().any(|e| e.name == "main.rs"),
+            "src tree should contain main.rs"
+        );
+        let lib_entry = src_tree
+            .entries
+            .iter()
+            .find(|e| e.name == "lib")
+            .expect("src tree should contain 'lib' subtree");
 
-    //     // Create commit
-    //     fs::write(temp_dir.path().join("test.txt"), "hello")?;
-    //     Command::new("git")
-    //         .args(&["add", "test.txt"])
-    //         .current_dir(temp_dir.path())
-    //         .output()?;
-    //     Command::new("git")
-    //         .args(&["commit", "-m", "Test commit"])
-    //         .current_dir(temp_dir.path())
-    //         .output()?;
+        // Load src/lib tree
+        let lib_tree_hash: [u8; 32] = lib_entry.oid;
+        let lib_tree = tree_storage.read(&lib_tree_hash)?;
+        println!("lib tree entries {:?}", lib_tree.entries);
 
-    //     // Import twice
-    //     let syncer = SyncEngine::new(temp_dir.path());
+        assert!(
+            lib_tree.entries.iter().any(|e| e.name == "mod.rs"),
+            "src/lib tree should contain mod.rs"
+        );
 
-    //     let commits1 = syncer.import_git_commits()?;
-    //     let commits2 = syncer.import_git_commits()?;
+        Ok(())
+    }
 
-    //     // Should return same commits
-    //     assert_eq!(commits1.len(), commits2.len());
-    //     assert_eq!(commits1[0].commit_hash, commits2[0].commit_hash);
+    #[test]
+    fn test_import_git_commits_deduplication() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        init_test_repo(temp_dir.path())?;
 
-    //     let tree_hash1: [u8; 32] = commits1[0].tree_hash.into();
-    //     let tree_hash2: [u8; 32] = commits2[0].tree_hash.into();
-    //     assert_eq!(tree_hash1, tree_hash2);
+        // Create commit
+        fs::write(temp_dir.path().join("test.txt"), "hello")?;
+        git(temp_dir.path(), &["add", "test.txt"])?;
+        git(temp_dir.path(), &["commit", "-m", "Test commit"])?;
 
-    //     Ok(())
-    // }
+        // Import twice
+        let commits1 = import_commits(temp_dir.path())?;
+        let commits2 = import_commits(temp_dir.path())?;
 
-    // #[test]
-    // fn test_import_git_commits_with_author_info() -> Result<()> {
-    //     let temp_dir = TempDir::new()?;
-    //     init_test_repo(temp_dir.path())?;
+        // Should return same commits
+        assert_eq!(commits1.len(), commits2.len());
+        assert_eq!(commits1[0].commit_hash, commits2[0].commit_hash);
 
-    //     // Set specific author
-    //     Command::new("git")
-    //         .args(&["config", "user.name", "John Doe"])
-    //         .current_dir(temp_dir.path())
-    //         .output()?;
-    //     Command::new("git")
-    //         .args(&["config", "user.email", "john@example.com"])
-    //         .current_dir(temp_dir.path())
-    //         .output()?;
+        let tree_hash1: [u8; 32] = commits1[0].tree_hash.into();
+        let tree_hash2: [u8; 32] = commits2[0].tree_hash.into();
+        assert_eq!(tree_hash1, tree_hash2);
 
-    //     // Create commit
-    //     fs::write(temp_dir.path().join("test.txt"), "hello")?;
-    //     Command::new("git")
-    //         .args(&["add", "test.txt"])
-    //         .current_dir(temp_dir.path())
-    //         .output()?;
-    //     Command::new("git")
-    //         .args(&["commit", "-m", "Test commit"])
-    //         .current_dir(temp_dir.path())
-    //         .output()?;
+        Ok(())
+    }
 
-    //     // Import commits
-    //     let syncer = SyncEngine::new(temp_dir.path());
-    //     let commits = syncer.import_git_commits()?;
+    #[test]
+    fn test_import_git_commits_with_author_info() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        init_test_repo(temp_dir.path())?;
 
-    //     assert_eq!(commits.len(), 1);
-    //     assert!(
-    //         commits[0].author.contains("john@example.com"),
-    //         "Author should contain email"
-    //     );
-    //     assert!(
-    //         commits[0].author.contains("John Doe"),
-    //         "Author should contain name"
-    //     );
-    //     assert!(commits[0].author_time > 0, "Author time should be set");
-    //     assert!(commits[0].commit_time > 0, "Commit time should be set");
+        // Set specific author
+        git(temp_dir.path(), &["config", "user.name", "John Doe"])?;
+        git(
+            temp_dir.path(),
+            &["config", "user.email", "john@example.com"],
+        )?;
 
-    //     Ok(())
-    // }
+        // Create commit
+        fs::write(temp_dir.path().join("test.txt"), "hello")?;
+        git(temp_dir.path(), &["add", "test.txt"])?;
+        git(temp_dir.path(), &["commit", "-m", "Test commit"])?;
 
-    // #[test]
-    // fn test_import_git_commits_hash_consistency() -> Result<()> {
-    //     let temp_dir = TempDir::new()?;
-    //     init_test_repo(temp_dir.path())?;
+        let commits = import_commits(temp_dir.path())?;
 
-    //     // Create commit
-    //     fs::write(temp_dir.path().join("test.txt"), "hello")?;
-    //     Command::new("git")
-    //         .args(&["add", "test.txt"])
-    //         .current_dir(temp_dir.path())
-    //         .output()?;
-    //     Command::new("git")
-    //         .args(&["commit", "-m", "Test commit"])
-    //         .current_dir(temp_dir.path())
-    //         .output()?;
+        assert_eq!(commits.len(), 1);
+        assert!(
+            commits[0].author.contains("john@example.com"),
+            "Author should contain email"
+        );
+        assert!(
+            commits[0].author.contains("John Doe"),
+            "Author should contain name"
+        );
 
-    //     // Import commits
-    //     let syncer = SyncEngine::new(temp_dir.path());
-    //     let commits = syncer.import_git_commits()?;
+        println!("the commit {:?}", commits[0]);
+        assert!(commits[0].author_time > 0, "Author time should be set");
+        assert!(commits[0].commit_time > 0, "Commit time should be set");
 
-    //     assert_eq!(commits.len(), 1);
+        Ok(())
+    }
 
-    //     let commit = &commits[0];
+    #[test]
+    fn test_import_git_commits_hash_consistency() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        init_test_repo(temp_dir.path())?;
 
-    //     // Recompute hash and verify it matches
-    //     let recomputed_hash = commit.compute_hash();
-    //     assert_eq!(
-    //         commit.commit_hash, recomputed_hash,
-    //         "Stored hash should match recomputed hash"
-    //     );
+        // Create commit
+        fs::write(temp_dir.path().join("test.txt"), "hello")?;
+        git(temp_dir.path(), &["add", "test.txt"])?;
+        git(temp_dir.path(), &["commit", "-m", "Test commit"])?;
 
-    //     Ok(())
-    // }
+        // Import commits
+        let commits = import_commits(temp_dir.path())?;
 
-    // #[test]
-    // fn test_import_git_commits_with_merge_commit() -> Result<()> {
-    //     let temp_dir = TempDir::new()?;
-    //     init_test_repo(temp_dir.path())?;
+        assert_eq!(commits.len(), 1);
 
-    //     // Create initial commit on main
-    //     fs::write(temp_dir.path().join("main.txt"), "main")?;
-    //     Command::new("git")
-    //         .args(&["add", "main.txt"])
-    //         .current_dir(temp_dir.path())
-    //         .output()?;
-    //     Command::new("git")
-    //         .args(&["commit", "-m", "Initial commit"])
-    //         .current_dir(temp_dir.path())
-    //         .output()?;
+        let commit = &commits[0];
 
-    //     // Create branch
-    //     Command::new("git")
-    //         .args(&["checkout", "-b", "feature"])
-    //         .current_dir(temp_dir.path())
-    //         .output()?;
+        // Recompute hash and verify it matches
+        let recomputed_hash = commit.compute_hash();
+        assert_eq!(
+            commit.commit_hash, recomputed_hash,
+            "Stored hash should match recomputed hash"
+        );
 
-    //     fs::write(temp_dir.path().join("feature.txt"), "feature")?;
-    //     Command::new("git")
-    //         .args(&["add", "feature.txt"])
-    //         .current_dir(temp_dir.path())
-    //         .output()?;
-    //     Command::new("git")
-    //         .args(&["commit", "-m", "Feature commit"])
-    //         .current_dir(temp_dir.path())
-    //         .output()?;
+        Ok(())
+    }
 
-    //     // Merge back to main
-    //     Command::new("git")
-    //         .args(&["checkout", "main"])
-    //         .current_dir(temp_dir.path())
-    //         .output()?;
-    //     Command::new("git")
-    //         .args(&["merge", "feature", "--no-ff", "-m", "Merge feature"])
-    //         .current_dir(temp_dir.path())
-    //         .output()?;
+    #[test]
+    fn test_import_git_commits_with_merge_commit() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        init_test_repo(temp_dir.path())?;
 
-    //     // Import commits
-    //     let syncer = SyncEngine::new(temp_dir.path());
-    //     let commits = syncer.import_git_commits()?;
+        // Create initial commit on main
+        fs::write(temp_dir.path().join("main.txt"), "main")?;
+        git(temp_dir.path(), &["add", "main.txt"])?;
+        git(temp_dir.path(), &["commit", "-m", "Initial commit"])?;
 
-    //     // Should have 3 commits: initial, feature, merge
-    //     assert_eq!(commits.len(), 3, "Should have 3 commits");
+        // Create branch
+        git(temp_dir.path(), &["checkout", "-b", "feature"])?;
 
-    //     // Merge commit should have 2 parents
-    //     let merge_commit = &commits[2];
-    //     assert_eq!(
-    //         merge_commit.parents.len(),
-    //         2,
-    //         "Merge commit should have 2 parents"
-    //     );
+        fs::write(temp_dir.path().join("feature.txt"), "feature")?;
+        git(temp_dir.path(), &["add", "feature.txt"])?;
+        git(temp_dir.path(), &["commit", "-m", "Feature commit"])?;
 
-    //     Ok(())
-    // }
+        // Merge back to main
+        Command::new("git")
+            .args(&["checkout", "main"])
+            .current_dir(temp_dir.path())
+            .output()?;
+        Command::new("git")
+            .args(&["merge", "feature", "--no-ff", "-m", "Merge feature"])
+            .current_dir(temp_dir.path())
+            .output()?;
+
+        // Import commits
+        let syncer = SyncEngine::new(temp_dir.path());
+        let commits = syncer.import_git_commits()?;
+
+        // Should have 3 commits: initial, feature, merge
+        assert_eq!(commits.len(), 3, "Should have 3 commits");
+
+        // Merge commit should have 2 parents
+        let merge_commit = &commits[2];
+        assert_eq!(
+            merge_commit.parents.len(),
+            2,
+            "Merge commit should have 2 parents"
+        );
+
+        Ok(())
+    }
 
     // #[test]
     // fn test_import_git_commits_performance() -> Result<()> {
