@@ -13,6 +13,8 @@ use std::path::Path;
 use crate::branch_tui;
 use crate::helix_index::hash::Hash;
 
+use crate::commit::{commit, CommitOptions};
+
 pub struct BranchOptions {
     pub delete: bool,
     pub rename: bool,
@@ -326,10 +328,7 @@ fn short_hash(hash: &Hash) -> String {
 mod tests {
     use std::path::PathBuf;
 
-    use crate::{
-        commit::{commit, CommitOptions},
-        init::init_helix_repo,
-    };
+    use crate::init::init_helix_repo;
 
     use super::*;
     use tempfile::TempDir;

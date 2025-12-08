@@ -1,13 +1,10 @@
 use clap::{Parser, Subcommand};
-use helix::{add, init::init_helix_repo};
+use helix::{add, branch, init::init_helix_repo};
 use std::path::{Path, PathBuf};
 
 mod config;
 mod git;
 
-mod branch;
-mod branch_tui;
-mod helix_index;
 mod llm;
 mod log;
 mod status;
