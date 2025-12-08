@@ -68,7 +68,7 @@ impl SyncEngine {
         self.import_git_branches(&git_hash_to_helix_hash)?;
         self.import_git_tags(&git_hash_to_helix_hash)?;
         self.import_git_head(&git_hash_to_helix_hash)?;
-        // self.import_git_remotes()?;
+        self.import_git_remotes()?;
 
         Ok(())
     }
@@ -137,72 +137,86 @@ impl SyncEngine {
         Ok(())
     }
 
-    // fn import_git_remotes(&self) -> Result<()> {
-    //     let repo = gix::open(&self.repo_path)?;
+    fn import_git_remotes(&self) -> Result<()> {
+        let repo = gix::open(&self.repo_path)?;
 
-    //     let remote_names = repo.remote_names();
-    //     if remote_names.is_empty() {
-    //         return Ok(());
-    //     }
+        // Get remote names
+        let remote_names: Vec<_> = repo
+            .remote_names()
+            .into_iter()
+            .filter_map(|name_result| Some(name_result))
+            .collect();
 
-    //     let helix_config_path = self.repo_path.join(".helix/config");
+        if remote_names.is_empty() {
+            return Ok(());
+        }
 
-    //     let mut helix_config = if helix_config_path.exists() {
-    //         fs::read_to_string(&helix_config_path)?
-    //     } else {
-    //         String::new()
-    //     };
+        // Read or create helix.toml
+        let helix_toml_path = self.repo_path.join("helix.toml");
 
-    //     helix_config.push_str("\n# Imported remotes from Git\n");
+        let mut toml_content = if helix_toml_path.exists() {
+            fs::read_to_string(&helix_toml_path)?
+        } else {
+            String::from("# Helix Configuration\n\n")
+        };
 
-    //     for remote_name_result in remote_names {
-    //         // Convert Result<RemoteName, _>
-    //         let remote_name = match remote_name_result {
-    //             Ok(name) => name,
-    //             Err(_) => continue,
-    //         };
+        // Check if remotes section already exists
+        if !toml_content.contains("[remotes]") {
+            toml_content.push_str("\n# Imported remotes from Git\n");
+            toml_content.push_str("[remotes]\n");
+        }
 
-    //         let remote_name_str = remote_name.to_string();
+        let remote_clone = remote_names.clone();
 
-    //         // Look up the remote definition
-    //         let remote = match repo.find_remote(&remote_name_str) {
-    //             Ok(r) => r,
-    //             Err(_) => continue,
-    //         };
+        for remote_name in remote_names {
+            let remote_name_str = remote_name.as_ref();
 
-    //         helix_config.push_str(&format!("[remote \"{}\"]\n", remote_name_str));
+            // Find the remote in the Git config
+            let remote = match repo.find_remote(remote_name_str) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!(
+                        "Warning: Could not find remote '{}': {}",
+                        remote_name_str, e
+                    );
+                    continue;
+                }
+            };
 
-    //         // Fetch URL
-    //         if let Some(url) = remote.url(gix::remote::Direction::Fetch) {
-    //             helix_config.push_str(&format!("\turl = {}\n", url.to_string()));
-    //         }
+            // Add remote section to TOML
+            toml_content.push_str(&format!("\n[remotes.{}]\n", remote_name_str));
 
-    //         // Fetch refspecs
-    //         for refspec in remote.refspecs(gix::remote::Direction::Fetch) {
-    //             helix_config.push_str(&format!("\tfetch = {}\n", refspec.to_string()));
-    //         }
+            // Get fetch URL
+            if let Some(url) = remote.url(gix::remote::Direction::Fetch) {
+                toml_content.push_str(&format!("pull=\"{}\"\n", url));
+            }
 
-    //         // Push URL (only if different)
-    //         if let Some(push_url) = remote.url(gix::remote::Direction::Push) {
-    //             if Some(push_url) != remote.url(gix::remote::Direction::Fetch) {
-    //                 helix_config.push_str(&format!("\tpushurl = {}\n", push_url.to_string()));
-    //             }
-    //         }
+            // Get fetch refspecs
+            let fetch_specs: Vec<_> = remote
+                .refspecs(gix::remote::Direction::Fetch)
+                .into_iter()
+                .map(|spec| format!("\"{:?}\"", spec.to_ref()))
+                .collect();
 
-    //         helix_config.push('\n');
-    //     }
+            if !fetch_specs.is_empty() {
+                toml_content.push_str(&format!("pull=[{}]\n", fetch_specs.join(", ")));
+            }
 
-    //     // Ensure .helix directory exists
-    //     if let Some(parent) = helix_config_path.parent() {
-    //         fs::create_dir_all(parent)?;
-    //     }
+            // Get push URL (only if different from fetch)
+            if let Some(push_url) = remote.url(gix::remote::Direction::Push) {
+                let fetch_url = remote.url(gix::remote::Direction::Fetch);
+                if fetch_url != Some(push_url) {
+                    toml_content.push_str(&format!("push=\"{}\"\n", push_url));
+                }
+            }
+        }
 
-    //     fs::write(&helix_config_path, helix_config)?;
+        fs::write(&helix_toml_path, toml_content)?;
 
-    //     println!("Imported {} remote(s)", remote_names.len());
+        println!("✓ Imported {} remote(s) to helix.toml", remote_clone.len());
 
-    //     Ok(())
-    // }
+        Ok(())
+    }
 
     fn import_git_tags(&self, git_hash_to_helix_hash: &HashMap<Vec<u8>, [u8; 32]>) -> Result<()> {
         let git_tags_dir = self.repo_path.join(".git/refs/tags");
@@ -1434,6 +1448,7 @@ mod tests {
         Ok(())
     }
 
+    /// branch tests
     fn build_git_to_helix_map_for_branch(
         repo: &Path,
         branch: &str,
@@ -1642,6 +1657,7 @@ mod tests {
         Ok(())
     }
 
+    /// tag tests
     fn build_git_to_helix_map_for_tag(
         repo: &Path,
         tag: &str,
@@ -1825,6 +1841,7 @@ mod tests {
         Ok(())
     }
 
+    /// git head  tests
     #[test]
     fn test_import_git_head_symbolic() -> Result<()> {
         let temp_dir = TempDir::new()?;
@@ -1947,6 +1964,235 @@ mod tests {
                 ".helix/HEAD should not contain a valid hash when mapping is missing"
             );
         }
+
+        Ok(())
+    }
+
+    /// git remote tests
+
+    #[test]
+    fn test_import_git_remotes_no_remotes_creates_no_toml() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo = temp_dir.path();
+        init_test_repo(repo)?;
+
+        let engine = SyncEngine::new(repo);
+        engine.import_git_remotes()?;
+
+        let helix_toml_path = repo.join("helix.toml");
+        assert!(
+            !helix_toml_path.exists(),
+            "helix.toml should not be created when there are no remotes"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_import_git_remotes_single_origin() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo = temp_dir.path();
+        init_test_repo(repo)?;
+
+        // Add a single remote
+        git(
+            repo,
+            &["remote", "add", "origin", "https://example.com/my-repo.git"],
+        )?;
+
+        let engine = SyncEngine::new(repo);
+        engine.import_git_remotes()?;
+
+        let helix_toml_path = repo.join("helix.toml");
+        assert!(
+            helix_toml_path.exists(),
+            "helix.toml should be created when remotes exist"
+        );
+
+        let contents = fs::read_to_string(&helix_toml_path)?;
+        // Has header
+        assert!(
+            contents.contains("# Helix Configuration"),
+            "helix.toml should contain configuration header"
+        );
+        // Has [remotes] root table
+        assert!(
+            contents.contains("[remotes]"),
+            "helix.toml should contain [remotes] section"
+        );
+        // Has [remotes.origin] table
+        assert!(
+            contents.contains("[remotes.origin]"),
+            "helix.toml should contain [remotes.origin] section"
+        );
+        // URL is correct
+        assert!(
+            contents.contains("pull=\"https://example.com/my-repo.git\""),
+            "helix.toml should contain correct origin URL"
+        );
+        // Fetch refspecs should be present as a non-empty array
+        assert!(
+            contents.contains("pull=["),
+            "helix.toml should define fetch refspecs"
+        );
+        // Pushurl should NOT be present because fetch == push by default
+        assert!(
+            !contents.contains("push="),
+            "pushurl should not be written when push URL equals fetch URL"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_import_git_remotes_origin_with_distinct_pushurl() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo = temp_dir.path();
+        init_test_repo(repo)?;
+
+        // Add origin
+        git(
+            repo,
+            &["remote", "add", "origin", "https://example.com/my-repo.git"],
+        )?;
+
+        // Set a distinct push URL
+        git(
+            repo,
+            &[
+                "remote",
+                "set-url",
+                "--push",
+                "origin",
+                "ssh://git@example.com/my-repo.git",
+            ],
+        )?;
+
+        let engine = SyncEngine::new(repo);
+        engine.import_git_remotes()?;
+
+        let helix_toml_path = repo.join("helix.toml");
+        let contents = fs::read_to_string(&helix_toml_path)?;
+
+        assert!(
+            contents.contains("[remotes.origin]"),
+            "remotes.origin section should exist"
+        );
+        assert!(
+            contents.contains("pull=\"https://example.com/my-repo.git\""),
+            "fetch URL should be recorded"
+        );
+        assert!(
+            contents.contains("push=\"ssh://git@example.com/my-repo.git\""),
+            "distinct push URL should be recorded as pushurl"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_import_git_remotes_multiple_remotes() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo = temp_dir.path();
+        init_test_repo(repo)?;
+
+        // Add two remotes
+        git(
+            repo,
+            &["remote", "add", "origin", "https://example.com/origin.git"],
+        )?;
+        git(
+            repo,
+            &[
+                "remote",
+                "add",
+                "upstream",
+                "https://example.com/upstream.git",
+            ],
+        )?;
+
+        let engine = SyncEngine::new(repo);
+        engine.import_git_remotes()?;
+
+        let helix_toml_path = repo.join("helix.toml");
+        let contents = fs::read_to_string(&helix_toml_path)?;
+
+        assert!(
+            contents.contains("[remotes]"),
+            "root [remotes] section should exist"
+        );
+        assert!(
+            contents.contains("[remotes.origin]"),
+            "origin remote section should exist"
+        );
+        assert!(
+            contents.contains("[remotes.upstream]"),
+            "upstream remote section should exist"
+        );
+        assert!(
+            contents.contains("pull=\"https://example.com/origin.git\""),
+            "origin URL should be recorded"
+        );
+        assert!(
+            contents.contains("pull=\"https://example.com/upstream.git\""),
+            "upstream URL should be recorded"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_import_git_remotes_preserves_existing_helix_toml_and_remotes_section() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo = temp_dir.path();
+        init_test_repo(repo)?;
+
+        // Pre-populate helix.toml with some content and an existing [remotes] section
+        let helix_toml_path = repo.join("helix.toml");
+        fs::write(
+            &helix_toml_path,
+            r#"# Helix Configuration
+
+[some_other_section]
+key = "value"
+
+[remotes]
+"#,
+        )?;
+
+        // Add a remote in git
+        git(
+            repo,
+            &["remote", "add", "origin", "https://example.com/origin.git"],
+        )?;
+
+        let engine = SyncEngine::new(repo);
+        engine.import_git_remotes()?;
+
+        let contents = fs::read_to_string(&helix_toml_path)?;
+
+        // Ensure existing section is preserved
+        assert!(
+            contents.contains("[some_other_section]"),
+            "existing sections should be preserved"
+        );
+
+        // [remotes] should appear only once
+        let remotes_count = contents.match_indices("[remotes]").count();
+        assert_eq!(
+            remotes_count, 1,
+            "[remotes] section should not be duplicated"
+        );
+
+        // New remote should be appended under remotes
+        assert!(
+            contents.contains("[remotes.origin]"),
+            "origin remote section should be added under [remotes]"
+        );
+        assert!(
+            contents.contains("pull=\"https://example.com/origin.git\""),
+            "origin URL should be recorded"
+        );
 
         Ok(())
     }

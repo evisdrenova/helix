@@ -177,6 +177,10 @@ fn create_repo_config(repo_path: &Path) -> Result<()> {
 # email = "you@example.com"
 
 
+[remotes]
+# pull=https://example.com/my-repo.git
+# push=https://example.com/my-repo.git
+
 [ignore]
 # Additional patterns to ignore (this will get combined with .gitignore if you have one)
 patterns = [
