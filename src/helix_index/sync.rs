@@ -67,7 +67,7 @@ impl SyncEngine {
         let git_hash_to_helix_hash = self.import_git_commits()?;
         self.import_git_branches(&git_hash_to_helix_hash)?;
         self.import_git_tags(&git_hash_to_helix_hash)?;
-        // self.import_git_head()?;
+        self.import_git_head(&git_hash_to_helix_hash)?;
         // self.import_git_remotes()?;
 
         Ok(())
@@ -107,26 +107,35 @@ impl SyncEngine {
         Ok(())
     }
 
-    // fn import_git_head(&self) -> Result<()> {
-    //     let git_head = self.repo_path.join(".git/HEAD");
-    //     let helix_head = self.repo_path.join(".helix/HEAD");
+    fn import_git_head(&self, git_hash_to_helix_hash: &HashMap<Vec<u8>, [u8; 32]>) -> Result<()> {
+        let git_head = self.repo_path.join(".git/HEAD");
+        let helix_head = self.repo_path.join(".helix/HEAD");
 
-    //     let head_content = fs::read_to_string(&git_head)?;
+        let head_content = fs::read_to_string(&git_head)?;
 
-    //     if head_content.starts_with("ref:") {
-    //         // Symbolic reference (pointing to a branch)
-    //         let ref_path = head_content.trim().strip_prefix("ref:").unwrap().trim();
+        // Ensure .helix directory exists
+        if let Some(parent) = helix_head.parent() {
+            fs::create_dir_all(parent)?;
+        }
 
-    //         // Convert refs/heads/main → refs/heads/main (same structure)
-    //         fs::write(&helix_head, format!("ref: {}", ref_path))?;
-    //     } else {
-    //         // Detached HEAD - need to convert Git SHA to Helix hash
-    //         // This requires the git_to_helix mapping from import_git_commits
-    //         // So this should be called AFTER import_git_commits
-    //     }
+        if head_content.starts_with("ref:") {
+            // Symbolic reference (e.g., "ref: refs/heads/main")
+            // Preserve it exactly
+            fs::write(&helix_head, head_content)?;
+        } else {
+            // Detached HEAD: file contains raw commit SHA from Git
+            let git_sha = head_content.trim();
+            let git_sha_bytes = hex::decode(git_sha)?;
 
-    //     Ok(())
-    // }
+            let helix_hash = git_hash_to_helix_hash
+                .get(&git_sha_bytes)
+                .context("HEAD points to unknown commit")?;
+
+            fs::write(&helix_head, hash::hash_to_hex(helix_hash))?;
+        }
+
+        Ok(())
+    }
 
     // fn import_git_remotes(&self) -> Result<()> {
     //     let repo = gix::open(&self.repo_path)?;
@@ -1812,6 +1821,132 @@ mod tests {
             result.is_err(),
             "Invalid SHA in tag ref should cause an error via hex::decode"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_import_git_head_symbolic() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo = temp_dir.path();
+        init_test_repo(repo)?;
+
+        // Create at least one commit so HEAD points to a valid branch,
+        // but we don't need to know the branch name ("main" vs "master").
+        std::fs::write(repo.join("file.txt"), "content")?;
+        git(repo, &["add", "file.txt"])?;
+        git(repo, &["commit", "-m", "initial"])?;
+
+        let git_head_path = repo.join(".git/HEAD");
+        let git_head_content = std::fs::read_to_string(&git_head_path)?;
+
+        // Use empty map: symbolic HEAD does not require mapping.
+        let git_to_helix: HashMap<Vec<u8>, [u8; 32]> = HashMap::new();
+        let engine = SyncEngine::new(repo);
+        engine.import_git_head(&git_to_helix)?;
+
+        let helix_head_path = repo.join(".helix/HEAD");
+        assert!(helix_head_path.exists(), ".helix/HEAD should be created");
+
+        let helix_head_content = std::fs::read_to_string(&helix_head_path)?;
+        assert_eq!(
+            git_head_content, helix_head_content,
+            "Symbolic HEAD should be copied exactly"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_import_git_head_detached() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo = temp_dir.path();
+        init_test_repo(repo)?;
+
+        // Create a commit
+        std::fs::write(repo.join("file.txt"), "content")?;
+        git(repo, &["add", "file.txt"])?;
+        git(repo, &["commit", "-m", "initial"])?;
+
+        // Get commit SHA
+        let output = std::process::Command::new("git")
+            .args(&["rev-parse", "HEAD"])
+            .current_dir(repo)
+            .output()?;
+        let git_sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+        // Checkout detached at that commit
+        git(repo, &["checkout", &git_sha])?;
+
+        // Build mapping: Git commit SHA bytes -> fake Helix hash
+        let git_sha_bytes = hex::decode(&git_sha)?;
+        let fake_helix_hash = [7u8; 32];
+
+        let mut git_to_helix = HashMap::new();
+        git_to_helix.insert(git_sha_bytes, fake_helix_hash);
+
+        let engine = SyncEngine::new(repo);
+        engine.import_git_head(&git_to_helix)?;
+
+        let helix_head_path = repo.join(".helix/HEAD");
+        assert!(helix_head_path.exists(), ".helix/HEAD should be created");
+
+        let helix_head_content = std::fs::read_to_string(&helix_head_path)?;
+        assert_eq!(
+            helix_head_content.trim(),
+            hash::hash_to_hex(&fake_helix_hash),
+            "Detached HEAD should be converted to Helix hash in .helix/HEAD"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_import_git_head_detached_unknown_commit_errors() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo = temp_dir.path();
+        init_test_repo(repo)?;
+
+        // Create a commit
+        std::fs::write(repo.join("file.txt"), "content")?;
+        git(repo, &["add", "file.txt"])?;
+        git(repo, &["commit", "-m", "initial"])?;
+
+        // Get commit SHA
+        let output = std::process::Command::new("git")
+            .args(&["rev-parse", "HEAD"])
+            .current_dir(repo)
+            .output()?;
+        let git_sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+        // Checkout detached at that commit
+        git(repo, &["checkout", &git_sha])?;
+
+        // Empty mapping: HEAD commit is not in git_hash_to_helix_hash
+        let git_to_helix: HashMap<Vec<u8>, [u8; 32]> = HashMap::new();
+
+        let engine = SyncEngine::new(repo);
+        let result = engine.import_git_head(&git_to_helix);
+
+        assert!(
+            result.is_err(),
+            "Detached HEAD with missing mapping should error"
+        );
+        let err = format!("{:?}", result.unwrap_err());
+        assert!(
+            err.contains("HEAD points to unknown commit"),
+            "Error should contain context message"
+        );
+
+        // .helix/HEAD should not contain a bogus value
+        let helix_head_path = repo.join(".helix/HEAD");
+        if helix_head_path.exists() {
+            let contents = std::fs::read_to_string(&helix_head_path)?;
+            assert!(
+                contents.trim().is_empty(),
+                ".helix/HEAD should not contain a valid hash when mapping is missing"
+            );
+        }
 
         Ok(())
     }
