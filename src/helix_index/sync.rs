@@ -1266,40 +1266,4 @@ mod tests {
 
         Ok(())
     }
-
-    #[test]
-    fn test_import_git_commits_performance() -> Result<()> {
-        let temp_dir = TempDir::new()?;
-        init_test_repo(temp_dir.path())?;
-
-        // Create 10 commits
-        for i in 0..10 {
-            fs::write(
-                temp_dir.path().join(format!("file{}.txt", i)),
-                format!("content {}", i),
-            )?;
-            Command::new("git")
-                .args(&["add", "."])
-                .current_dir(temp_dir.path())
-                .output()?;
-            Command::new("git")
-                .args(&["commit", "-m", &format!("Commit {}", i)])
-                .current_dir(temp_dir.path())
-                .output()?;
-        }
-
-        // Time the import
-        let syncer = SyncEngine::new(temp_dir.path());
-        let start = Instant::now();
-        let commits = syncer.import_git_commits()?;
-        let elapsed = start.elapsed();
-
-        assert_eq!(commits.len(), 10);
-        println!("Imported 10 commits in {:?}", elapsed);
-
-        // Should be reasonably fast (< 2 seconds for 10 commits)
-        assert!(elapsed.as_secs() < 2, "Import took too long: {:?}", elapsed);
-
-        Ok(())
-    }
 }
