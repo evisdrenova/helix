@@ -6,7 +6,6 @@
 //   helix branch -d <name>        - Delete branch
 //   helix branch -m <old> <new>   - Rename branch
 
-use crate::branch_tui;
 use crate::helix_index::hash::Hash;
 use anyhow::{anyhow, Context, Result};
 use std::fs;
@@ -28,17 +27,6 @@ impl Default for BranchOptions {
             verbose: false,
         }
     }
-}
-
-pub fn run_branch_tui(repo_path: Option<&Path>) -> Result<()> {
-    let repo_path = repo_path
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| std::env::current_dir().expect("Failed to get current directory"));
-
-    let mut app = branch_tui::app::App::new(&repo_path)?;
-    app.run()?;
-
-    Ok(())
 }
 
 /// List all branches, with current branch highlighted

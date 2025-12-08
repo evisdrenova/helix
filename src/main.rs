@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 mod config;
 mod git;
 
+mod branch;
 mod llm;
 mod log;
 mod status;
@@ -19,79 +20,65 @@ use workflow::Workflow;
 struct Args {
     #[command(subcommand)]
     command: Option<Commands>,
-
-    // branch to push to (defaults to current branch)
     #[arg(short, long, global = true)]
-    branch: Option<String>,
-
-    // add files, generate message, commit, and push automatically
+    branch: Option<String>, // branch to push to (defaults to current branch)
     #[arg(short, long)]
-    auto: bool,
-
-    // only generate commit message for staged changes
+    auto: bool, // add files, generate message, commit, and push automatically
     #[arg(short, long)]
-    generate: bool,
-
-    // add files and generate message (don't commit)
+    generate: bool, // only generate commit message for staged changes
     #[arg(short = 's', long)]
-    stage_and_generate: bool,
-
-    // files to add to staging
-    files: Vec<String>,
+    stage_and_generate: bool, // add files and generate message (don't commit)
+    files: Vec<String>, // files to add to staging
 }
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    Init {
+        #[arg(value_name = "PATH")]
+        path: Option<PathBuf>, // repository path (defaults to cwd)
+    },
     Log {
-        // repo path (defaults to cwd)
         #[arg(value_name = "PATH")]
-        path: Option<PathBuf>,
+        path: Option<PathBuf>, // repo path (defaults to cwd)v
     },
-    // show working directory status
     Status {
-        // Repository path (defaults to cwd)
         #[arg(value_name = "PATH")]
-        path: Option<PathBuf>,
+        path: Option<PathBuf>, // Repository path (defaults to cwd)
     },
-    // add files, generate message, commit, and push (default)
     Commit {
-        // files to add to staging
-        files: Vec<String>,
-
-        // branch to push to (defaults to current branch)
+        files: Vec<String>, // files to add to staging
         #[arg(short, long)]
-        branch: Option<String>,
-
-        // only generate commit message for staged changes
+        branch: Option<String>, // branch to push to (defaults to current branch)
         #[arg(short, long)]
-        generate: bool,
-
-        // add files and generate message (don't commit)
+        generate: bool, // only generate commit message for staged changes
         #[arg(short = 's', long)]
-        stage: bool,
+        stage: bool, // add files and generate message (don't commit)
     },
     Add {
-        /// Files or directories to add
         #[arg(required = true)]
-        paths: Vec<PathBuf>,
-
-        /// Show verbose output
+        paths: Vec<PathBuf>, // Files or directories to add
         #[arg(short, long)]
-        verbose: bool,
-
-        /// Perform a dry run (don't actually add)
+        verbose: bool, // Show verbose output
         #[arg(short = 'n', long)]
-        dry_run: bool,
-
-        /// Force add (even if in .gitignore)
+        dry_run: bool, // Perform a dry run (don't actually add)
         #[arg(short, long)]
-        force: bool,
+        force: bool, // Force add (even if in .gitignore)
     },
-    // initialize helix configuration for this repo
-    Init {
-        // repository path (defaults to cwd)
+    Branch {
+        name: Option<String>, // Branch name (for create/delete/rename/switch operations)
+        new_name: Option<String>, // New branch name (for rename operation)
         #[arg(value_name = "PATH")]
-        path: Option<PathBuf>,
+        path: Option<PathBuf>, // repository path (defaults to cwd)
+        #[arg(short, long)]
+        list: bool, // list branches (opens TUI)
+        #[arg(short, long)]
+        delete: bool, // delete a branch
+        #[arg(short = 'm', long)]
+        rename: bool, // rename a branch
+        #[arg(short, long)]
+        force: bool, // force operations
+        #[arg(short, long)]
+        verbose: bool, // verbose output
     },
 }
 
@@ -113,6 +100,61 @@ async fn main() -> Result<()> {
         Some(Commands::Init { path }) => {
             let repo_path = resolve_repo_path(path.as_deref())?;
             init_helix_repo(&repo_path, None)?;
+            return Ok(());
+        }
+        Some(Commands::Branch {
+            name,
+            new_name,
+            path,
+            list,
+            delete,
+            rename,
+            force,
+            verbose,
+        }) => {
+            let repo_path = resolve_repo_path(path.as_deref())?;
+
+            let options = branch::BranchOptions {
+                delete,
+                rename,
+                force,
+                verbose,
+            };
+
+            // If no name and no flags, or explicit --list, show TUI
+            if (name.is_none() && !delete && !rename) || list {
+                branch::run_branch_tui(&repo_path)?;
+            } else if let Some(branch_name) = name {
+                // Handle specific branch operations
+                if delete {
+                    // Delete branch
+                    branch::delete_branch(&repo_path, &branch_name, options)?;
+                } else if rename {
+                    // Rename branch
+                    if let Some(new) = new_name {
+                        branch::rename_branch(&repo_path, &branch_name, &new, options)?;
+                    } else {
+                        eprintln!("Error: --rename requires two branch names");
+                        eprintln!("Usage: helix branch --rename <old-name> <new-name>");
+                        std::process::exit(1);
+                    }
+                } else {
+                    // Create or switch to branch
+                    let branch_exists = repo_path
+                        .join(format!(".helix/refs/heads/{}", branch_name))
+                        .exists();
+
+                    if branch_exists {
+                        branch::switch_branch(&repo_path, &branch_name)?;
+                    } else {
+                        branch::create_branch(&repo_path, &branch_name, options)?;
+                    }
+                }
+            } else {
+                eprintln!("Error: Branch name required for this operation");
+                std::process::exit(1);
+            }
+
             return Ok(());
         }
 

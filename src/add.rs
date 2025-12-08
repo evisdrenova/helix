@@ -28,11 +28,6 @@ impl Default for AddOptions {
 }
 
 /// Add files to staging area using pure Helix storage
-///
-/// Performance:
-/// - 100 files: ~8ms
-/// - 1,000 files: ~50ms (50-100x faster than git add)
-/// - Uses parallel hashing and batch blob writes
 pub fn add(repo_path: &Path, paths: &[PathBuf], options: AddOptions) -> Result<()> {
     let start = Instant::now();
 
@@ -40,7 +35,7 @@ pub fn add(repo_path: &Path, paths: &[PathBuf], options: AddOptions) -> Result<(
         anyhow::bail!("No paths specified. Use 'helix add <files>' or 'helix add .'");
     }
 
-    // Load helix index (0.7ms via mmap)
+    // Load helix index
     let mut index = HelixIndexData::load_or_rebuild(repo_path)?;
 
     if options.verbose {

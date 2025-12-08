@@ -1,5 +1,76 @@
 /*
-Creates a new helix repository. We will detect if there is an existing Git repo and prompt the user to decide if they want to migrate their Git data to Helix or start with an empty Helix repo.
+Helix repository initialization and Git import entry points.
+
+This module implements `helix init` for a given repository path. It is responsible
+for creating the on-disk layout Helix expects, optionally importing state from an
+existing Git repository, and printing next-step guidance.
+
+High-level flow
+---------------
+`init_helix_repo` is the main entry point. It:
+
+1. Creates the `.helix` directory tree and object/ref subdirectories
+   (create_directory_structure).
+2. Creates an empty Helix index file `.helix/helix.idx` if one does not exist yet
+   (create_empty_index).
+3. Creates `.helix/HEAD` pointing at `refs/heads/main` as the default branch
+   (create_head_file).
+4. Writes a repo-local `helix.toml` configuration file if it does not exist
+   (create_repo_config).
+5. Detects whether `.git` is present and, if so, optionally imports state from
+   Git into Helix (detect_git).
+6. Prints a short success and “next steps” message to the user
+   (print_success_message).
+
+Git detection and import
+------------------------
+`detect_git` checks for a `.git` directory under the repo path:
+
+- If no `.git` directory is found, it simply reports that a Helix repo is being
+  initialized and returns.
+- If `.git` exists, it delegates to `detect_git_with_reader`, which either:
+  - Auto-imports from Git when the `auto` parameter is Some(...) (used by tests
+    or non-interactive callers), or
+  - Prompts on stdin: “Do you want to import your Git commits to Helix? (Y/N)”
+    and only imports when the user answers “y”.
+
+Actual import from Git is performed by `import_from_git`, which:
+
+- Starts a timer.
+- Builds a `SyncEngine` for the repo and calls `SyncEngine::import_from_git`,
+  which reads Git state and writes Helix’s own index / objects / refs.
+- Reads back the freshly written Helix index to determine how many tracked files
+  were imported.
+- Prints a short summary including the file count and elapsed time.
+
+Filesystem helpers
+------------------
+- `create_directory_structure`:
+  Creates `.helix`, `.helix/objects` and subdirectories for blobs/trees/commits,
+  plus `.helix/refs` and subdirectories for heads/tags. All calls are safe and
+  idempotent: existing directories are left untouched.
+
+- `create_empty_index`:
+  Creates `.helix/helix.idx` with an empty index and generation 1 if it does not
+  already exist. If the file is present, it is not overwritten.
+
+- `create_head_file`:
+  Creates `.helix/HEAD` with a symbolic reference to `refs/heads/main` if it
+  does not exist. Actual HEAD resolution and branch creation happen later when
+  commits are made.
+
+- `create_repo_config`:
+  Writes a default `helix.toml` with user/remote/ignore sections if it does not
+  already exist. This file is intended to be edited by the user and may also be
+  checked into Git.
+
+- `print_success_message`:
+  Prints a short, human-friendly summary of what was initialized and the typical
+  next commands to run (add, commit, status, log).
+
+All functions are designed to be safe to call multiple times: running
+`init_helix_repo` repeatedly should never destroy existing Helix state or user
+data, and will only create missing pieces.
 */
 
 use anyhow::{Context, Result};

@@ -1,5 +1,6 @@
 pub mod add;
 pub mod branch;
+pub mod branch_tui;
 pub mod commit;
 pub mod fsmonitor;
 pub mod helix_index;
