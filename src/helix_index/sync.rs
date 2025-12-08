@@ -66,7 +66,7 @@ impl SyncEngine {
         self.import_git_index()?;
         let git_hash_to_helix_hash = self.import_git_commits()?;
         self.import_git_branches(&git_hash_to_helix_hash)?;
-        // self.import_git_tags(&git_hash_to_helix_hash)?;
+        self.import_git_tags(&git_hash_to_helix_hash)?;
         // self.import_git_head()?;
         // self.import_git_remotes()?;
 
@@ -195,45 +195,43 @@ impl SyncEngine {
     //     Ok(())
     // }
 
-    // fn import_git_tags(&self, git_hash_to_helix_hash: &HashMap<Vec<u8>, [u8; 32]>) -> Result<()> {
-    //     let git_tags_dir = self.repo_path.join(".git/refs/tags");
-    //     if !git_tags_dir.exists() {
-    //         return Ok(());
-    //     }
+    fn import_git_tags(&self, git_hash_to_helix_hash: &HashMap<Vec<u8>, [u8; 32]>) -> Result<()> {
+        let git_tags_dir = self.repo_path.join(".git/refs/tags");
+        if !git_tags_dir.exists() {
+            return Ok(());
+        }
 
-    //     for entry in WalkDir::new(&git_tags_dir) {
-    //         let entry = entry?;
-    //         if !entry.file_type().is_file() {
-    //             continue;
-    //         }
+        for entry in WalkDir::new(&git_tags_dir) {
+            let entry = entry?;
+            if !entry.file_type().is_file() {
+                continue;
+            }
 
-    //         let git_sha = fs::read_to_string(entry.path())?.trim().to_string();
-    //         let git_sha_bytes = hex::decode(&git_sha)?;
+            let git_sha = fs::read_to_string(entry.path())?.trim().to_string();
+            let git_sha_bytes = hex::decode(&git_sha)?;
 
-    //         let helix_hash = match git_hash_to_helix_hash.get(&git_sha_bytes) {
-    //             Some(h) => h,
-    //             None => {
-    //                 eprintln!(
-    //                     "⚠️ Tag {:?} references unknown commit {} — skipping",
-    //                     entry.path(),
-    //                     git_sha
-    //                 );
-    //                 continue;
-    //             }
-    //         };
+            let helix_hash = match git_hash_to_helix_hash.get(&git_sha_bytes) {
+                Some(h) => h,
+                None => {
+                    eprintln!(
+                        "⚠️ Tag {:?} references unknown commit {} — skipping",
+                        entry.path(),
+                        git_sha
+                    );
+                    continue;
+                }
+            };
 
-    //         let tag_name = entry.file_name().to_string_lossy();
-    //         let helix_tag_path = self
-    //             .repo_path
-    //             .join(".helix/refs/tags")
-    //             .join(tag_name.as_ref());
+            // ✅ Preserve relative path under .git/refs/tags
+            let rel_path = entry.path().strip_prefix(&git_tags_dir)?;
+            let helix_tag_path = self.repo_path.join(".helix/refs/tags").join(rel_path);
 
-    //         fs::create_dir_all(helix_tag_path.parent().unwrap())?;
-    //         fs::write(&helix_tag_path, hash::hash_to_hex(helix_hash))?;
-    //     }
+            fs::create_dir_all(helix_tag_path.parent().unwrap())?;
+            fs::write(&helix_tag_path, hash::hash_to_hex(helix_hash))?;
+        }
 
-    //     Ok(())
-    // }
+        Ok(())
+    }
 
     fn import_git_index(&self) -> Result<()> {
         let git_index_path = self.repo_path.join(".git/index");
@@ -1630,6 +1628,189 @@ mod tests {
         assert!(
             result.is_err(),
             "Invalid SHA in branch ref should cause an error via hex::decode"
+        );
+
+        Ok(())
+    }
+
+    fn build_git_to_helix_map_for_tag(
+        repo: &Path,
+        tag: &str,
+        helix_hash: [u8; 32],
+    ) -> Result<HashMap<Vec<u8>, [u8; 32]>> {
+        let ref_path = repo.join(".git/refs/tags").join(tag);
+        let git_sha = std::fs::read_to_string(&ref_path)?.trim().to_string();
+        let git_sha_bytes = hex::decode(&git_sha)?;
+        let mut map = HashMap::new();
+        map.insert(git_sha_bytes, helix_hash);
+        Ok(map)
+    }
+
+    #[test]
+    fn test_import_git_tags_no_tags_dir_is_noop() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo = temp_dir.path();
+        init_test_repo(repo)?;
+
+        // Ensure .git/refs/tags does NOT exist
+        let git_tags_dir = repo.join(".git/refs/tags");
+        if git_tags_dir.exists() {
+            std::fs::remove_dir_all(&git_tags_dir)?;
+        }
+
+        let git_to_helix: HashMap<Vec<u8>, [u8; 32]> = HashMap::new();
+        let engine = SyncEngine::new(repo);
+
+        // Should just return Ok(()) and not create any helix tags
+        engine.import_git_tags(&git_to_helix)?;
+
+        let helix_tags_dir = repo.join(".helix/refs/tags");
+        assert!(
+            !helix_tags_dir.exists(),
+            "No helix tags should be created when no git tags dir exists"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_import_git_tags_single_tag() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo = temp_dir.path();
+        init_test_repo(repo)?;
+
+        // Create a commit
+        std::fs::write(repo.join("file.txt"), "content")?;
+        git(repo, &["add", "file.txt"])?;
+        git(repo, &["commit", "-m", "initial"])?;
+
+        // Lightweight tag pointing directly at commit
+        git(repo, &["tag", "v1.0.0"])?;
+
+        // Map the tag's commit SHA to a fake Helix hash
+        let fake_helix_hash = [9u8; 32];
+        let git_to_helix = build_git_to_helix_map_for_tag(repo, "v1.0.0", fake_helix_hash)?;
+
+        let engine = SyncEngine::new(repo);
+        engine.import_git_tags(&git_to_helix)?;
+
+        let helix_tag = repo.join(".helix/refs/tags/v1.0.0");
+        assert!(helix_tag.exists(), "Helix tag ref should be created");
+
+        let contents = std::fs::read_to_string(&helix_tag)?;
+        assert_eq!(
+            contents.trim(),
+            hash::hash_to_hex(&fake_helix_hash),
+            "Helix tag should contain mapped Helix hash"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_import_git_tags_multiple_and_nested_tags() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo = temp_dir.path();
+        init_test_repo(repo)?;
+
+        // Base commit
+        std::fs::write(repo.join("file.txt"), "content")?;
+        git(repo, &["add", "file.txt"])?;
+        git(repo, &["commit", "-m", "initial"])?;
+
+        // Create some tags (Git allows slashes in tag names)
+        git(repo, &["tag", "v1"])?;
+        git(repo, &["tag", "releases/v2"])?;
+        git(repo, &["tag", "hotfix/v3"])?;
+
+        // All tags point to the same commit, so they all map to the same Helix hash.
+        let fake_helix_hash = [7u8; 32];
+
+        // Build a mapping for that commit SHA → fake_helix_hash
+        // (we can read SHA from any of the tag refs, they all point to same commit)
+        let ref_path = repo.join(".git/refs/tags/v1");
+        let git_sha = std::fs::read_to_string(&ref_path)?.trim().to_string();
+        let git_sha_bytes = hex::decode(&git_sha)?;
+        let mut git_to_helix = HashMap::new();
+        git_to_helix.insert(git_sha_bytes, fake_helix_hash);
+
+        let engine = SyncEngine::new(repo);
+        engine.import_git_tags(&git_to_helix)?;
+
+        let v1_ref = repo.join(".helix/refs/tags/v1");
+        let v2_ref = repo.join(".helix/refs/tags/releases/v2");
+        let v3_ref = repo.join(".helix/refs/tags/hotfix/v3");
+
+        assert!(v1_ref.exists(), "v1 tag should exist");
+        assert!(
+            v2_ref.exists(),
+            "releases/v2 tag should be preserved as nested path"
+        );
+        assert!(
+            v3_ref.exists(),
+            "hotfix/v3 tag should be preserved as nested path"
+        );
+
+        // All tags point to the same commit => same Helix hash
+        let expected = hash::hash_to_hex(&fake_helix_hash);
+
+        assert_eq!(std::fs::read_to_string(&v1_ref)?.trim(), expected);
+        assert_eq!(std::fs::read_to_string(&v2_ref)?.trim(), expected);
+        assert_eq!(std::fs::read_to_string(&v3_ref)?.trim(), expected);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_import_git_tags_unknown_commit_is_skipped() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo = temp_dir.path();
+        init_test_repo(repo)?;
+
+        // Create a commit and a tag
+        std::fs::write(repo.join("file.txt"), "content")?;
+        git(repo, &["add", "file.txt"])?;
+        git(repo, &["commit", "-m", "initial"])?;
+        git(repo, &["tag", "v1"])?;
+
+        // Empty mapping: tag target SHA not present -> should be skipped
+        let git_to_helix: HashMap<Vec<u8>, [u8; 32]> = HashMap::new();
+
+        let engine = SyncEngine::new(repo);
+        engine.import_git_tags(&git_to_helix)?;
+
+        let helix_tag = repo.join(".helix/refs/tags/v1");
+        assert!(
+            !helix_tag.exists(),
+            "Tag pointing to unknown commit should be skipped and not written"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_import_git_tags_invalid_sha_errors() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo = temp_dir.path();
+        init_test_repo(repo)?;
+
+        // Create a commit and tag so .git/refs/tags/v1 exists
+        std::fs::write(repo.join("file.txt"), "content")?;
+        git(repo, &["add", "file.txt"])?;
+        git(repo, &["commit", "-m", "initial"])?;
+        git(repo, &["tag", "v1"])?;
+
+        // Overwrite the tag ref with invalid hex contents
+        let git_tag_ref = repo.join(".git/refs/tags/v1");
+        std::fs::write(&git_tag_ref, "not-a-hex-sha\n")?;
+
+        let git_to_helix: HashMap<Vec<u8>, [u8; 32]> = HashMap::new();
+        let engine = SyncEngine::new(repo);
+        let result = engine.import_git_tags(&git_to_helix);
+
+        assert!(
+            result.is_err(),
+            "Invalid SHA in tag ref should cause an error via hex::decode"
         );
 
         Ok(())
