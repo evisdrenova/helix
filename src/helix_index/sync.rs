@@ -1426,4 +1426,212 @@ mod tests {
 
         Ok(())
     }
+
+    fn build_git_to_helix_map_for_branch(
+        repo: &Path,
+        branch: &str,
+        helix_hash: [u8; 32],
+    ) -> Result<HashMap<Vec<u8>, [u8; 32]>> {
+        let ref_path = repo.join(".git/refs/heads").join(branch);
+        let git_sha = std::fs::read_to_string(&ref_path)?.trim().to_string();
+        let git_sha_bytes = hex::decode(&git_sha)?;
+        let mut map = HashMap::new();
+        map.insert(git_sha_bytes, helix_hash);
+        Ok(map)
+    }
+
+    #[test]
+    fn test_import_git_branches_single_branch() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo = temp_dir.path();
+        init_test_repo(repo)?;
+
+        // Create a single commit on main
+        std::fs::write(repo.join("file.txt"), "content")?;
+        git(repo, &["add", "file.txt"])?;
+        git(repo, &["commit", "-m", "initial"])?;
+
+        // Map Git commit → fake Helix hash
+        let fake_helix_hash = [1u8; 32];
+        let git_to_helix = build_git_to_helix_map_for_branch(repo, "main", fake_helix_hash)?;
+
+        let engine = SyncEngine::new(repo);
+        engine.import_git_branches(&git_to_helix)?;
+
+        // Verify .helix ref created
+        let helix_ref_path = repo.join(".helix/refs/heads/main");
+        assert!(
+            helix_ref_path.exists(),
+            "Helix branch ref should be created for main"
+        );
+
+        let contents = std::fs::read_to_string(&helix_ref_path)?;
+        assert_eq!(
+            contents.trim(),
+            hash::hash_to_hex(&fake_helix_hash),
+            "Helix branch ref should contain mapped Helix hash"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_import_git_branches_nested_branches_preserve_paths() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo = temp_dir.path();
+        init_test_repo(repo)?;
+
+        // Base commit on main
+        std::fs::write(repo.join("base.txt"), "base")?;
+        git(repo, &["add", "base.txt"])?;
+        git(repo, &["commit", "-m", "base"])?;
+
+        // Create nested branch: feature/foo
+        git(repo, &["checkout", "-b", "feature/foo"])?;
+        std::fs::write(repo.join("feature.txt"), "feature")?;
+        git(repo, &["add", "feature.txt"])?;
+        git(repo, &["commit", "-m", "feature"])?;
+
+        // Another nested branch: bugfix/bar
+        git(repo, &["checkout", "main"])?;
+        git(repo, &["checkout", "-b", "bugfix/bar"])?;
+        std::fs::write(repo.join("bugfix.txt"), "bug")?;
+        git(repo, &["add", "bugfix.txt"])?;
+        git(repo, &["commit", "-m", "bugfix"])?;
+
+        // Build mapping for ALL branch heads
+        let mut git_to_helix = HashMap::new();
+        let main_hash = [1u8; 32];
+        let feature_hash = [2u8; 32];
+        let bugfix_hash = [3u8; 32];
+
+        git_to_helix.extend(build_git_to_helix_map_for_branch(repo, "main", main_hash)?);
+        git_to_helix.extend(build_git_to_helix_map_for_branch(
+            repo,
+            "feature/foo",
+            feature_hash,
+        )?);
+        git_to_helix.extend(build_git_to_helix_map_for_branch(
+            repo,
+            "bugfix/bar",
+            bugfix_hash,
+        )?);
+
+        let engine = SyncEngine::new(repo);
+        engine.import_git_branches(&git_to_helix)?;
+
+        // Verify paths and contents
+        let main_ref = repo.join(".helix/refs/heads/main");
+        let feature_ref = repo.join(".helix/refs/heads/feature/foo");
+        let bugfix_ref = repo.join(".helix/refs/heads/bugfix/bar");
+
+        assert!(main_ref.exists(), "main ref should exist");
+        assert!(
+            feature_ref.exists(),
+            "feature/foo ref should exist with nested path"
+        );
+        assert!(
+            bugfix_ref.exists(),
+            "bugfix/bar ref should exist with nested path"
+        );
+
+        assert_eq!(
+            std::fs::read_to_string(&main_ref)?.trim(),
+            hash::hash_to_hex(&main_hash)
+        );
+        assert_eq!(
+            std::fs::read_to_string(&feature_ref)?.trim(),
+            hash::hash_to_hex(&feature_hash)
+        );
+        assert_eq!(
+            std::fs::read_to_string(&bugfix_ref)?.trim(),
+            hash::hash_to_hex(&bugfix_hash)
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_import_git_branches_no_refs_dir_is_noop() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo = temp_dir.path();
+        init_test_repo(repo)?;
+
+        // Ensure .git/refs/heads does NOT exist
+        let git_refs_dir = repo.join(".git/refs/heads");
+        if git_refs_dir.exists() {
+            std::fs::remove_dir_all(&git_refs_dir)?;
+        }
+
+        let git_to_helix: HashMap<Vec<u8>, [u8; 32]> = HashMap::new();
+        let engine = SyncEngine::new(repo);
+        // Should succeed and not panic
+        engine.import_git_branches(&git_to_helix)?;
+
+        // No .helix/refs/heads should be created either
+        let helix_refs_dir = repo.join(".helix/refs/heads");
+        assert!(
+            !helix_refs_dir.exists(),
+            "No helix refs should be created when no git refs"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_import_git_branches_unknown_commit_errors() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo = temp_dir.path();
+        init_test_repo(repo)?;
+
+        // Create one commit so .git/refs/heads/main exists
+        std::fs::write(repo.join("file.txt"), "content")?;
+        git(repo, &["add", "file.txt"])?;
+        git(repo, &["commit", "-m", "initial"])?;
+
+        // Empty mapping: branch commit SHA won't be found
+        let git_to_helix: HashMap<Vec<u8>, [u8; 32]> = HashMap::new();
+
+        let engine = SyncEngine::new(repo);
+        let result = engine.import_git_branches(&git_to_helix);
+
+        assert!(
+            result.is_err(),
+            "Branch pointing to unknown commit should return an error"
+        );
+        let err_string = format!("{:?}", result.unwrap_err());
+        assert!(
+            err_string.contains("Branch points to unknown commit"),
+            "Error should contain context message"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_import_git_branches_invalid_sha_fails() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo = temp_dir.path();
+        init_test_repo(repo)?;
+
+        // Create a commit to ensure refs/heads/main exists
+        std::fs::write(repo.join("file.txt"), "content")?;
+        git(repo, &["add", "file.txt"])?;
+        git(repo, &["commit", "-m", "initial"])?;
+
+        // Overwrite ref with invalid SHA
+        let main_ref_path = repo.join(".git/refs/heads/main");
+        std::fs::write(&main_ref_path, "not-a-hex-sha\n")?;
+
+        let git_to_helix: HashMap<Vec<u8>, [u8; 32]> = HashMap::new();
+        let engine = SyncEngine::new(repo);
+        let result = engine.import_git_branches(&git_to_helix);
+
+        assert!(
+            result.is_err(),
+            "Invalid SHA in branch ref should cause an error via hex::decode"
+        );
+
+        Ok(())
+    }
 }
