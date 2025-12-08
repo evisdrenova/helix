@@ -47,6 +47,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use walkdir::WalkDir;
 
 pub struct SyncEngine {
     repo_path: PathBuf,
@@ -59,21 +60,180 @@ impl SyncEngine {
         }
     }
 
-    /// One-time import from Git to create initial Helix index
-    /// ## Complete Workflow
-    /// 1. **Import index entries** → Creates `.helix/helix.idx
-    /// 2. **Import commits** → Gets all Git commits as `Helix_Commit` objects
-    /// 3. **Store commits** → Writes them to `.helix/objects/commits/{hash}`
-    /// 4. **Update HEAD** → Points to the latest commit
-    /// 5. **Write index** → Finalizes the index file
     pub fn import_from_git(&self) -> Result<()> {
         wait_for_git_lock(&self.repo_path, Duration::from_secs(5))?;
 
         self.import_git_index()?;
-        self.import_git_commits()?;
+        let git_hash_to_helix_hash = self.import_git_commits()?;
+        self.import_git_branches(&git_hash_to_helix_hash)?;
+        // self.import_git_tags(&git_hash_to_helix_hash)?;
+        // self.import_git_head()?;
+        // self.import_git_remotes()?;
 
         Ok(())
     }
+
+    fn import_git_branches(
+        &self,
+        git_hash_to_helix_hash: &HashMap<Vec<u8>, [u8; 32]>,
+    ) -> Result<()> {
+        let git_refs_dir = self.repo_path.join(".git/refs/heads");
+        if !git_refs_dir.exists() {
+            return Ok(());
+        }
+
+        for entry in WalkDir::new(&git_refs_dir) {
+            let entry = entry?;
+            if !entry.file_type().is_file() {
+                continue;
+            }
+
+            let git_sha = fs::read_to_string(entry.path())?.trim().to_string();
+            let git_sha_bytes = hex::decode(&git_sha)?;
+
+            // Convert Git SHA to Helix hash
+            let helix_hash = git_hash_to_helix_hash
+                .get(&git_sha_bytes)
+                .context("Branch points to unknown commit")?;
+
+            // Preserve branch path structure
+            let rel_path = entry.path().strip_prefix(&git_refs_dir)?;
+            let helix_ref_path = self.repo_path.join(".helix/refs/heads").join(rel_path);
+
+            fs::create_dir_all(helix_ref_path.parent().unwrap())?;
+            fs::write(&helix_ref_path, hash::hash_to_hex(helix_hash))?;
+        }
+
+        Ok(())
+    }
+
+    // fn import_git_head(&self) -> Result<()> {
+    //     let git_head = self.repo_path.join(".git/HEAD");
+    //     let helix_head = self.repo_path.join(".helix/HEAD");
+
+    //     let head_content = fs::read_to_string(&git_head)?;
+
+    //     if head_content.starts_with("ref:") {
+    //         // Symbolic reference (pointing to a branch)
+    //         let ref_path = head_content.trim().strip_prefix("ref:").unwrap().trim();
+
+    //         // Convert refs/heads/main → refs/heads/main (same structure)
+    //         fs::write(&helix_head, format!("ref: {}", ref_path))?;
+    //     } else {
+    //         // Detached HEAD - need to convert Git SHA to Helix hash
+    //         // This requires the git_to_helix mapping from import_git_commits
+    //         // So this should be called AFTER import_git_commits
+    //     }
+
+    //     Ok(())
+    // }
+
+    // fn import_git_remotes(&self) -> Result<()> {
+    //     let repo = gix::open(&self.repo_path)?;
+
+    //     let remote_names = repo.remote_names();
+    //     if remote_names.is_empty() {
+    //         return Ok(());
+    //     }
+
+    //     let helix_config_path = self.repo_path.join(".helix/config");
+
+    //     let mut helix_config = if helix_config_path.exists() {
+    //         fs::read_to_string(&helix_config_path)?
+    //     } else {
+    //         String::new()
+    //     };
+
+    //     helix_config.push_str("\n# Imported remotes from Git\n");
+
+    //     for remote_name_result in remote_names {
+    //         // Convert Result<RemoteName, _>
+    //         let remote_name = match remote_name_result {
+    //             Ok(name) => name,
+    //             Err(_) => continue,
+    //         };
+
+    //         let remote_name_str = remote_name.to_string();
+
+    //         // Look up the remote definition
+    //         let remote = match repo.find_remote(&remote_name_str) {
+    //             Ok(r) => r,
+    //             Err(_) => continue,
+    //         };
+
+    //         helix_config.push_str(&format!("[remote \"{}\"]\n", remote_name_str));
+
+    //         // Fetch URL
+    //         if let Some(url) = remote.url(gix::remote::Direction::Fetch) {
+    //             helix_config.push_str(&format!("\turl = {}\n", url.to_string()));
+    //         }
+
+    //         // Fetch refspecs
+    //         for refspec in remote.refspecs(gix::remote::Direction::Fetch) {
+    //             helix_config.push_str(&format!("\tfetch = {}\n", refspec.to_string()));
+    //         }
+
+    //         // Push URL (only if different)
+    //         if let Some(push_url) = remote.url(gix::remote::Direction::Push) {
+    //             if Some(push_url) != remote.url(gix::remote::Direction::Fetch) {
+    //                 helix_config.push_str(&format!("\tpushurl = {}\n", push_url.to_string()));
+    //             }
+    //         }
+
+    //         helix_config.push('\n');
+    //     }
+
+    //     // Ensure .helix directory exists
+    //     if let Some(parent) = helix_config_path.parent() {
+    //         fs::create_dir_all(parent)?;
+    //     }
+
+    //     fs::write(&helix_config_path, helix_config)?;
+
+    //     println!("Imported {} remote(s)", remote_names.len());
+
+    //     Ok(())
+    // }
+
+    // fn import_git_tags(&self, git_hash_to_helix_hash: &HashMap<Vec<u8>, [u8; 32]>) -> Result<()> {
+    //     let git_tags_dir = self.repo_path.join(".git/refs/tags");
+    //     if !git_tags_dir.exists() {
+    //         return Ok(());
+    //     }
+
+    //     for entry in WalkDir::new(&git_tags_dir) {
+    //         let entry = entry?;
+    //         if !entry.file_type().is_file() {
+    //             continue;
+    //         }
+
+    //         let git_sha = fs::read_to_string(entry.path())?.trim().to_string();
+    //         let git_sha_bytes = hex::decode(&git_sha)?;
+
+    //         let helix_hash = match git_hash_to_helix_hash.get(&git_sha_bytes) {
+    //             Some(h) => h,
+    //             None => {
+    //                 eprintln!(
+    //                     "⚠️ Tag {:?} references unknown commit {} — skipping",
+    //                     entry.path(),
+    //                     git_sha
+    //                 );
+    //                 continue;
+    //             }
+    //         };
+
+    //         let tag_name = entry.file_name().to_string_lossy();
+    //         let helix_tag_path = self
+    //             .repo_path
+    //             .join(".helix/refs/tags")
+    //             .join(tag_name.as_ref());
+
+    //         fs::create_dir_all(helix_tag_path.parent().unwrap())?;
+    //         fs::write(&helix_tag_path, hash::hash_to_hex(helix_hash))?;
+    //     }
+
+    //     Ok(())
+    // }
 
     fn import_git_index(&self) -> Result<()> {
         let git_index_path = self.repo_path.join(".git/index");
@@ -254,7 +414,7 @@ impl SyncEngine {
         Ok(map)
     }
 
-    fn import_git_commits(&self) -> Result<()> {
+    fn import_git_commits(&self) -> Result<HashMap<Vec<u8>, [u8; 32]>> {
         let repo = gix::open(&self.repo_path)?;
 
         // Get HEAD commit (may not exist in empty repo)
@@ -262,7 +422,7 @@ impl SyncEngine {
             Ok(commit) => commit,
             Err(_) => {
                 // No commits yet
-                return Ok(());
+                return Ok(HashMap::new());
             }
         };
 
@@ -323,7 +483,7 @@ impl SyncEngine {
 
         pb.finish_with_message(format!("Imported {} commits", helix_commits.len()));
 
-        Ok(())
+        Ok(git_hash_to_helix_hash)
     }
 
     fn build_helix_commit_from_git_commit(
