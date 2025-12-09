@@ -13,8 +13,6 @@ use std::path::Path;
 use crate::branch_tui;
 use crate::helix_index::hash::Hash;
 
-use crate::commit::{commit, CommitOptions};
-
 pub struct BranchOptions {
     pub delete: bool,
     pub rename: bool,
@@ -51,7 +49,6 @@ pub fn create_branch(repo_path: &Path, name: &str, options: BranchOptions) -> Re
 
     let branch_path = repo_path.join(format!(".helix/refs/heads/{}", name));
 
-    // Check if branch already exists
     if branch_path.exists() && !options.force {
         return Err(anyhow!(
             "Branch '{}' already exists. Use --force to overwrite.",
@@ -59,7 +56,6 @@ pub fn create_branch(repo_path: &Path, name: &str, options: BranchOptions) -> Re
         ));
     }
 
-    // Get current HEAD commit
     let head_hash = read_head(repo_path)?;
 
     // Create branch pointing to current commit
@@ -234,9 +230,7 @@ fn read_head(repo_path: &Path) -> Result<Hash> {
     let head_path = repo_path.join(".helix/HEAD");
 
     if !head_path.exists() {
-        return Err(anyhow!(
-            "No commits yet. Make your first commit with 'helix commit'"
-        ));
+        return Err(anyhow!("No commits yet."));
     }
 
     let content = fs::read_to_string(&head_path)?;
@@ -248,9 +242,7 @@ fn read_head(repo_path: &Path) -> Result<Hash> {
         let branch_path = repo_path.join(".helix").join(ref_path);
 
         if !branch_path.exists() {
-            return Err(anyhow!(
-                "Branch not created yet. Make your first commit with 'helix commit'"
-            ));
+            return Err(anyhow!("No commits yet'"));
         }
 
         let hash_str = fs::read_to_string(&branch_path)?;
@@ -328,9 +320,9 @@ fn short_hash(hash: &Hash) -> String {
 mod tests {
     use std::path::PathBuf;
 
-    use crate::init::init_helix_repo;
-
     use super::*;
+    use crate::commit::{commit, CommitOptions};
+    use crate::init::init_helix_repo;
     use tempfile::TempDir;
 
     fn init_test_repo(path: &Path) -> Result<()> {
