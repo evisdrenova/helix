@@ -316,13 +316,9 @@ fn format_branch_details(branch: &super::app::BranchInfo) -> ratatui::text::Text
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw("  "),
-            Span::styled(
-                commit_hash_short,
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            ),
+            Span::styled(commit_hash_short, Style::default().fg(Color::White)),
         ]));
+        lines.push(Line::from(""));
 
         lines.push(Line::from(vec![
             Span::raw(" "),
@@ -333,13 +329,9 @@ fn format_branch_details(branch: &super::app::BranchInfo) -> ratatui::text::Text
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw("  "),
-            Span::styled(
-                commit_hash_full,
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            ),
+            Span::styled(commit_hash_full, Style::default().fg(Color::White)),
         ]));
+        lines.push(Line::from(""));
 
         // Author
         lines.push(Line::from(vec![
@@ -353,6 +345,7 @@ fn format_branch_details(branch: &super::app::BranchInfo) -> ratatui::text::Text
             Span::raw("  "),
             Span::styled(commit.author.clone(), Style::default().fg(Color::White)),
         ]));
+        lines.push(Line::from(""));
 
         // Date
         let date_str = format_full_time(commit.commit_time);
@@ -360,7 +353,7 @@ fn format_branch_details(branch: &super::app::BranchInfo) -> ratatui::text::Text
         lines.push(Line::from(vec![
             Span::raw(" "),
             Span::styled(
-                "Date:",
+                "Last Commit Date:",
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
