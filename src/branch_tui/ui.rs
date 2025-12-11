@@ -222,7 +222,15 @@ fn format_branch_details(branch: &super::app::BranchInfo) -> ratatui::text::Text
     let mut lines = vec![];
 
     // Branch name
+    lines.push(Line::from(""));
     lines.push(Line::from(vec![
+        Span::raw(" "),
+        Span::styled(
+            "Title:",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw(" "),
         Span::styled(
             branch.name.clone(), // Clone to own the data
@@ -232,22 +240,6 @@ fn format_branch_details(branch: &super::app::BranchInfo) -> ratatui::text::Text
         ),
     ]));
     lines.push(Line::from(""));
-
-    // Status
-    if branch.is_current {
-        lines.push(Line::from(vec![
-            Span::raw(" "),
-            Span::styled(
-                "Status:",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" "),
-            Span::styled("● Current branch", Style::default().fg(Color::Green)),
-        ]));
-        lines.push(Line::from(""));
-    }
 
     // Remote tracking (if available)
     if let Some(ref remote) = branch.remote_tracking {
@@ -261,6 +253,22 @@ fn format_branch_details(branch: &super::app::BranchInfo) -> ratatui::text::Text
             ),
             Span::raw(" "),
             Span::styled(remote.clone(), Style::default().fg(Color::Magenta)),
+        ]));
+        lines.push(Line::from(""));
+    }
+
+    // Status
+    if branch.is_current {
+        lines.push(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                "Status:",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+            Span::styled("Current branch", Style::default().fg(Color::Green)),
         ]));
         lines.push(Line::from(""));
     }
@@ -302,7 +310,7 @@ fn format_branch_details(branch: &super::app::BranchInfo) -> ratatui::text::Text
         lines.push(Line::from(vec![
             Span::raw(" "),
             Span::styled(
-                "Commit:",
+                "Short Hash:",
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
@@ -317,8 +325,20 @@ fn format_branch_details(branch: &super::app::BranchInfo) -> ratatui::text::Text
         ]));
 
         lines.push(Line::from(vec![
-            Span::raw("          "),
-            Span::styled(commit_hash_full, Style::default().fg(Color::DarkGray)),
+            Span::raw(" "),
+            Span::styled(
+                "Full Hash:",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(
+                commit_hash_full,
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]));
 
         // Author
@@ -402,6 +422,8 @@ fn format_branch_details(branch: &super::app::BranchInfo) -> ratatui::text::Text
 
             for parent in &commit.parents {
                 let parent_hash_short = hash::hash_to_hex(parent)[..8].to_string();
+
+                // let parent_commit_name =
                 lines.push(Line::from(vec![
                     Span::raw("   "),
                     Span::styled(parent_hash_short, Style::default().fg(Color::Blue)),
