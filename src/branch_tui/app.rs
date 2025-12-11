@@ -19,6 +19,7 @@ pub struct BranchInfo {
     pub last_commit_hash: Option<[u8; 32]>,
     pub last_commit: Option<Commit>,
     pub commit_count: usize,
+    pub remote_tracking: Option<String>,
 }
 
 pub struct App {
@@ -72,12 +73,16 @@ impl App {
                     (None, None, 0)
                 };
 
+            // Look up remote tracking branch
+            let remote_tracking = get_remote_tracking(repo_path, &branch_name);
+
             branches.push(BranchInfo {
                 name: branch_name,
                 is_current,
                 last_commit_hash,
                 last_commit,
                 commit_count,
+                remote_tracking,
             });
         }
 
@@ -368,11 +373,6 @@ impl App {
                                 self.new_branch_name = branch_name;
                             }
                         }
-                        KeyCode::Char('n') => {
-                            // New branch
-                            self.rename_mode = true;
-                            self.new_branch_name = String::from("new-branch");
-                        }
                         KeyCode::Enter => {
                             // Quick checkout (no confirmation)
                             if let Err(e) = self.checkout_branch() {
@@ -413,4 +413,56 @@ fn count_commits(storage: &CommitStorage, start_hash: &[u8; 32]) -> usize {
     }
 
     count
+}
+
+/// Get the remote tracking branch for a local branch
+fn get_remote_tracking(repo_path: &Path, branch_name: &str) -> Option<String> {
+    // Try to read from .helix/config or .helix/branch_config
+    // Format could be: branch.<branch_name>.remote and branch.<branch_name>.merge
+    let config_path = repo_path.join(".helix/config");
+
+    if let Ok(config_content) = std::fs::read_to_string(&config_path) {
+        // Parse config file for remote tracking info
+        // Example git config format:
+        // [branch "main"]
+        //     remote = origin
+        //     merge = refs/heads/main
+
+        let mut in_branch_section = false;
+        let mut remote_name = None;
+        let mut merge_ref = None;
+
+        for line in config_content.lines() {
+            let trimmed = line.trim();
+
+            // Check if we're entering the right branch section
+            if trimmed.starts_with("[branch \"") && trimmed.contains(branch_name) {
+                in_branch_section = true;
+                continue;
+            }
+
+            // Check if we're leaving the section
+            if trimmed.starts_with('[') && in_branch_section {
+                break;
+            }
+
+            if in_branch_section {
+                if let Some(remote_value) = trimmed.strip_prefix("remote = ") {
+                    remote_name = Some(remote_value.trim().to_string());
+                } else if let Some(merge_value) = trimmed.strip_prefix("merge = ") {
+                    // Extract branch name from refs/heads/branch_name
+                    if let Some(branch_part) = merge_value.strip_prefix("refs/heads/") {
+                        merge_ref = Some(branch_part.trim().to_string());
+                    }
+                }
+            }
+        }
+
+        // Combine remote and branch name
+        if let (Some(remote), Some(branch)) = (remote_name, merge_ref) {
+            return Some(format!("{}/{}", remote, branch));
+        }
+    }
+
+    None
 }

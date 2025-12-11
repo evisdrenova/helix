@@ -1,9 +1,11 @@
+// // this is the ui for the branch command
+
 use crate::helix_index::hash;
 use chrono::{Local, TimeZone};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Span, Text},
+    text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
     Frame,
 };
@@ -27,7 +29,13 @@ pub fn draw(f: &mut Frame, app: &App) {
 
 fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     let repo_text = format!(" {} ", app.repo_name);
-    let branch_count = format!(" {} branches ", app.branches.len());
+    let mut branch_count: String = String::new();
+
+    match app.branches.len() {
+        0 => branch_count = format!(" no branches "),
+        1 => branch_count = format!(" {} branch ", app.branches.len()),
+        _ => branch_count = format!(" {} branches ", app.branches.len()),
+    }
 
     let current_branch_text = if let Some(branch) = app.branches.iter().find(|b| b.is_current) {
         format!(" ● {} ", branch.name)
@@ -58,7 +66,6 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_main_content(f: &mut Frame, area: Rect, app: &App) {
-    // 35% for branch list, 65% for details (same as log)
     let timeline_width = (area.width as f32 * 0.35) as u16;
     let details_width = area.width.saturating_sub(timeline_width);
 
@@ -155,14 +162,24 @@ fn create_branch_item(branch: &super::app::BranchInfo, is_selected: bool) -> Lis
         ),
     ]);
 
+    let remote = match &branch.remote_tracking {
+        Some(e) => e.to_string(),
+        None => "Detached".to_string(),
+    };
+
     let line3 = Line::from(vec![
+        Span::raw("  "),
+        Span::styled(remote, Style::default().fg(Color::Cyan)),
+    ]);
+
+    let line4 = Line::from(vec![
         Span::raw("  "),
         Span::styled(time_str, Style::default().fg(Color::Cyan)),
     ]);
 
-    let line4 = Line::from(vec![Span::raw("")]);
+    let line5 = Line::from(vec![Span::raw("")]);
 
-    let lines = vec![line1, line2, line3, line4];
+    let lines = vec![line1, line2, line3, line4, line5];
 
     let style = if is_selected {
         Style::default().bg(Color::DarkGray)
@@ -232,6 +249,22 @@ fn format_branch_details(branch: &super::app::BranchInfo) -> ratatui::text::Text
         lines.push(Line::from(""));
     }
 
+    // Remote tracking (if available)
+    if let Some(ref remote) = branch.remote_tracking {
+        lines.push(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                "Remote:",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+            Span::styled(remote.clone(), Style::default().fg(Color::Magenta)),
+        ]));
+        lines.push(Line::from(""));
+    }
+
     // Commit count
     lines.push(Line::from(vec![
         Span::raw(" "),
@@ -262,8 +295,10 @@ fn format_branch_details(branch: &super::app::BranchInfo) -> ratatui::text::Text
         ]));
         lines.push(Line::from(""));
 
-        // Commit hash
+        // Commit hash - short ID on its own line, full hash below
+        let commit_hash_short = short_hash(&commit.commit_hash);
         let commit_hash_full = hash::hash_to_hex(&commit.commit_hash);
+
         lines.push(Line::from(vec![
             Span::raw(" "),
             Span::styled(
@@ -274,15 +309,16 @@ fn format_branch_details(branch: &super::app::BranchInfo) -> ratatui::text::Text
             ),
             Span::raw("  "),
             Span::styled(
-                short_hash(&commit.commit_hash),
-                Style::default().fg(Color::Green),
+                commit_hash_short,
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(" ("),
-            Span::styled(
-                commit_hash_full.clone(), // Clone to own it
-                Style::default().fg(Color::DarkGray),
-            ),
-            Span::raw(")"),
+        ]));
+
+        lines.push(Line::from(vec![
+            Span::raw("          "),
+            Span::styled(commit_hash_full, Style::default().fg(Color::DarkGray)),
         ]));
 
         // Author
@@ -294,7 +330,7 @@ fn format_branch_details(branch: &super::app::BranchInfo) -> ratatui::text::Text
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(" "),
+            Span::raw("  "),
             Span::styled(commit.author.clone(), Style::default().fg(Color::White)),
         ]));
 
@@ -489,13 +525,6 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" rename  "),
-            Span::styled(
-                "n",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" new  "),
             Span::styled(
                 "q",
                 Style::default()

@@ -46,7 +46,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
 
     let commit_count = format!(" {} commits ", app.commits.len());
     let last_commit_text = if let Some(commit) = app.commits.first() {
-        format!(" Last: {} ", commit.relative_time())
+        format!(" Last Commit: {} ", commit.relative_time())
     } else {
         " No commits ".to_string()
     };
@@ -108,7 +108,7 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
         let list = List::new(empty).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" Timeline ")
+                .title(" Commits ")
                 .title_style(Style::default().fg(Color::Blue)),
         );
         f.render_widget(list, area);
