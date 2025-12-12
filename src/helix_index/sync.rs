@@ -169,9 +169,19 @@ impl SyncEngine {
             let git_sha_bytes = hex::decode(&git_sha)?;
 
             // Convert Git SHA to Helix hash
-            let helix_hash = git_hash_to_helix_hash
-                .get(&git_sha_bytes)
-                .context("Branch points to unknown commit")?;
+            let helix_hash = match git_hash_to_helix_hash.get(&git_sha_bytes) {
+                Some(hash) => hash,
+                None => {
+                    eprintln!("Warning: Branch at {:?} points to Git SHA {} which is not in the imported commits map", 
+                  entry.path(), git_sha);
+                    eprintln!("Map contains {} commits", git_hash_to_helix_hash.len());
+                    eprintln!("First few keys in map:");
+                    for (i, key) in git_hash_to_helix_hash.keys().take(3).enumerate() {
+                        eprintln!("  {}: {}", i, hex::encode(key));
+                    }
+                    continue; // Skip this branch instead of failing
+                }
+            };
 
             // Preserve branch path structure
             let rel_path = entry.path().strip_prefix(&git_refs_dir)?;
@@ -198,22 +208,38 @@ impl SyncEngine {
     fn import_branch_upstream_tracking(&self, branch_names: &[String]) -> Result<()> {
         let git_config_path = self.repo_path.join(".git/config");
 
-        if !git_config_path.exists() {
-            return Ok(());
-        }
+        // Read git config if it exists
+        let git_config = if git_config_path.exists() {
+            Some(fs::read_to_string(&git_config_path).context("Failed to read .git/config")?)
+        } else {
+            None
+        };
 
-        let git_config =
-            fs::read_to_string(&git_config_path).context("Failed to read .git/config")?;
+        // Determine the default branch (main or master)
+        let default_branch = self.find_default_branch(branch_names);
 
-            
+        println!("the deafult branch {:?}", default_branch);
 
         // Parse Git config for each branch
         for branch_name in branch_names {
-            if let Some(upstream) = self.parse_git_branch_upstream(&git_config, branch_name) {
-                println!("the upstream {}", upstream);
-                // Write to .helix/state using our helper
+            // Skip the default branch itself
+            if Some(branch_name.as_str()) == default_branch.as_deref() {
+                continue;
+            }
 
-                if let Err(e) = set_branch_upstream(&self.repo_path, branch_name, &upstream) {
+            // Try to get upstream from Git config
+            let upstream = if let Some(ref config) = git_config {
+                self.parse_git_branch_upstream(config, branch_name)
+            } else {
+                None
+            };
+
+            // If no upstream found in Git config, use default branch
+            let upstream = upstream.or(default_branch.clone());
+
+            if let Some(upstream_branch) = upstream {
+                if let Err(e) = set_branch_upstream(&self.repo_path, branch_name, &upstream_branch)
+                {
                     eprintln!(
                         "Warning: Failed to import upstream for branch '{}': {}",
                         branch_name, e
@@ -223,6 +249,18 @@ impl SyncEngine {
         }
 
         Ok(())
+    }
+
+    /// Find the default branch (main or master)
+    fn find_default_branch(&self, branch_names: &[String]) -> Option<String> {
+        // Prefer "main", then "master", then first branch
+        if branch_names.iter().any(|b| b == "main") {
+            Some("main".to_string())
+        } else if branch_names.iter().any(|b| b == "master") {
+            Some("master".to_string())
+        } else {
+            branch_names.first().cloned()
+        }
     }
 
     /// Parse Git config to extract upstream tracking for a branch
@@ -237,8 +275,6 @@ impl SyncEngine {
         let section_header = format!("[branch \"{}\"]", branch_name);
 
         let mut in_section = false;
-        let mut remote_name: Option<String> = None;
-        let mut merge_ref: Option<String> = None;
 
         for line in git_config.lines() {
             let trimmed = line.trim();
@@ -255,26 +291,17 @@ impl SyncEngine {
             }
 
             if in_section {
-                // Parse remote = origin
-                if let Some(remote) = trimmed.strip_prefix("remote = ") {
-                    remote_name = Some(remote.trim().to_string());
-                }
                 // Parse merge = refs/heads/main
-                else if let Some(merge) = trimmed.strip_prefix("merge = ") {
+                if let Some(merge) = trimmed.strip_prefix("merge = ") {
                     // Extract branch name from refs/heads/branch_name
                     if let Some(branch) = merge.strip_prefix("refs/heads/") {
-                        merge_ref = Some(branch.trim().to_string());
+                        return Some(branch.trim().to_string());
                     }
                 }
             }
         }
 
-        // Combine remote and branch name
-        match (remote_name, merge_ref) {
-            (Some(remote), Some(branch)) => Some(format!("{}/{}", remote, branch)),
-            (None, Some(branch)) => Some(branch), // Local branch tracking
-            _ => None,
-        }
+        None
     }
 
     fn import_git_head(&self, git_hash_to_helix_hash: &HashMap<Vec<u8>, [u8; 32]>) -> Result<()> {
@@ -605,36 +632,121 @@ impl SyncEngine {
         Ok(map)
     }
 
+    // fn import_git_commits(&self) -> Result<HashMap<Vec<u8>, [u8; 32]>> {
+    //     let repo = gix::open(&self.repo_path)?;
+
+    //     // Get HEAD commit (may not exist in empty repo)
+    //     let head_commit = match repo.head()?.peel_to_commit() {
+    //         Ok(commit) => commit,
+    //         Err(_) => {
+    //             // No commits yet
+    //             return Ok(HashMap::new());
+    //         }
+    //     };
+
+    //     let mut seen = HashSet::new();
+    //     let mut git_hash_to_helix_hash: HashMap<Vec<u8>, [u8; 32]> = HashMap::new();
+    //     let mut collected_git_commits: Vec<(Vec<u8>, gix::Commit)> = Vec::new();
+
+    //     let commit_iter = head_commit.ancestors().sorting(Sorting::ByCommitTime(
+    //         gix::traverse::commit::simple::CommitTimeOrder::NewestFirst,
+    //     ));
+
+    //     for commit_result in commit_iter.all()? {
+    //         let commit_info = commit_result?;
+    //         let git_id_bytes = commit_info.id().as_bytes().to_vec();
+
+    //         if !seen.insert(git_id_bytes.clone()) {
+    //             continue;
+    //         }
+
+    //         let git_commit = commit_info.object()?;
+    //         collected_git_commits.push((git_id_bytes, git_commit));
+    //     }
+
+    //     // Sort oldest → newest by commit time
+    //     collected_git_commits.sort_by_key(|(_, c)| c.time().unwrap().seconds);
+
+    //     println!(
+    //         "Git reports {} commits in history",
+    //         collected_git_commits.len()
+    //     );
+
+    //     let pb = ProgressBar::new_spinner();
+    //     pb.set_message("Importing commits...");
+
+    //     // Build Helix commits in oldest to newest order
+    //     let mut helix_commits: Vec<Helix_Commit> = Vec::with_capacity(collected_git_commits.len());
+
+    //     for (i, (git_id_bytes, git_commit)) in collected_git_commits.into_iter().enumerate() {
+    //         pb.set_message(format!("Importing commit {}", i + 1));
+
+    //         let helix_commit = self.build_helix_commit_from_git_commit(
+    //             &git_commit,
+    //             &repo,
+    //             &git_hash_to_helix_hash,
+    //         )?;
+
+    //         // Now we know this commit's helix hash, so map git → helix for children
+    //         git_hash_to_helix_hash.insert(git_id_bytes, helix_commit.commit_hash);
+
+    //         helix_commits.push(helix_commit);
+    //     }
+
+    //     self.store_imported_commits(&helix_commits)?;
+
+    //     if let Some(latest_commit) = helix_commits.last() {
+    //         self.update_head_to_commit(latest_commit.commit_hash)?;
+    //     }
+
+    //     pb.finish_with_message(format!("Imported {} commits", helix_commits.len()));
+
+    //     Ok(git_hash_to_helix_hash)
+    // }
+
     fn import_git_commits(&self) -> Result<HashMap<Vec<u8>, [u8; 32]>> {
         let repo = gix::open(&self.repo_path)?;
-
-        // Get HEAD commit (may not exist in empty repo)
-        let head_commit = match repo.head()?.peel_to_commit() {
-            Ok(commit) => commit,
-            Err(_) => {
-                // No commits yet
-                return Ok(HashMap::new());
-            }
-        };
 
         let mut seen = HashSet::new();
         let mut git_hash_to_helix_hash: HashMap<Vec<u8>, [u8; 32]> = HashMap::new();
         let mut collected_git_commits: Vec<(Vec<u8>, gix::Commit)> = Vec::new();
 
-        let commit_iter = head_commit.ancestors().sorting(Sorting::ByCommitTime(
-            gix::traverse::commit::simple::CommitTimeOrder::NewestFirst,
-        ));
+        // Collect commits from ALL branches, not just HEAD
+        let refs = repo.references()?;
+        let branch_refs: Vec<_> = refs
+            .all()?
+            .filter_map(Result::ok)
+            .filter(|r| r.name().as_bstr().starts_with(b"refs/heads/"))
+            .collect();
 
-        for commit_result in commit_iter.all()? {
-            let commit_info = commit_result?;
-            let git_id_bytes = commit_info.id().as_bytes().to_vec();
+        if branch_refs.is_empty() {
+            // No branches yet (empty repo)
+            return Ok(HashMap::new());
+        }
 
-            if !seen.insert(git_id_bytes.clone()) {
-                continue;
+        // Walk from each branch tip
+        for mut branch_ref in branch_refs {
+            let commit = match branch_ref.peel_to_commit() {
+                Ok(c) => c,
+                Err(_) => continue, // Skip if can't resolve
+            };
+
+            let commit_iter = commit.ancestors().sorting(Sorting::ByCommitTime(
+                gix::traverse::commit::simple::CommitTimeOrder::NewestFirst,
+            ));
+
+            for commit_result in commit_iter.all()? {
+                let commit_info = commit_result?;
+                let git_id_bytes = commit_info.id().as_bytes().to_vec();
+
+                // Skip if already seen (handles merge commits and shared history)
+                if !seen.insert(git_id_bytes.clone()) {
+                    continue;
+                }
+
+                let git_commit = commit_info.object()?;
+                collected_git_commits.push((git_id_bytes, git_commit));
             }
-
-            let git_commit = commit_info.object()?;
-            collected_git_commits.push((git_id_bytes, git_commit));
         }
 
         // Sort oldest → newest by commit time
@@ -668,15 +780,20 @@ impl SyncEngine {
 
         self.store_imported_commits(&helix_commits)?;
 
-        if let Some(latest_commit) = helix_commits.last() {
-            self.update_head_to_commit(latest_commit.commit_hash)?;
+        // Update HEAD to point to the current branch's commit
+        if let Ok(mut head_ref) = repo.head() {
+            if let Ok(head_commit) = head_ref.peel_to_commit() {
+                let head_git_sha = head_commit.id().as_bytes().to_vec();
+                if let Some(&helix_hash) = git_hash_to_helix_hash.get(&head_git_sha) {
+                    self.update_head_to_commit(helix_hash)?;
+                }
+            }
         }
 
         pb.finish_with_message(format!("Imported {} commits", helix_commits.len()));
 
         Ok(git_hash_to_helix_hash)
     }
-
     fn build_helix_commit_from_git_commit(
         &self,
         git_commit: &gix::Commit,
