@@ -205,18 +205,26 @@ fn create_branch_item(branch: &super::app::BranchInfo, is_selected: bool) -> Lis
 
 fn draw_branch_details(f: &mut Frame, area: Rect, app: &App) {
     if let Some(branch) = app.selected_branch() {
-        let details_text = format_branch_details(branch);
+        // Outer border for the whole right-hand panel
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Details ")
+            .title_style(Style::default().fg(Color::Blue));
 
-        let paragraph = Paragraph::new(details_text)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Details ")
-                    .title_style(Style::default().fg(Color::Blue)),
-            )
-            .wrap(Wrap { trim: false });
+        let inner = block.inner(area);
+        f.render_widget(block, area);
 
-        f.render_widget(paragraph, area);
+        // Split into: summary (top) + commit list (bottom)-
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(7), // summary
+                Constraint::Min(0),    // commit list
+            ])
+            .split(inner);
+
+        draw_branch_summary(f, chunks[0], branch);
+        draw_branch_commit_list(f, chunks[1], branch);
     } else {
         let empty = Paragraph::new("No branch selected")
             .block(
@@ -229,6 +237,235 @@ fn draw_branch_details(f: &mut Frame, area: Rect, app: &App) {
 
         f.render_widget(empty, area);
     }
+}
+
+fn draw_branch_summary(f: &mut Frame, area: Rect, branch: &super::app::BranchInfo) {
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Title
+    lines.push(Line::from(vec![
+        Span::raw(" "),
+        Span::styled(
+            "Title:",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            branch.name.clone(),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
+
+    // Status (current / normal)
+    let status_text = if branch.is_current {
+        ("Current branch", Color::Green)
+    } else {
+        ("Local branch", Color::DarkGray)
+    };
+
+    lines.push(Line::from(vec![
+        Span::raw(" "),
+        Span::styled(
+            "Status:",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
+        Span::styled(status_text.0, Style::default().fg(status_text.1)),
+    ]));
+
+    // Commits
+    lines.push(Line::from(vec![
+        Span::raw(" "),
+        Span::styled(
+            "Commits:",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            format!("{}", branch.commit_count),
+            Style::default().fg(Color::White),
+        ),
+    ]));
+
+    // Upstream / remote tracking
+    if let Some(ref upstream) = branch.upstream {
+        lines.push(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                "Upstream:",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+            Span::styled(upstream.clone(), Style::default().fg(Color::Magenta)),
+        ]));
+    }
+
+    // Last commit age (if known)
+    if let Some(ref commit) = branch.last_commit {
+        let age = format_relative_time(commit.commit_time);
+        lines.push(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                "Last commit:",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+            Span::styled(age, Style::default().fg(Color::Cyan)),
+        ]));
+    }
+
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+
+    f.render_widget(paragraph, area);
+}
+
+struct CommitListEntry {
+    short_hash: String,
+    summary: String,
+    author: String,
+    timestamp: u64,
+    is_merge: bool,
+    is_head: bool,
+}
+
+fn draw_branch_commit_list(f: &mut Frame, area: Rect, branch: &super::app::BranchInfo) {
+    // TODO: replace this with real data from your CommitStorage
+    let commits = mock_commits_for_branch(branch);
+
+    if commits.is_empty() {
+        let empty = Paragraph::new("No commits on this branch yet")
+            .style(Style::default().fg(Color::DarkGray));
+        f.render_widget(empty, area);
+        return;
+    }
+
+    // In the future you’ll likely have a selected_commit_index on App.
+    let selected_index = 0usize;
+
+    let items: Vec<ListItem> = commits
+        .iter()
+        .enumerate()
+        .map(|(idx, c)| create_commit_item(c, idx == selected_index))
+        .collect();
+
+    let mut state = ListState::default();
+    state.select(Some(selected_index));
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::TOP)
+                .title(" Commits ")
+                .title_style(Style::default().fg(Color::Blue)),
+        )
+        .highlight_style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        );
+
+    f.render_stateful_widget(list, area, &mut state);
+}
+
+fn create_commit_item(entry: &CommitListEntry, is_selected: bool) -> ListItem {
+    let bullet = if entry.is_head { "●" } else { "○" };
+
+    let bullet_style = if entry.is_head {
+        Style::default().fg(Color::Green)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let hash_style = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+
+    let summary_style = if is_selected {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White)
+    };
+
+    let meta_style = Style::default().fg(Color::DarkGray);
+
+    let time_str = format_relative_time(entry.timestamp);
+
+    // Line 1: bullet, short hash, summary
+    let line1 = Line::from(vec![
+        Span::raw(" "),
+        Span::styled(bullet.to_string(), bullet_style),
+        Span::raw(" "),
+        Span::styled(entry.short_hash.clone(), hash_style),
+        Span::raw("  "),
+        Span::styled(entry.summary.clone(), summary_style),
+    ]);
+
+    // Line 2: author • time • merge badge
+    let mut meta_spans = vec![
+        Span::raw("   "),
+        Span::styled(entry.author.clone(), meta_style),
+        Span::raw("  •  "),
+        Span::styled(time_str, meta_style),
+    ];
+
+    if entry.is_merge {
+        meta_spans.push(Span::raw("  •  "));
+        meta_spans.push(Span::styled(
+            "merge",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    let line2 = Line::from(meta_spans);
+
+    ListItem::new(vec![line1, line2])
+}
+
+fn mock_commits_for_branch(_branch: &super::app::BranchInfo) -> Vec<CommitListEntry> {
+    let now = chrono::Utc::now().timestamp() as u64;
+
+    vec![
+        CommitListEntry {
+            short_hash: "f2d45604".to_string(),
+            summary: "add 6".to_string(),
+            author: "Evis Drenova <evis@usenucleus.cloud>".to_string(),
+            timestamp: now - 60 * 60, // 1 hour ago
+            is_merge: false,
+            is_head: true,
+        },
+        CommitListEntry {
+            short_hash: "9ab12c34".to_string(),
+            summary: "bump version".to_string(),
+            author: "Evis Drenova <evis@usenucleus.cloud>".to_string(),
+            timestamp: now - 60 * 60 * 24, // 1 day ago
+            is_merge: false,
+            is_head: false,
+        },
+        CommitListEntry {
+            short_hash: "1c2d3e4f".to_string(),
+            summary: "Initial commit".to_string(),
+            author: "Evis Drenova <evis@usenucleus.cloud>".to_string(),
+            timestamp: now - 60 * 60 * 24 * 3, // 3 days ago
+            is_merge: false,
+            is_head: false,
+        },
+    ]
 }
 
 fn format_branch_details(branch: &super::app::BranchInfo) -> ratatui::text::Text<'static> {

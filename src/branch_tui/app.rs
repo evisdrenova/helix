@@ -372,7 +372,7 @@ impl App {
                             // Rename branch
                             if let Some(branch) = self.selected_branch() {
                                 let branch_name = branch.name.clone(); // Clone before dropping the borrow
-                                drop(branch); // Explicitly drop the borrow (optional, happens automatically)
+                                let _ = drop(branch); // Explicitly drop the borrow (optional, happens automatically)
                                 self.rename_mode = true;
                                 self.new_branch_name = branch_name;
                             }
