@@ -162,14 +162,27 @@ fn create_branch_item(branch: &super::app::BranchInfo, is_selected: bool) -> Lis
         ),
     ]);
 
-    let remote = match &branch.remote_tracking {
-        Some(e) => e.to_string(),
-        None => "Detached".to_string(),
+    let upstream_text = match &branch.upstream {
+        Some(upstream) => upstream.clone(),
+        None => {
+            // Check if this is a default/root branch
+            if branch.name == "main" || branch.name == "master" {
+                "root".to_string() // or "—" (em dash) for cleaner look
+            } else {
+                "(no upstream)".to_string()
+            }
+        }
+    };
+
+    let upstream_color = if branch.upstream.is_some() {
+        Color::Magenta
+    } else {
+        Color::DarkGray // Dimmed for missing/default
     };
 
     let line3 = Line::from(vec![
         Span::raw("  "),
-        Span::styled(remote, Style::default().fg(Color::Cyan)),
+        Span::styled(upstream_text, Style::default().fg(upstream_color)),
     ]);
 
     let line4 = Line::from(vec![
