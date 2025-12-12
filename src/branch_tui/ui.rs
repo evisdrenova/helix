@@ -362,21 +362,6 @@ fn format_branch_details(branch: &super::app::BranchInfo) -> ratatui::text::Text
         ]));
         lines.push(Line::from(""));
 
-        // Tree
-        let tree_hash_short = hash::hash_to_hex(&commit.tree_hash)[..8].to_string();
-        lines.push(Line::from(vec![
-            Span::raw(" "),
-            Span::styled(
-                "Tree:",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("   "),
-            Span::styled(tree_hash_short, Style::default().fg(Color::Magenta)),
-        ]));
-        lines.push(Line::from(""));
-
         // Message
         lines.push(Line::from(vec![
             Span::raw(" "),
@@ -396,7 +381,7 @@ fn format_branch_details(branch: &super::app::BranchInfo) -> ratatui::text::Text
             ]));
         }
 
-        // Parents (if any)
+        // Parents
         if !commit.parents.is_empty() {
             lines.push(Line::from(""));
             lines.push(Line::from(vec![
