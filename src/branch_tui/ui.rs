@@ -224,7 +224,7 @@ fn draw_branch_details(f: &mut Frame, area: Rect, app: &App) {
             .split(inner);
 
         draw_branch_summary(f, chunks[0], branch);
-        draw_branch_commit_list(f, chunks[1], branch);
+        draw_branch_commit_list(f, chunks[1], branch, app);
     } else {
         let empty = Paragraph::new("No branch selected")
             .block(
@@ -340,28 +340,41 @@ struct CommitListEntry {
     is_head: bool,
 }
 
-fn draw_branch_commit_list(f: &mut Frame, area: Rect, branch: &super::app::BranchInfo) {
-    // TODO: replace this with real data from your CommitStorage
-    let commits = mock_commits_for_branch(branch);
+fn draw_branch_commit_list(f: &mut Frame, area: Rect, branch: &super::app::BranchInfo, app: &App) {
+    let entries: Vec<CommitListEntry> = app
+        .branch_commit_lists
+        .get(&branch.name)
+        .map(|commits| {
+            commits
+                .iter()
+                .enumerate()
+                .map(|(idx, c)| CommitListEntry {
+                    short_hash: c.short_hash(),
+                    summary: c.summary().to_string(),
+                    author: c.author.clone(),
+                    timestamp: c.commit_time,
+                    is_merge: c.is_merge(),
+                    is_head: idx == 0,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
 
-    if commits.is_empty() {
+    if entries.is_empty() {
         let empty = Paragraph::new("No commits on this branch yet")
             .style(Style::default().fg(Color::DarkGray));
         f.render_widget(empty, area);
         return;
     }
 
-    // In the future you’ll likely have a selected_commit_index on App.
-    let selected_index = 0usize;
-
-    let items: Vec<ListItem> = commits
+    let items: Vec<ListItem> = entries
         .iter()
         .enumerate()
-        .map(|(idx, c)| create_commit_item(c, idx == selected_index))
+        .map(|(idx, c)| create_commit_item(c, idx == app.selected_commit_index))
         .collect();
 
     let mut state = ListState::default();
-    state.select(Some(selected_index));
+    state.select(Some(app.selected_commit_index));
 
     let list = List::new(items)
         .block(
@@ -435,37 +448,6 @@ fn create_commit_item(entry: &CommitListEntry, is_selected: bool) -> ListItem {
     let line2 = Line::from(meta_spans);
 
     ListItem::new(vec![line1, line2])
-}
-
-fn mock_commits_for_branch(_branch: &super::app::BranchInfo) -> Vec<CommitListEntry> {
-    let now = chrono::Utc::now().timestamp() as u64;
-
-    vec![
-        CommitListEntry {
-            short_hash: "f2d45604".to_string(),
-            summary: "add 6".to_string(),
-            author: "Evis Drenova <evis@usenucleus.cloud>".to_string(),
-            timestamp: now - 60 * 60, // 1 hour ago
-            is_merge: false,
-            is_head: true,
-        },
-        CommitListEntry {
-            short_hash: "9ab12c34".to_string(),
-            summary: "bump version".to_string(),
-            author: "Evis Drenova <evis@usenucleus.cloud>".to_string(),
-            timestamp: now - 60 * 60 * 24, // 1 day ago
-            is_merge: false,
-            is_head: false,
-        },
-        CommitListEntry {
-            short_hash: "1c2d3e4f".to_string(),
-            summary: "Initial commit".to_string(),
-            author: "Evis Drenova <evis@usenucleus.cloud>".to_string(),
-            timestamp: now - 60 * 60 * 24 * 3, // 3 days ago
-            is_merge: false,
-            is_head: false,
-        },
-    ]
 }
 
 fn format_branch_details(branch: &super::app::BranchInfo) -> ratatui::text::Text<'static> {

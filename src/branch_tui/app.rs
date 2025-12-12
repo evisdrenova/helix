@@ -5,12 +5,12 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::Path;
 
 use super::ui;
-use crate::helix_index::commit::{Commit, CommitStorage};
+use crate::helix_index::commit::{Commit, CommitLoader, CommitStorage};
 use crate::helix_index::hash;
 use crate::helix_index::state::get_branch_upstream;
 
@@ -38,6 +38,8 @@ pub struct App {
     pub delete_mode: bool,
     pub rename_mode: bool,
     pub new_branch_name: String,
+    pub branch_commit_lists: HashMap<String, Vec<Commit>>,
+    pub selected_commit_index: usize,
 }
 
 impl App {
@@ -112,6 +114,8 @@ impl App {
             delete_mode: false,
             rename_mode: false,
             new_branch_name: String::new(),
+            branch_commit_lists: HashMap::new(),
+            selected_commit_index: 0,
         })
     }
 
@@ -155,6 +159,17 @@ impl App {
             self.selected_index = self.branches.len() - 1;
             self.adjust_scroll();
         }
+    }
+
+    fn on_branch_selected(&mut self, branch_name: &str) -> Result<()> {
+        if !self.branch_commit_lists.contains_key(branch_name) {
+            let loader = CommitLoader::new(&self.repo_path)?;
+            let commits = loader.load_commits_for_branch(branch_name, 200)?;
+            self.branch_commit_lists
+                .insert(branch_name.to_string(), commits);
+        }
+        self.selected_commit_index = 0;
+        Ok(())
     }
 
     fn adjust_scroll(&mut self) {

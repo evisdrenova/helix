@@ -578,37 +578,6 @@ impl CommitLoader {
         }
     }
 
-    // pub fn get_current_branch_name(repo_path: &Path) -> Result<String> {
-    //     let head_path = repo_path.join(".helix/HEAD");
-
-    //     if !head_path.exists() {
-    //         return Ok("(no branch)".to_string());
-    //     }
-
-    //     let content = fs::read_to_string(&head_path)?;
-
-    //     if content.starts_with("ref:") {
-    //         let branch_ref = content.strip_prefix("ref:").unwrap().trim();
-    //         let branch_path = repo_path.join(".helix").join(branch_ref);
-
-    //         // Check if branch file exists
-    //         if !branch_path.exists() {
-    //             // Branch doesn't exist yet (before first commit)
-    //             // But we can still show the branch name!
-    //             if let Some(name) = branch_ref.strip_prefix("refs/heads/") {
-    //                 return Ok(format!("{} (no commits yet)", name));
-    //             }
-    //         }
-
-    //         // Branch exists, extract name
-    //         if let Some(name) = branch_ref.strip_prefix("refs/heads/") {
-    //             return Ok(name.to_string());
-    //         }
-    //     }
-
-    //     Ok("(detached HEAD)".to_string())
-    // }
-
     /// Get repository name from path
     pub fn get_repo_name(&self) -> String {
         self.repo_path
@@ -616,6 +585,49 @@ impl CommitLoader {
             .and_then(|n| n.to_str())
             .unwrap_or("repository")
             .to_string()
+    }
+
+    pub fn load_commits_for_branch(&self, branch_name: &str, limit: usize) -> Result<Vec<Commit>> {
+        // refs/heads/main
+        let ref_path = self
+            .repo_path
+            .join(".helix")
+            .join("refs/heads")
+            .join(branch_name);
+
+        if !ref_path.exists() {
+            return Ok(Vec::new());
+        }
+
+        let tip_hex = fs::read_to_string(&ref_path)
+            .with_context(|| format!("Failed to read branch ref {:?}", ref_path))?;
+        let mut current_hash = hex_to_hash(tip_hex.trim()).context("Invalid hash in branch ref")?;
+
+        let mut commits = Vec::new();
+        let mut visited = std::collections::HashSet::new();
+
+        while commits.len() < limit {
+            if !visited.insert(current_hash) {
+                break; // cycle guard
+            }
+
+            let commit = match self.storage.read(&current_hash) {
+                Ok(c) => c,
+                Err(_) => break,
+            };
+
+            let is_initial = commit.is_initial();
+            commits.push(commit);
+
+            if is_initial {
+                break;
+            }
+
+            // follow first parent only for the “mainline” view
+            current_hash = commits.last().unwrap().parents[0];
+        }
+
+        Ok(commits)
     }
 
     /// Get remote tracking information (placeholder)
