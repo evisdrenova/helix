@@ -596,7 +596,8 @@ impl SyncEngine {
         println!("HEAD tree has {} files", map.len());
         Ok(map)
     }
-    // TODO: parallelize walking each branch tip and collecting commits and creating the helix commits and then sort later
+
+    // TODO: parallelize the two different passes here: 1. to compute all committ hashes inparallel, 2. build final commits with correct parents in parallel
     fn import_git_commits(&self) -> Result<HashMap<Vec<u8>, [u8; 32]>> {
         let repo = gix::open(&self.repo_path)?;
 
@@ -637,6 +638,7 @@ impl SyncEngine {
                 }
 
                 let git_commit = commit_info.object()?;
+
                 collected_git_commits.push((git_id_bytes, git_commit));
             }
         }
@@ -686,6 +688,7 @@ impl SyncEngine {
 
         Ok(git_hash_to_helix_hash)
     }
+
     fn build_helix_commit_from_git_commit(
         &self,
         git_commit: &gix::Commit,
