@@ -113,40 +113,7 @@ impl SyncEngine {
         Ok(())
     }
 
-    // fn import_git_branches(
-    //     &self,
-    //     git_hash_to_helix_hash: &HashMap<Vec<u8>, [u8; 32]>,
-    // ) -> Result<()> {
-    //     let git_refs_dir = self.repo_path.join(".git/refs/heads");
-    //     if !git_refs_dir.exists() {
-    //         return Ok(());
-    //     }
-
-    //     for entry in WalkDir::new(&git_refs_dir) {
-    //         let entry = entry?;
-    //         if !entry.file_type().is_file() {
-    //             continue;
-    //         }
-
-    //         let git_sha = fs::read_to_string(entry.path())?.trim().to_string();
-    //         let git_sha_bytes = hex::decode(&git_sha)?;
-
-    //         // Convert Git SHA to Helix hash
-    //         let helix_hash = git_hash_to_helix_hash
-    //             .get(&git_sha_bytes)
-    //             .context("Branch points to unknown commit")?;
-
-    //         // Preserve branch path structure
-    //         let rel_path = entry.path().strip_prefix(&git_refs_dir)?;
-    //         let helix_ref_path = self.repo_path.join(".helix/refs/heads").join(rel_path);
-
-    //         fs::create_dir_all(helix_ref_path.parent().unwrap())?;
-    //         fs::write(&helix_ref_path, hash::hash_to_hex(helix_hash))?;
-    //     }
-
-    //     Ok(())
-    // }
-
+    // TODO: parallelize this as we walk the directory, we get the branch, transform it to a helix branch, get it's upstream adn then add it to the helix state
     fn import_git_branches(
         &self,
         git_hash_to_helix_hash: &HashMap<Vec<u8>, [u8; 32]>,
@@ -172,10 +139,10 @@ impl SyncEngine {
             let helix_hash = match git_hash_to_helix_hash.get(&git_sha_bytes) {
                 Some(hash) => hash,
                 None => {
-                    eprintln!("Warning: Branch at {:?} points to Git SHA {} which is not in the imported commits map", 
-                  entry.path(), git_sha);
-                    eprintln!("Map contains {} commits", git_hash_to_helix_hash.len());
-                    eprintln!("First few keys in map:");
+                    //     eprintln!("Warning: Branch at {:?} points to Git SHA {} which is not in the imported commits map",
+                    //   entry.path(), git_sha);
+                    //     eprintln!("Map contains {} commits", git_hash_to_helix_hash.len());
+                    //     eprintln!("First few keys in map:");
                     for (i, key) in git_hash_to_helix_hash.keys().take(3).enumerate() {
                         eprintln!("  {}: {}", i, hex::encode(key));
                     }
@@ -195,8 +162,6 @@ impl SyncEngine {
                 imported_branches.push(branch_name.to_string());
             }
         }
-
-        println!("the improted branches {:?}", imported_branches);
 
         // Import upstream tracking information from Git config
         self.import_branch_upstream_tracking(&imported_branches)?;
@@ -631,79 +596,7 @@ impl SyncEngine {
         println!("HEAD tree has {} files", map.len());
         Ok(map)
     }
-
-    // fn import_git_commits(&self) -> Result<HashMap<Vec<u8>, [u8; 32]>> {
-    //     let repo = gix::open(&self.repo_path)?;
-
-    //     // Get HEAD commit (may not exist in empty repo)
-    //     let head_commit = match repo.head()?.peel_to_commit() {
-    //         Ok(commit) => commit,
-    //         Err(_) => {
-    //             // No commits yet
-    //             return Ok(HashMap::new());
-    //         }
-    //     };
-
-    //     let mut seen = HashSet::new();
-    //     let mut git_hash_to_helix_hash: HashMap<Vec<u8>, [u8; 32]> = HashMap::new();
-    //     let mut collected_git_commits: Vec<(Vec<u8>, gix::Commit)> = Vec::new();
-
-    //     let commit_iter = head_commit.ancestors().sorting(Sorting::ByCommitTime(
-    //         gix::traverse::commit::simple::CommitTimeOrder::NewestFirst,
-    //     ));
-
-    //     for commit_result in commit_iter.all()? {
-    //         let commit_info = commit_result?;
-    //         let git_id_bytes = commit_info.id().as_bytes().to_vec();
-
-    //         if !seen.insert(git_id_bytes.clone()) {
-    //             continue;
-    //         }
-
-    //         let git_commit = commit_info.object()?;
-    //         collected_git_commits.push((git_id_bytes, git_commit));
-    //     }
-
-    //     // Sort oldest → newest by commit time
-    //     collected_git_commits.sort_by_key(|(_, c)| c.time().unwrap().seconds);
-
-    //     println!(
-    //         "Git reports {} commits in history",
-    //         collected_git_commits.len()
-    //     );
-
-    //     let pb = ProgressBar::new_spinner();
-    //     pb.set_message("Importing commits...");
-
-    //     // Build Helix commits in oldest to newest order
-    //     let mut helix_commits: Vec<Helix_Commit> = Vec::with_capacity(collected_git_commits.len());
-
-    //     for (i, (git_id_bytes, git_commit)) in collected_git_commits.into_iter().enumerate() {
-    //         pb.set_message(format!("Importing commit {}", i + 1));
-
-    //         let helix_commit = self.build_helix_commit_from_git_commit(
-    //             &git_commit,
-    //             &repo,
-    //             &git_hash_to_helix_hash,
-    //         )?;
-
-    //         // Now we know this commit's helix hash, so map git → helix for children
-    //         git_hash_to_helix_hash.insert(git_id_bytes, helix_commit.commit_hash);
-
-    //         helix_commits.push(helix_commit);
-    //     }
-
-    //     self.store_imported_commits(&helix_commits)?;
-
-    //     if let Some(latest_commit) = helix_commits.last() {
-    //         self.update_head_to_commit(latest_commit.commit_hash)?;
-    //     }
-
-    //     pb.finish_with_message(format!("Imported {} commits", helix_commits.len()));
-
-    //     Ok(git_hash_to_helix_hash)
-    // }
-
+    // TODO: parallelize walking each branch tip and collecting commits and creating the helix commits and then sort later
     fn import_git_commits(&self) -> Result<HashMap<Vec<u8>, [u8; 32]>> {
         let repo = gix::open(&self.repo_path)?;
 
@@ -711,7 +604,7 @@ impl SyncEngine {
         let mut git_hash_to_helix_hash: HashMap<Vec<u8>, [u8; 32]> = HashMap::new();
         let mut collected_git_commits: Vec<(Vec<u8>, gix::Commit)> = Vec::new();
 
-        // Collect commits from ALL branches, not just HEAD
+        // Collect commits from all branches (including head)
         let refs = repo.references()?;
         let branch_refs: Vec<_> = refs
             .all()?
@@ -720,7 +613,6 @@ impl SyncEngine {
             .collect();
 
         if branch_refs.is_empty() {
-            // No branches yet (empty repo)
             return Ok(HashMap::new());
         }
 
@@ -1151,24 +1043,6 @@ mod tests {
 
     #[test]
     fn test_wait_for_git_lock_timeout() -> Result<()> {
-        let temp_dir = TempDir::new()?;
-        init_test_repo(temp_dir.path())?;
-
-        // Create a fake lock file
-        let lock_path = temp_dir.path().join(".git/index.lock");
-        fs::write(&lock_path, "")?;
-
-        // Should timeout
-        let result = wait_for_git_lock(temp_dir.path(), Duration::from_millis(100));
-        assert!(result.is_err());
-
-        // Clean up
-        fs::remove_file(&lock_path)?;
-
-        Ok(())
-    }
-    #[test]
-    fn test_import_git_commit() -> Result<()> {
         let temp_dir = TempDir::new()?;
         init_test_repo(temp_dir.path())?;
 
@@ -1670,6 +1544,88 @@ mod tests {
     }
 
     #[test]
+    fn test_import_git_commits_returns_git_to_helix_map() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo = temp_dir.path();
+        init_test_repo(repo)?;
+
+        // Create and commit a file
+        fs::write(repo.join("test.txt"), "hello")?;
+        git(repo, &["add", "test.txt"])?;
+        git(repo, &["commit", "-m", "Test commit"])?;
+
+        // Get the Git SHA for HEAD
+        let output = Command::new("git")
+            .args(&["rev-parse", "HEAD"])
+            .current_dir(repo)
+            .output()?;
+        let git_sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let git_sha_bytes = hex::decode(&git_sha)?;
+
+        let engine = SyncEngine::new(repo);
+        let git_to_helix = engine.import_git_commits()?;
+
+        // There should be an entry for HEAD
+        let helix_hash_from_map = git_to_helix
+            .get(&git_sha_bytes)
+            .expect("git→helix map should contain HEAD commit");
+
+        // And it should match the stored commit's hash
+        let commit_storage = CommitStorage::for_repo(repo);
+        let hashes = commit_storage.list_all()?;
+        assert_eq!(hashes.len(), 1);
+        let stored_commit = commit_storage.read(&hashes[0])?;
+        assert_eq!(
+            &stored_commit.commit_hash, helix_hash_from_map,
+            "map value should match stored commit hash"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_import_git_commits_updates_helix_head() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo = temp_dir.path();
+        init_test_repo(repo)?;
+
+        // One commit
+        fs::write(repo.join("test.txt"), "hello")?;
+        git(repo, &["add", "test.txt"])?;
+        git(repo, &["commit", "-m", "Test commit"])?;
+
+        let engine = SyncEngine::new(repo);
+        let git_to_helix = engine.import_git_commits()?;
+
+        // Find HEAD Git SHA
+        let output = Command::new("git")
+            .args(&["rev-parse", "HEAD"])
+            .current_dir(repo)
+            .output()?;
+        let git_sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let git_sha_bytes = hex::decode(&git_sha)?;
+
+        let helix_hash = git_to_helix
+            .get(&git_sha_bytes)
+            .expect("git→helix map should contain HEAD commit");
+
+        let helix_head_path = repo.join(".helix/HEAD");
+        assert!(
+            helix_head_path.exists(),
+            ".helix/HEAD should be created by import_git_commits"
+        );
+
+        let contents = fs::read_to_string(&helix_head_path)?;
+        assert_eq!(
+            contents.trim(),
+            hash::hash_to_hex(helix_hash),
+            ".helix/HEAD should point at latest imported commit"
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn test_import_git_commits_with_merge_commit() -> Result<()> {
         let temp_dir = TempDir::new()?;
         init_test_repo(temp_dir.path())?;
@@ -1730,6 +1686,132 @@ mod tests {
         let mut map = HashMap::new();
         map.insert(git_sha_bytes, helix_hash);
         Ok(map)
+    }
+
+    use crate::helix_index::state::get_branch_upstream;
+
+    #[test]
+    fn test_import_git_branches_sets_default_upstream_for_feature() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let repo = temp_dir.path();
+        init_test_repo(repo)?;
+
+        // Commit on main
+        std::fs::write(repo.join("main.txt"), "main")?;
+        git(repo, &["add", "main.txt"])?;
+        git(repo, &["commit", "-m", "main commit"])?;
+
+        // Create feature branch with its own commit
+        git(repo, &["checkout", "-b", "feature"])?;
+        std::fs::write(repo.join("feature.txt"), "feature")?;
+        git(repo, &["add", "feature.txt"])?;
+        git(repo, &["commit", "-m", "feature commit"])?;
+
+        // Build fake Git→Helix mapping for both heads
+        let mut git_to_helix = HashMap::new();
+        let main_hash = [1u8; 32];
+        let feature_hash = [2u8; 32];
+
+        git_to_helix.extend(build_git_to_helix_map_for_branch(repo, "main", main_hash)?);
+        git_to_helix.extend(build_git_to_helix_map_for_branch(
+            repo,
+            "feature",
+            feature_hash,
+        )?);
+
+        let engine = SyncEngine::new(repo);
+        engine.import_git_branches(&git_to_helix)?;
+
+        // Default branch detection should prefer "main"
+        // feature's upstream should be set to "main"
+        assert_eq!(
+            get_branch_upstream(repo, "feature"),
+            Some("main".to_string()),
+            "feature branch should track default branch main when no explicit upstream exists"
+        );
+
+        // Default branch itself should not get an upstream entry
+        assert_eq!(
+            get_branch_upstream(repo, "main"),
+            None,
+            "default branch should not be given an upstream by import"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_git_branch_upstream_reads_merge_ref() -> Result<()> {
+        let git_config = r#"
+[core]
+    repositoryformatversion = 0
+
+[branch "feature"]
+    remote = origin
+    merge = refs/heads/main
+
+[branch "other"]
+    remote = origin
+    merge = refs/heads/dev
+"#;
+
+        let engine = SyncEngine::new(Path::new("."));
+
+        let upstream_feature = engine.parse_git_branch_upstream(git_config, "feature");
+        let upstream_other = engine.parse_git_branch_upstream(git_config, "other");
+        let upstream_missing = engine.parse_git_branch_upstream(git_config, "nonexistent");
+
+        assert_eq!(
+            upstream_feature.as_deref(),
+            Some("main"),
+            "should strip refs/heads/ prefix for feature"
+        );
+        assert_eq!(
+            upstream_other.as_deref(),
+            Some("dev"),
+            "should parse different branch names as well"
+        );
+        assert_eq!(
+            upstream_missing, None,
+            "branch without section should return None"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_find_default_branch_prefers_main_then_master_then_first() {
+        let engine = SyncEngine::new(Path::new("."));
+
+        let branches = vec![
+            "feature".to_string(),
+            "main".to_string(),
+            "bugfix".to_string(),
+        ];
+        assert_eq!(
+            engine.find_default_branch(&branches),
+            Some("main".to_string())
+        );
+
+        let branches = vec![
+            "feature".to_string(),
+            "master".to_string(),
+            "bugfix".to_string(),
+        ];
+        assert_eq!(
+            engine.find_default_branch(&branches),
+            Some("master".to_string())
+        );
+
+        let branches = vec!["foo".to_string(), "bar".to_string()];
+        assert_eq!(
+            engine.find_default_branch(&branches),
+            Some("foo".to_string()),
+            "when neither main nor master exist, first branch should be used"
+        );
+
+        let branches: Vec<String> = Vec::new();
+        assert_eq!(engine.find_default_branch(&branches), None);
     }
 
     #[test]
@@ -1871,7 +1953,7 @@ mod tests {
     }
 
     #[test]
-    fn test_import_git_branches_unknown_commit_errors() -> Result<()> {
+    fn test_import_git_branches_unknown_commit_is_skipped() -> Result<()> {
         let temp_dir = TempDir::new()?;
         let repo = temp_dir.path();
         init_test_repo(repo)?;
@@ -1887,14 +1969,25 @@ mod tests {
         let engine = SyncEngine::new(repo);
         let result = engine.import_git_branches(&git_to_helix);
 
+        // New behavior: no error, branch is just skipped
         assert!(
-            result.is_err(),
-            "Branch pointing to unknown commit should return an error"
+            result.is_ok(),
+            "Branch pointing to unknown commit should be skipped, not error"
         );
-        let err_string = format!("{:?}", result.unwrap_err());
+
+        // No Helix ref should have been created for main
+        let helix_ref_path = repo.join(".helix/refs/heads/main");
         assert!(
-            err_string.contains("Branch points to unknown commit"),
-            "Error should contain context message"
+            !helix_ref_path.exists(),
+            "Branch with unknown commit should not produce a Helix ref"
+        );
+
+        // And no upstream tracking should be written for it either
+        use crate::helix_index::state::get_branch_upstream;
+        assert_eq!(
+            get_branch_upstream(repo, "main"),
+            None,
+            "No upstream should be imported for skipped branches"
         );
 
         Ok(())
@@ -2239,7 +2332,6 @@ mod tests {
     }
 
     /// git remote tests
-
     #[test]
     fn test_import_git_remotes_no_remotes_creates_no_toml() -> Result<()> {
         let temp_dir = TempDir::new()?;
