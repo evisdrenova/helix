@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use super::app::App;
+use super::app::{App, Focus};
 
 pub fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
@@ -371,7 +371,12 @@ fn draw_branch_commit_list(f: &mut Frame, area: Rect, branch: &super::app::Branc
         .collect();
 
     let mut state = ListState::default();
-    state.select(Some(app.selected_commit_index));
+    if app.focus == Focus::CommitList {
+        state.select(Some(app.selected_commit_index));
+    } else {
+        // no focused selection, still render items (with their per-line styles)
+        state.select(None);
+    }
 
     let list = List::new(items)
         .block(
@@ -559,15 +564,3 @@ fn format_relative_time(timestamp: u64) -> String {
         format!("{} years ago", seconds / 31536000)
     }
 }
-
-// fn format_full_time(timestamp: u64) -> String {
-//     if let Some(dt) = Local.timestamp_opt(timestamp as i64, 0).single() {
-//         dt.format("%a %b %d %H:%M:%S %Y").to_string()
-//     } else {
-//         "Unknown time".to_string()
-//     }
-// }
-
-// fn short_hash(hash: &[u8; 32]) -> String {
-//     hash::hash_to_hex(hash)[..8].to_string()
-// }
