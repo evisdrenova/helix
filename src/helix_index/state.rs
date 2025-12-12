@@ -1,146 +1,81 @@
-// Helper functions for managing .helix/state file
+// State Management for Helix Branch Metadata
 //
-// This module provides utilities for reading and writing to the .helix/state
-// file, which stores internal Helix runtime state like branch upstream tracking.
+// File format:
+//   [branch "feature"]
+//   upstream = main
 //
-// Format is INI-style:
-// [branch "feature"]
-//     upstream = main
+// State stored here:
+//   - Upstream branch relationships
+//   - Future per-branch metadata
 
 use anyhow::{Context, Result};
-use std::fs;
+use ini::Ini;
 use std::path::Path;
 
-/// Set the upstream branch for a given branch in .helix/state
-pub fn set_branch_upstream(repo_path: &Path, branch_name: &str, upstream: &str) -> Result<()> {
-    let state_path = repo_path.join(".helix/state");
+use crate::init::create_directory_structure;
 
-    // Read existing state or start with empty
-    let mut content = if state_path.exists() {
-        fs::read_to_string(&state_path).context("Failed to read .helix/state")?
-    } else {
-        String::new()
-    };
+const SECTION_PREFIX: &str = "branch";
 
-    let section_header = format!("[branch \"{}\"]", branch_name);
-    let upstream_line = format!("    upstream = {}", upstream);
+fn state_path(repo_path: &Path) -> std::path::PathBuf {
+    repo_path.join(".helix/state")
+}
 
-    // Check if section already exists
-    if let Some(section_start) = content.find(&section_header) {
-        // Section exists, need to update or add upstream line
-        let after_header = section_start + section_header.len();
+fn section_key(branch: &str) -> String {
+    format!(r#"{} "{}""#, SECTION_PREFIX, branch)
+}
 
-        // Find the end of this section (next [ or end of file)
-        let section_end = content[after_header..]
-            .find("\n[")
-            .map(|pos| after_header + pos)
-            .unwrap_or(content.len());
+/// Load state file (create empty if missing)
+fn load_state(repo_path: &Path) -> Result<Ini> {
+    let path = state_path(repo_path);
 
-        let section_content = &content[after_header..section_end];
-
-        // Check if upstream already exists in this section
-        if let Some(upstream_pos) = section_content.find("upstream = ") {
-            // Replace existing upstream value
-            let line_start =
-                after_header + section_content[..upstream_pos].rfind('\n').unwrap_or(0);
-            let line_end = after_header
-                + upstream_pos
-                + section_content[upstream_pos..]
-                    .find('\n')
-                    .unwrap_or(section_content[upstream_pos..].len());
-
-            content.replace_range(line_start..line_end, &format!("\n{}", upstream_line));
-        } else {
-            // Add upstream line after section header
-            content.insert_str(after_header, &format!("\n{}", upstream_line));
-        }
-    } else {
-        // Section doesn't exist, append it
-        if !content.is_empty() && !content.ends_with('\n') {
-            content.push('\n');
-        }
-        content.push_str(&format!("{}\n{}\n", section_header, upstream_line));
+    if !path.exists() {
+        return Ok(Ini::new());
     }
 
-    // Ensure .helix directory exists
+    let ini = Ini::load_from_file(&path).context("Failed to read .helix/state")?;
+    Ok(ini)
+}
+
+/// Save state file, ensuring directory exists
+fn save_state(repo_path: &Path, ini: &Ini) -> Result<()> {
     let helix_dir = repo_path.join(".helix");
     if !helix_dir.exists() {
-        fs::create_dir_all(&helix_dir)?;
+        create_directory_structure(repo_path)?;
     }
 
-    // Write back to file
-    fs::write(&state_path, content).context("Failed to write .helix/state")?;
-
-    Ok(())
+    let path = state_path(repo_path);
+    ini.write_to_file(&path)
+        .context("Failed to write .helix/state")
 }
 
-/// Get the upstream branch for a given branch from .helix/state
+/// Set the upstream branch for a given branch
+pub fn set_branch_upstream(repo_path: &Path, branch_name: &str, upstream: &str) -> Result<()> {
+    let mut ini = load_state(repo_path)?;
+    let section = section_key(branch_name);
+
+    // Insert or overwrite
+    ini.with_section(Some(section)).set("upstream", upstream);
+
+    save_state(repo_path, &ini)
+}
+
+/// Get "upstream" value for a branch
 pub fn get_branch_upstream(repo_path: &Path, branch_name: &str) -> Option<String> {
-    let state_path = repo_path.join(".helix/state");
+    let ini = load_state(repo_path).ok()?;
+    let section = section_key(branch_name);
 
-    let state_content = fs::read_to_string(&state_path).ok()?;
-    let section_header = format!("[branch \"{}\"]", branch_name);
-
-    let mut in_section = false;
-
-    for line in state_content.lines() {
-        let trimmed = line.trim();
-
-        if trimmed == section_header {
-            in_section = true;
-            continue;
-        }
-
-        // If we hit another section, we're done
-        if trimmed.starts_with('[') && in_section {
-            break;
-        }
-
-        if in_section {
-            if let Some(value) = trimmed.strip_prefix("upstream = ") {
-                return Some(value.trim().to_string());
-            }
-        }
-    }
-
-    None
+    ini.section(Some(section))
+        .and_then(|sec| sec.get("upstream"))
+        .map(|s| s.to_string())
 }
 
-/// Remove a branch section from .helix/state
+/// Remove an entire [branch "X"] section
 pub fn remove_branch_state(repo_path: &Path, branch_name: &str) -> Result<()> {
-    let state_path = repo_path.join(".helix/state");
+    let mut ini = load_state(repo_path)?;
+    let section = section_key(branch_name);
 
-    if !state_path.exists() {
-        return Ok(());
-    }
-
-    let content = fs::read_to_string(&state_path).context("Failed to read .helix/state")?;
-
-    let section_header = format!("[branch \"{}\"]", branch_name);
-
-    if let Some(section_start) = content.find(&section_header) {
-        // Find the start of the line containing the section header
-        let line_start = content[..section_start]
-            .rfind('\n')
-            .map(|pos| pos + 1)
-            .unwrap_or(0);
-
-        // Find the end of this section (next [ or end of file)
-        let after_header = section_start + section_header.len();
-        let section_end = content[after_header..]
-            .find("\n[")
-            .map(|pos| after_header + pos)
-            .unwrap_or(content.len());
-
-        // Remove the entire section
-        let mut new_content = String::new();
-        new_content.push_str(&content[..line_start]);
-        new_content.push_str(&content[section_end..]);
-
-        fs::write(&state_path, new_content).context("Failed to write .helix/state")?;
-    }
-
-    Ok(())
+    ini.delete(Some(section));
+    save_state(repo_path, &ini)
 }
 
 #[cfg(test)]
@@ -150,58 +85,53 @@ mod tests {
 
     #[test]
     fn test_set_and_get_upstream() -> Result<()> {
-        let temp_dir = TempDir::new()?;
-        let repo_path = temp_dir.path();
+        let temp = TempDir::new()?;
+        let repo = temp.path();
 
-        // Set upstream for feature branch
-        set_branch_upstream(repo_path, "feature", "main")?;
-
-        // Verify it was written
-        let upstream = get_branch_upstream(repo_path, "feature");
-        assert_eq!(upstream, Some("main".to_string()));
+        set_branch_upstream(repo, "feature", "main")?;
+        assert_eq!(
+            get_branch_upstream(repo, "feature"),
+            Some("main".to_string())
+        );
 
         Ok(())
     }
 
     #[test]
     fn test_update_existing_upstream() -> Result<()> {
-        let temp_dir = TempDir::new()?;
-        let repo_path = temp_dir.path();
+        let temp = TempDir::new()?;
+        let repo = temp.path();
 
-        // Set initial upstream
-        set_branch_upstream(repo_path, "feature", "main")?;
+        set_branch_upstream(repo, "feature", "main")?;
+        set_branch_upstream(repo, "feature", "develop")?;
 
-        // Update it
-        set_branch_upstream(repo_path, "feature", "develop")?;
-
-        // Verify it was updated
-        let upstream = get_branch_upstream(repo_path, "feature");
-        assert_eq!(upstream, Some("develop".to_string()));
+        assert_eq!(
+            get_branch_upstream(repo, "feature"),
+            Some("develop".to_string())
+        );
 
         Ok(())
     }
 
     #[test]
     fn test_multiple_branches() -> Result<()> {
-        let temp_dir = TempDir::new()?;
-        let repo_path = temp_dir.path();
+        let temp = TempDir::new()?;
+        let repo = temp.path();
 
-        // Set upstream for multiple branches
-        set_branch_upstream(repo_path, "feature1", "main")?;
-        set_branch_upstream(repo_path, "feature2", "develop")?;
-        set_branch_upstream(repo_path, "hotfix", "main")?;
+        set_branch_upstream(repo, "feature1", "main")?;
+        set_branch_upstream(repo, "feature2", "develop")?;
+        set_branch_upstream(repo, "hotfix", "main")?;
 
-        // Verify all are correct
         assert_eq!(
-            get_branch_upstream(repo_path, "feature1"),
+            get_branch_upstream(repo, "feature1"),
             Some("main".to_string())
         );
         assert_eq!(
-            get_branch_upstream(repo_path, "feature2"),
+            get_branch_upstream(repo, "feature2"),
             Some("develop".to_string())
         );
         assert_eq!(
-            get_branch_upstream(repo_path, "hotfix"),
+            get_branch_upstream(repo, "hotfix"),
             Some("main".to_string())
         );
 
@@ -210,29 +140,24 @@ mod tests {
 
     #[test]
     fn test_remove_branch_state() -> Result<()> {
-        let temp_dir = TempDir::new()?;
-        let repo_path = temp_dir.path();
+        let temp = TempDir::new()?;
+        let repo = temp.path();
 
-        // Set upstream
-        set_branch_upstream(repo_path, "feature", "main")?;
-        assert!(get_branch_upstream(repo_path, "feature").is_some());
+        set_branch_upstream(repo, "feature", "main")?;
+        assert!(get_branch_upstream(repo, "feature").is_some());
 
-        // Remove it
-        remove_branch_state(repo_path, "feature")?;
-        assert!(get_branch_upstream(repo_path, "feature").is_none());
+        remove_branch_state(repo, "feature")?;
+        assert!(get_branch_upstream(repo, "feature").is_none());
 
         Ok(())
     }
 
     #[test]
     fn test_get_nonexistent_branch() -> Result<()> {
-        let temp_dir = TempDir::new()?;
-        let repo_path = temp_dir.path();
+        let temp = TempDir::new()?;
+        let repo = temp.path();
 
-        // Try to get upstream for branch that doesn't exist
-        let upstream = get_branch_upstream(repo_path, "nonexistent");
-        assert_eq!(upstream, None);
-
+        assert_eq!(get_branch_upstream(repo, "nope"), None);
         Ok(())
     }
 }

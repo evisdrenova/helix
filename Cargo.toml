@@ -39,6 +39,7 @@ notify = "8.2.0"
 ratatui = "0.29.0"
 rayon = "1.11.0"
 reqwest = { version = "0.12.20", features = ["json"] }
+rust-ini = "0.21.3"
 serde = { version = "1.0", features = ["derive"] }
 sha1 = "0.10.6"
 sha2 = "0.10.9"

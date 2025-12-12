@@ -158,7 +158,7 @@ fn import_from_git(repo_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn create_directory_structure(repo_path: &Path) -> Result<()> {
+pub fn create_directory_structure(repo_path: &Path) -> Result<()> {
     let helix_dir = repo_path.join(".helix");
 
     if !helix_dir.exists() {
