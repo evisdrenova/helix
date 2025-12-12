@@ -589,7 +589,7 @@ impl SyncEngine {
             commit_hash: ZERO_HASH,
             tree_hash: tree.into(),
             parents: parent_commits,
-            author: author_email + &author_name,
+            author: format!("{} <{}>", &author_name, author_email),
             author_time: author_timestamp as u64,
             commit_time: commit_time as u64,
             message: full_message,

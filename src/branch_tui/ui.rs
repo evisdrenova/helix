@@ -233,7 +233,7 @@ fn format_branch_details(branch: &super::app::BranchInfo) -> ratatui::text::Text
         ),
         Span::raw(" "),
         Span::styled(
-            branch.name.clone(), // Clone to own the data
+            branch.name.clone(),
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
@@ -349,7 +349,6 @@ fn format_branch_details(branch: &super::app::BranchInfo) -> ratatui::text::Text
 
         // Date
         let date_str = format_full_time(commit.commit_time);
-        let relative_str = format_relative_time(commit.commit_time);
         lines.push(Line::from(vec![
             Span::raw(" "),
             Span::styled(
@@ -360,9 +359,6 @@ fn format_branch_details(branch: &super::app::BranchInfo) -> ratatui::text::Text
             ),
             Span::raw("   "),
             Span::styled(date_str, Style::default().fg(Color::White)), // Already owned
-            Span::raw(" ("),
-            Span::styled(relative_str, Style::default().fg(Color::DarkGray)), // Already owned
-            Span::raw(")"),
         ]));
         lines.push(Line::from(""));
 

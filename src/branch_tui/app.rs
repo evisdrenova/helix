@@ -13,6 +13,7 @@ use super::ui;
 use crate::helix_index::commit::{Commit, CommitStorage};
 use crate::helix_index::hash;
 
+#[derive(Debug)]
 pub struct BranchInfo {
     pub name: String,
     pub is_current: bool,
@@ -54,7 +55,7 @@ impl App {
         for branch_name in branch_names {
             let is_current = branch_name == current_branch;
 
-            // Read branch ref to get commit hash
+            // get commit hash
             let branch_ref_path = repo_path.join(".helix/refs/heads").join(&branch_name);
 
             let (last_commit_hash, last_commit, commit_count) =
@@ -73,7 +74,6 @@ impl App {
                     (None, None, 0)
                 };
 
-            // Look up remote tracking branch
             let remote_tracking = get_remote_tracking(repo_path, &branch_name);
 
             branches.push(BranchInfo {
