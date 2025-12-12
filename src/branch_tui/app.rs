@@ -40,6 +40,13 @@ pub struct App {
     pub new_branch_name: String,
     pub branch_commit_lists: HashMap<String, Vec<Commit>>,
     pub selected_commit_index: usize,
+    pub focus: Focus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Focus {
+    BranchList,
+    CommitList,
 }
 
 impl App {
@@ -115,6 +122,7 @@ impl App {
             new_branch_name: String::new(),
             branch_commit_lists: HashMap::new(),
             selected_commit_index: 0,
+            focus: Focus::BranchList,
         })
     }
 
@@ -265,6 +273,40 @@ impl App {
         Ok(())
     }
 
+    pub fn next_commit(&mut self) {
+        if let Some(branch) = self.selected_branch() {
+            if let Some(commits) = self.branch_commit_lists.get(&branch.name) {
+                if commits.is_empty() {
+                    return;
+                }
+                let max = commits.len().saturating_sub(1);
+                if self.selected_commit_index < max {
+                    self.selected_commit_index += 1;
+                }
+            }
+        }
+    }
+
+    pub fn previous_commit(&mut self) {
+        if self.selected_commit_index > 0 {
+            self.selected_commit_index -= 1;
+        }
+    }
+
+    pub fn first_commit(&mut self) {
+        self.selected_commit_index = 0;
+    }
+
+    pub fn last_commit(&mut self) {
+        if let Some(branch) = self.selected_branch() {
+            if let Some(commits) = self.branch_commit_lists.get(&branch.name) {
+                if !commits.is_empty() {
+                    self.selected_commit_index = commits.len() - 1;
+                }
+            }
+        }
+    }
+
     pub fn run(&mut self) -> Result<()> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
@@ -365,30 +407,75 @@ impl App {
                         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             self.should_quit = true;
                         }
-                        KeyCode::Down | KeyCode::Char('j') => {
-                            self.next();
-                            if let Err(e) = self.on_branch_selected() {
-                                eprintln!("Failed to load commits for branch: {}", e);
+
+                        // j / k or Down / Up operate on focused pane
+                        KeyCode::Down | KeyCode::Char('j') => match self.focus {
+                            Focus::BranchList => {
+                                self.next();
+                                if let Err(e) = self.on_branch_selected() {
+                                    eprintln!("Failed to load commits for branch: {}", e);
+                                }
+                            }
+                            Focus::CommitList => {
+                                self.next_commit();
+                            }
+                        },
+                        KeyCode::Up | KeyCode::Char('k') => match self.focus {
+                            Focus::BranchList => {
+                                self.previous();
+                                if let Err(e) = self.on_branch_selected() {
+                                    eprintln!("Failed to load commits for branch: {}", e);
+                                }
+                            }
+                            Focus::CommitList => {
+                                self.previous_commit();
+                            }
+                        },
+
+                        // g / G: top/bottom in focused pane
+                        KeyCode::Char('g') => match self.focus {
+                            Focus::BranchList => {
+                                self.go_to_top();
+                                if let Err(e) = self.on_branch_selected() {
+                                    eprintln!("Failed to load commits for branch: {}", e);
+                                }
+                            }
+                            Focus::CommitList => {
+                                self.first_commit();
+                            }
+                        },
+                        KeyCode::Char('G') => match self.focus {
+                            Focus::BranchList => {
+                                self.go_to_bottom();
+                                if let Err(e) = self.on_branch_selected() {
+                                    eprintln!("Failed to load commits for branch: {}", e);
+                                }
+                            }
+                            Focus::CommitList => {
+                                self.last_commit();
+                            }
+                        },
+
+                        // 👉 move focus to commit list
+                        KeyCode::Right | KeyCode::Char('l') => {
+                            if self.focus == Focus::BranchList {
+                                if let Some(branch) = self.selected_branch() {
+                                    if let Some(commits) =
+                                        self.branch_commit_lists.get(&branch.name)
+                                    {
+                                        if !commits.is_empty() {
+                                            self.focus = Focus::CommitList;
+                                        }
+                                    }
+                                }
                             }
                         }
-                        KeyCode::Up | KeyCode::Char('k') => {
-                            self.previous();
-                            if let Err(e) = self.on_branch_selected() {
-                                eprintln!("Failed to load commits for branch: {}", e);
-                            }
+
+                        // 👈 move focus back to branches
+                        KeyCode::Left | KeyCode::Char('h') => {
+                            self.focus = Focus::BranchList;
                         }
-                        KeyCode::Char('g') => {
-                            self.go_to_top();
-                            if let Err(e) = self.on_branch_selected() {
-                                eprintln!("Failed to load commits for branch: {}", e);
-                            }
-                        }
-                        KeyCode::Char('G') => {
-                            self.go_to_bottom();
-                            if let Err(e) = self.on_branch_selected() {
-                                eprintln!("Failed to load commits for branch: {}", e);
-                            }
-                        }
+
                         KeyCode::Char('c') => {
                             // Checkout branch
                             if let Some(branch) = self.selected_branch() {
@@ -408,8 +495,7 @@ impl App {
                         KeyCode::Char('r') => {
                             // Rename branch
                             if let Some(branch) = self.selected_branch() {
-                                let branch_name = branch.name.clone(); // Clone before dropping the borrow
-                                let _ = drop(branch); // Explicitly drop the borrow (optional, happens automatically)
+                                let branch_name = branch.name.clone();
                                 self.rename_mode = true;
                                 self.new_branch_name = branch_name;
                             }
