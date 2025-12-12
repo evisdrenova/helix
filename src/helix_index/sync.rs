@@ -65,14 +65,15 @@ This file is intentionally read-only with respect to Git: it never mutates
 under `.helix/` and `helix.toml`.
 */
 
+use super::commit::Commit as Helix_Commit;
+use super::commit::CommitStorage;
 use super::format::{Entry, EntryFlags, Header};
+use super::hash::{self, ZERO_HASH};
 use super::reader::Reader;
+use super::state::set_branch_upstream;
+use super::tree::TreeBuilder;
 use super::writer::Writer;
 
-use crate::helix_index::commit::Commit as Helix_Commit;
-use crate::helix_index::commit::CommitStorage;
-use crate::helix_index::hash::{self, ZERO_HASH};
-use crate::helix_index::tree::TreeBuilder;
 use crate::ignore::IgnoreRules;
 use crate::index::GitIndex;
 
@@ -112,6 +113,40 @@ impl SyncEngine {
         Ok(())
     }
 
+    // fn import_git_branches(
+    //     &self,
+    //     git_hash_to_helix_hash: &HashMap<Vec<u8>, [u8; 32]>,
+    // ) -> Result<()> {
+    //     let git_refs_dir = self.repo_path.join(".git/refs/heads");
+    //     if !git_refs_dir.exists() {
+    //         return Ok(());
+    //     }
+
+    //     for entry in WalkDir::new(&git_refs_dir) {
+    //         let entry = entry?;
+    //         if !entry.file_type().is_file() {
+    //             continue;
+    //         }
+
+    //         let git_sha = fs::read_to_string(entry.path())?.trim().to_string();
+    //         let git_sha_bytes = hex::decode(&git_sha)?;
+
+    //         // Convert Git SHA to Helix hash
+    //         let helix_hash = git_hash_to_helix_hash
+    //             .get(&git_sha_bytes)
+    //             .context("Branch points to unknown commit")?;
+
+    //         // Preserve branch path structure
+    //         let rel_path = entry.path().strip_prefix(&git_refs_dir)?;
+    //         let helix_ref_path = self.repo_path.join(".helix/refs/heads").join(rel_path);
+
+    //         fs::create_dir_all(helix_ref_path.parent().unwrap())?;
+    //         fs::write(&helix_ref_path, hash::hash_to_hex(helix_hash))?;
+    //     }
+
+    //     Ok(())
+    // }
+
     fn import_git_branches(
         &self,
         git_hash_to_helix_hash: &HashMap<Vec<u8>, [u8; 32]>,
@@ -120,6 +155,9 @@ impl SyncEngine {
         if !git_refs_dir.exists() {
             return Ok(());
         }
+
+        // Track all branches we import for state file population
+        let mut imported_branches = Vec::new();
 
         for entry in WalkDir::new(&git_refs_dir) {
             let entry = entry?;
@@ -141,9 +179,102 @@ impl SyncEngine {
 
             fs::create_dir_all(helix_ref_path.parent().unwrap())?;
             fs::write(&helix_ref_path, hash::hash_to_hex(helix_hash))?;
+
+            // Track branch name for state import
+            if let Some(branch_name) = rel_path.to_str() {
+                imported_branches.push(branch_name.to_string());
+            }
+        }
+
+        println!("the improted branches {:?}", imported_branches);
+
+        // Import upstream tracking information from Git config
+        self.import_branch_upstream_tracking(&imported_branches)?;
+
+        Ok(())
+    }
+
+    /// Import upstream tracking information from .git/config to .helix/state
+    fn import_branch_upstream_tracking(&self, branch_names: &[String]) -> Result<()> {
+        let git_config_path = self.repo_path.join(".git/config");
+
+        if !git_config_path.exists() {
+            return Ok(());
+        }
+
+        let git_config =
+            fs::read_to_string(&git_config_path).context("Failed to read .git/config")?;
+
+            
+
+        // Parse Git config for each branch
+        for branch_name in branch_names {
+            if let Some(upstream) = self.parse_git_branch_upstream(&git_config, branch_name) {
+                println!("the upstream {}", upstream);
+                // Write to .helix/state using our helper
+
+                if let Err(e) = set_branch_upstream(&self.repo_path, branch_name, &upstream) {
+                    eprintln!(
+                        "Warning: Failed to import upstream for branch '{}': {}",
+                        branch_name, e
+                    );
+                }
+            }
         }
 
         Ok(())
+    }
+
+    /// Parse Git config to extract upstream tracking for a branch
+    ///
+    /// Git stores this as:
+    /// [branch "feature"]
+    ///     remote = origin
+    ///     merge = refs/heads/feature
+    ///
+    /// We convert this to just the branch name (e.g., "origin/feature" or "main")
+    fn parse_git_branch_upstream(&self, git_config: &str, branch_name: &str) -> Option<String> {
+        let section_header = format!("[branch \"{}\"]", branch_name);
+
+        let mut in_section = false;
+        let mut remote_name: Option<String> = None;
+        let mut merge_ref: Option<String> = None;
+
+        for line in git_config.lines() {
+            let trimmed = line.trim();
+
+            // Check if we're entering the right branch section
+            if trimmed == section_header {
+                in_section = true;
+                continue;
+            }
+
+            // Check if we're leaving the section (new section starts)
+            if trimmed.starts_with('[') && in_section {
+                break;
+            }
+
+            if in_section {
+                // Parse remote = origin
+                if let Some(remote) = trimmed.strip_prefix("remote = ") {
+                    remote_name = Some(remote.trim().to_string());
+                }
+                // Parse merge = refs/heads/main
+                else if let Some(merge) = trimmed.strip_prefix("merge = ") {
+                    // Extract branch name from refs/heads/branch_name
+                    if let Some(branch) = merge.strip_prefix("refs/heads/") {
+                        merge_ref = Some(branch.trim().to_string());
+                    }
+                }
+            }
+        }
+
+        // Combine remote and branch name
+        match (remote_name, merge_ref) {
+            (Some(remote), Some(branch)) => Some(format!("{}/{}", remote, branch)),
+            (None, Some(branch)) => Some(branch), // Local branch tracking
+            _ => None,
+        }
     }
 
     fn import_git_head(&self, git_hash_to_helix_hash: &HashMap<Vec<u8>, [u8; 32]>) -> Result<()> {
@@ -668,23 +799,6 @@ impl SyncEngine {
         for commit in commits {
             commit_storage.write(commit)?;
             pb.inc(1);
-        }
-
-        let commits_path = self
-            .repo_path
-            .join(".helix")
-            .join("objects")
-            .join("commits");
-
-        println!("Listing commit files in {:?}", commits_path);
-
-        if commits_path.exists() {
-            for entry in fs::read_dir(&commits_path)? {
-                let entry = entry?;
-                println!(" - {:?}", entry.file_name());
-            }
-        } else {
-            println!("Commit path does not exist yet: {:?}", commits_path);
         }
 
         pb.finish_with_message("commits stored");

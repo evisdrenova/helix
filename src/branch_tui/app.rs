@@ -12,6 +12,7 @@ use std::path::Path;
 use super::ui;
 use crate::helix_index::commit::{Commit, CommitStorage};
 use crate::helix_index::hash;
+use crate::helix_index::state::get_branch_upstream;
 
 #[derive(Debug)]
 pub struct BranchInfo {
@@ -21,6 +22,7 @@ pub struct BranchInfo {
     pub last_commit: Option<Commit>,
     pub commit_count: usize,
     pub remote_tracking: Option<String>,
+    pub upstream: Option<String>,
 }
 
 pub struct App {
@@ -55,7 +57,6 @@ impl App {
         for branch_name in branch_names {
             let is_current = branch_name == current_branch;
 
-            // get commit hash
             let branch_ref_path = repo_path.join(".helix/refs/heads").join(&branch_name);
 
             let (last_commit_hash, last_commit, commit_count) =
@@ -76,6 +77,8 @@ impl App {
 
             let remote_tracking = get_remote_tracking(repo_path, &branch_name);
 
+            let upstream = get_branch_upstream(repo_path, &branch_name);
+
             branches.push(BranchInfo {
                 name: branch_name,
                 is_current,
@@ -83,6 +86,7 @@ impl App {
                 last_commit,
                 commit_count,
                 remote_tracking,
+                upstream,
             });
         }
 

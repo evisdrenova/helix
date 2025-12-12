@@ -148,8 +148,6 @@ fn import_from_git(repo_path: &Path) -> Result<()> {
         .context("Failed to read newly created helix index")?;
     let file_count = index_data.entries.len();
 
-    println!("{:#?}", index_data.entries);
-
     if file_count > 0 {
         println!(
             "Imported {} tracked files from Git in {:.0?}",
@@ -165,6 +163,15 @@ fn create_directory_structure(repo_path: &Path) -> Result<()> {
 
     if !helix_dir.exists() {
         fs::create_dir_all(&helix_dir).context("Failed to create .helix directory")?;
+    }
+
+    let state_file = helix_dir.join("state");
+    if !state_file.exists() {
+        let header = "# Helix internal state file\n\
+                      # DO NOT EDIT MANUALLY - This file is managed by Helix\n\
+                      # Stores runtime metadata like branch upstream tracking\n\
+                      \n";
+        fs::write(&state_file, header).context("Failed to create .helix/state file")?;
     }
 
     let objects_dirs = [

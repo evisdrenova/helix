@@ -12,6 +12,7 @@ use std::path::Path;
 
 use crate::branch_tui;
 use crate::helix_index::hash::Hash;
+use crate::helix_index::state::{get_branch_upstream, remove_branch_state, set_branch_upstream};
 
 pub struct BranchOptions {
     pub delete: bool,
@@ -62,6 +63,13 @@ pub fn create_branch(repo_path: &Path, name: &str, options: BranchOptions) -> Re
     fs::create_dir_all(branch_path.parent().unwrap())?;
     fs::write(&branch_path, format!("{}\n", hash_to_hex(&head_hash)))?;
 
+    let current_branch = get_current_branch(repo_path)?;
+    if current_branch != "(no branch)" && current_branch != "(detached HEAD)" {
+        if let Err(e) = set_branch_upstream(repo_path, name, &current_branch) {
+            eprintln!("Warning: Failed to set upstream: {}", e);
+        }
+    }
+
     if options.verbose {
         println!(
             "Created branch '{}' at commit {}",
@@ -96,6 +104,10 @@ pub fn delete_branch(repo_path: &Path, name: &str, options: BranchOptions) -> Re
 
     // Delete the branch file
     fs::remove_file(&branch_path).with_context(|| format!("Failed to delete branch '{}'", name))?;
+
+    if let Err(e) = remove_branch_state(repo_path, name) {
+        eprintln!("Warning: Failed to remove branch state: {}", e);
+    }
 
     if options.verbose {
         println!("Deleted branch '{}'", name);
@@ -144,6 +156,15 @@ pub fn rename_branch(
     if current_branch == old_name {
         let head_path = repo_path.join(".helix/HEAD");
         fs::write(&head_path, format!("ref: refs/heads/{}\n", new_name))?;
+    }
+
+    if let Some(upstream) = get_branch_upstream(repo_path, old_name) {
+        if let Err(e) = remove_branch_state(repo_path, old_name) {
+            eprintln!("Warning: Failed to remove old branch state: {}", e);
+        }
+        if let Err(e) = set_branch_upstream(repo_path, new_name, &upstream) {
+            eprintln!("Warning: Failed to set upstream for renamed branch: {}", e);
+        }
     }
 
     if options.verbose {

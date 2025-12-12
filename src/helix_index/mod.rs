@@ -4,6 +4,7 @@ pub mod commit;
 pub mod format;
 pub mod hash;
 pub mod reader;
+pub mod state;
 pub mod sync;
 pub mod tree;
 pub mod verify;
