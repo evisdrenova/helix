@@ -25,13 +25,12 @@ pub fn draw(f: &mut Frame, app: &App) {
 
 fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     let repo_text = format!(" {} ", app.repo_name);
-    let mut branch_count: String = String::new();
 
-    match app.branches.len() {
-        0 => branch_count = format!(" no branches "),
-        1 => branch_count = format!(" {} branch ", app.branches.len()),
-        _ => branch_count = format!(" {} branches ", app.branches.len()),
-    }
+    let branch_count = match app.branches.len() {
+        0 => format!(" no branches "),
+        1 => format!(" {} branch ", app.branches.len()),
+        _ => format!(" {} branches ", app.branches.len()),
+    };
 
     let current_branch_text = if let Some(branch) = app.branches.iter().find(|b| b.is_current) {
         format!(" ● {} ", branch.name)
@@ -374,7 +373,6 @@ fn draw_branch_commit_list(f: &mut Frame, area: Rect, branch: &super::app::Branc
     if app.focus == Focus::CommitList {
         state.select(Some(app.selected_commit_index));
     } else {
-        // no focused selection, still render items (with their per-line styles)
         state.select(None);
     }
 

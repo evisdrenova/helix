@@ -180,8 +180,7 @@ async fn main() -> Result<()> {
             generate,
             stage,
         }) => {
-            let repo_path = resolve_repo_path(None)?;
-            let config = load_config(&repo_path)?;
+            let config = load_config()?;
             let workflow = Workflow::new(config);
 
             if generate {
@@ -196,8 +195,7 @@ async fn main() -> Result<()> {
             }
         }
         None => {
-            let repo_path = resolve_repo_path(None)?;
-            let config = load_config(&repo_path)?;
+            let config = load_config()?;
             let workflow = Workflow::new(config);
 
             if args.auto {
@@ -233,8 +231,8 @@ fn resolve_repo_path(path: Option<&Path>) -> Result<PathBuf> {
 }
 
 // load config for a repo (merges global + repo config)
-fn load_config(repo_path: &Path) -> Result<Config> {
-    Config::load(Some(repo_path)).map_err(|e| {
+fn load_config() -> Result<Config> {
+    Config::load().map_err(|e| {
         eprintln!("Failed to load  ~/.helix.toml config: {}", e);
         eprintln!();
         eprintln!("Please create a ~/.helix.toml file by running `helix init`");

@@ -1,4 +1,4 @@
-use crate::helix_index::hash::{self, hash_bytes};
+use crate::helix_index::hash::{self};
 use crate::helix_index::Writer;
 
 use super::format::{Entry, EntryFlags};
@@ -443,10 +443,6 @@ impl HelixIndexData {
         &mut self.data.entries
     }
 
-    fn find_entry_mut(&mut self, path: &Path) -> Option<&mut Entry> {
-        self.data.entries.iter_mut().find(|e| e.path == path)
-    }
-
     fn remove_entry_if_exists(&mut self, path: &Path) {
         self.data.entries.retain(|e| e.path != path);
     }
@@ -476,6 +472,8 @@ impl HelixIndexData {
 
 #[cfg(test)]
 mod tests {
+    use crate::helix_index::hash::hash_bytes;
+
     use super::*;
     use std::fs;
     use std::process::Command;
@@ -806,29 +804,6 @@ mod tests {
         let index = HelixIndexData::load_or_rebuild(repo_path)?;
 
         assert_eq!(index.repo_path, repo_path);
-
-        Ok(())
-    }
-    fn test_stage_file() -> Result<()> {
-        let temp_dir = TempDir::new()?;
-        let repo_path = temp_dir.path();
-
-        init_test_repo(repo_path)?;
-
-        let mut index = HelixIndexData::load_or_rebuild(repo_path)?;
-
-        // Add a tracked file (not staged)
-        index
-            .entries_mut()
-            .push(create_test_entry("test.txt", EntryFlags::TRACKED));
-
-        // Stage it
-        index.stage_file(Path::new("test.txt"))?;
-
-        // Verify STAGED flag added
-        let entry = &index.entries()[0];
-        assert!(entry.flags.contains(EntryFlags::TRACKED));
-        assert!(entry.flags.contains(EntryFlags::STAGED));
 
         Ok(())
     }

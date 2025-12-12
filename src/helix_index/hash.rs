@@ -5,7 +5,6 @@ Functions and methods for hashing data
 use anyhow::Result;
 use blake3::Hasher;
 use rayon::prelude::*;
-use sha1::{Digest, Sha1};
 use std::{fs, io::Read, path::Path};
 
 /// 32-byte BLAKE3 hash

@@ -5,13 +5,12 @@ use anyhow::{Context, Result};
 
 pub struct Workflow {
     llm: LLM,
-    config: Config,
 }
 
 impl Workflow {
     pub fn new(config: Config) -> Self {
         let llm = LLM::new(config.clone());
-        Self { llm, config }
+        Self { llm }
     }
 
     /// Complete workflow: add files, generate commit message, commit, and push

@@ -70,7 +70,7 @@ impl Reader {
                 anyhow::bail!("Unexpected end of entries at entry {}", i);
             }
 
-            let (entry) = Entry::from_bytes(&data[offset..])
+            let entry = Entry::from_bytes(&data[offset..])
                 .with_context(|| format!("Failed to parse entry {}", i))?;
 
             entries.push(entry);

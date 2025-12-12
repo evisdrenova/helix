@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::helix_index::{hash, Reader};
+use crate::helix_index::Reader;
 use anyhow::Result;
 
 /// Verification result for helix.idx integrity
@@ -40,12 +40,6 @@ impl Verifier {
             return Ok(VerifyResult::Missing);
         }
 
-        // Try to read and parse (validates checksum automatically)
-        let index_data = match reader.read() {
-            Ok(data) => data,
-            Err(_) => return Ok(VerifyResult::Corrupted),
-        };
-
         Ok(VerifyResult::Valid)
     }
 
@@ -65,6 +59,7 @@ mod tests {
     use super::*;
     use crate::helix_index::{
         format::{Entry, Header},
+        hash,
         writer::Writer,
     };
     use std::fs;

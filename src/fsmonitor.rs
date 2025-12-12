@@ -26,7 +26,6 @@ pub struct FSMonitor {
     dirty: Arc<DashSet<PathBuf>>, // lockfree reads and writes hashset to track which files are dirty/have been modified
     repo_root: PathBuf,
     _batch_thread: thread::JoinHandle<()>,
-    ignore_rules: Arc<IgnoreRules>,
     index_dirty: Arc<DashSet<PathBuf>>, // track index changes (both helix and git)
     cache_invalidator: Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>>, // callback when canonical index changes
 }
@@ -80,7 +79,6 @@ impl FSMonitor {
             dirty,
             repo_root,
             _batch_thread: batch_thread,
-            ignore_rules,
             index_dirty,
             cache_invalidator,
         })

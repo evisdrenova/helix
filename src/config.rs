@@ -1,11 +1,11 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::{fs, path::Path};
+use std::fs;
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "lowercase")]
 pub enum MessageLevel {
-    Quiet,   // one-line subject only
+    Quiet,   // one-line subject only 
     Normal,  // subject + short body
     Verbose, // subject + detailed body
 }
@@ -48,7 +48,6 @@ pub struct IgnoreConfig {
 /// Merged configuration (global + repo-specific)
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub ignore: Option<IgnoreConfig>,
     pub model: String,
     pub api_base: String,
     pub api_key: Option<String>,
@@ -57,21 +56,14 @@ pub struct Config {
 
 impl Config {
     /// Load configuration with precedence: repo > global > defaults
-    pub fn load(repo_path: Option<&Path>) -> Result<Self> {
+    pub fn load() -> Result<Self> {
         // Load global config
         let global = Self::load_global()
             .context("Failed to load global config")?
             .unwrap_or_else(GlobalConfig::default);
 
-        // Load repo config if repo path provided
-        let repo = if let Some(path) = repo_path {
-            Self::load_repo(path)?
-        } else {
-            None
-        };
-
         // Merge configs
-        Ok(Self::merge(global, repo))
+        Ok(Self::merge(global))
     }
 
     fn load_global() -> Result<Option<GlobalConfig>> {
@@ -90,32 +82,8 @@ impl Config {
 
         Ok(Some(config))
     }
-
-    fn load_repo(repo_path: &Path) -> Result<Option<RepoConfig>> {
-        let config_path = repo_path.join("helix.toml");
-
-        if !config_path.exists() {
-            return Ok(None);
-        }
-
-        let content = fs::read_to_string(&config_path)
-            .with_context(|| format!("Failed to read {}", config_path.display()))?;
-
-        let config: RepoConfig = toml::from_str(&content).context("Failed to parse helix.toml")?;
-
-        Ok(Some(config))
-    }
-
-    fn merge(global: GlobalConfig, repo: Option<RepoConfig>) -> Self {
-        let mut ignore = None;
-
-        // Merge repo config if present
-        if let Some(repo_cfg) = repo {
-            ignore = repo_cfg.ignore;
-        }
-
+    fn merge(global: GlobalConfig) -> Self {
         Self {
-            ignore,
             model: global
                 .model
                 .unwrap_or_else(|| "claude-sonnet-4".to_string()),

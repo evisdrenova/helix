@@ -7,7 +7,4 @@ pub enum Action {
     PageDown,
     GoToTop,
     GoToBottom,
-    CheckoutCommit,
-    EnterSearchMode,
-    ExitSearchMode,
 }

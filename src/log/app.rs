@@ -2,7 +2,7 @@ use anyhow::Result;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
     execute,
-        terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use helix::helix_index::commit::{Commit, CommitLoader};
 use helix::helix_index::hash::Hash;
@@ -22,7 +22,6 @@ pub struct App {
     pub split_ratio: f32,
     pub loader: CommitLoader,
     pub total_loaded: usize,
-    pub initial_limit: usize,
     pub repo_name: String,
     pub remote_branch: Option<String>,
     pub ahead: usize,
@@ -42,8 +41,7 @@ impl App {
         let loader = CommitLoader::new(repo_path)?;
         let current_branch_name = loader.get_current_branch_name()?;
 
-        let initial_limit = 50;
-        let commits = loader.load_commits(initial_limit)?;
+        let commits = loader.load_commits(50)?;
         let total_loaded = commits.len();
         let repo_name = loader.get_repo_name();
 
@@ -61,7 +59,6 @@ impl App {
             split_ratio: 0.35, // 35% for timeline, 65% for details
             loader,
             total_loaded,
-            initial_limit,
             repo_name,
             remote_branch,
             ahead,
@@ -211,23 +208,23 @@ impl App {
                     self.load_more_commits()?;
                 }
             }
-            Action::CheckoutCommit => {
-                if let Some(commit) = self.get_selected_commit() {
-                    let branch_name = format!("checkout-{}", commit.short_hash());
+            // Action::CheckoutCommit => {
+            //     if let Some(commit) = self.get_selected_commit() {
+            //         let branch_name = format!("checkout-{}", commit.short_hash());
 
-                    match self
-                        .loader
-                        .checkout_commit(&commit.commit_hash, Some(&branch_name))
-                    {
-                        Ok(_) => {
-                            self.should_quit = true;
-                        }
-                        Err(e) => {
-                            eprintln!("Failed to checkout commit: {}", e);
-                        }
-                    }
-                }
-            }
+            //         match self
+            //             .loader
+            //             .checkout_commit(&commit.commit_hash, Some(&branch_name))
+            //         {
+            //             Ok(_) => {
+            //                 self.should_quit = true;
+            //             }
+            //             Err(e) => {
+            //                 eprintln!("Failed to checkout commit: {}", e);
+            //             }
+            //         }
+            //     }
+            // }
             Action::GoToTop => {
                 if !visible.is_empty() {
                     self.selected_index = visible[0].0;
@@ -239,9 +236,6 @@ impl App {
                     self.selected_index = visible[visible_count - 1].0;
                     self.adjust_scroll();
                 }
-            }
-            Action::EnterSearchMode | Action::ExitSearchMode => {
-                // handled in event_loop
             }
         }
 
