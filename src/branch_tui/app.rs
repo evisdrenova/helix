@@ -78,7 +78,6 @@ impl App {
                 };
 
             let remote_tracking = get_remote_tracking(repo_path, &branch_name);
-
             let upstream = get_branch_upstream(repo_path, &branch_name);
 
             branches.push(BranchInfo {
@@ -161,13 +160,24 @@ impl App {
         }
     }
 
-    fn on_branch_selected(&mut self, branch_name: &str) -> Result<()> {
-        if !self.branch_commit_lists.contains_key(branch_name) {
+    /// Called whenever the selected branch changes.
+    /// Lazily loads commits for that branch into `branch_commit_lists`.
+    fn on_branch_selected(&mut self) -> Result<()> {
+        // Figure out which branch is currently selected.
+        let branch_name = match self.branches.get(self.selected_index) {
+            Some(b) => b.name.clone(),
+            None => return Ok(()), // nothing selected
+        };
+
+        // Only load if we haven't already cached this branch's commits.
+        if !self.branch_commit_lists.contains_key(&branch_name) {
             let loader = CommitLoader::new(&self.repo_path)?;
-            let commits = loader.load_commits_for_branch(branch_name, 200)?;
-            self.branch_commit_lists
-                .insert(branch_name.to_string(), commits);
+            // You said you'll wire this up – assume it exists:
+            let commits = loader.load_commits_for_branch(&branch_name, 200)?;
+            self.branch_commit_lists.insert(branch_name, commits);
         }
+
+        // Reset commit selection when switching branches.
         self.selected_commit_index = 0;
         Ok(())
     }
@@ -357,15 +367,27 @@ impl App {
                         }
                         KeyCode::Down | KeyCode::Char('j') => {
                             self.next();
+                            if let Err(e) = self.on_branch_selected() {
+                                eprintln!("Failed to load commits for branch: {}", e);
+                            }
                         }
                         KeyCode::Up | KeyCode::Char('k') => {
                             self.previous();
+                            if let Err(e) = self.on_branch_selected() {
+                                eprintln!("Failed to load commits for branch: {}", e);
+                            }
                         }
                         KeyCode::Char('g') => {
                             self.go_to_top();
+                            if let Err(e) = self.on_branch_selected() {
+                                eprintln!("Failed to load commits for branch: {}", e);
+                            }
                         }
                         KeyCode::Char('G') => {
                             self.go_to_bottom();
+                            if let Err(e) = self.on_branch_selected() {
+                                eprintln!("Failed to load commits for branch: {}", e);
+                            }
                         }
                         KeyCode::Char('c') => {
                             // Checkout branch

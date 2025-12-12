@@ -1,7 +1,3 @@
-// // this is the ui for the branch command
-
-use crate::helix_index::hash;
-use chrono::{Local, TimeZone};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -331,6 +327,7 @@ fn draw_branch_summary(f: &mut Frame, area: Rect, branch: &super::app::BranchInf
     f.render_widget(paragraph, area);
 }
 
+#[derive(Debug)]
 struct CommitListEntry {
     short_hash: String,
     summary: String,
@@ -450,230 +447,6 @@ fn create_commit_item(entry: &CommitListEntry, is_selected: bool) -> ListItem {
     ListItem::new(vec![line1, line2])
 }
 
-fn format_branch_details(branch: &super::app::BranchInfo) -> ratatui::text::Text<'static> {
-    let mut lines = vec![];
-
-    // Branch name
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::raw(" "),
-        Span::styled(
-            "Title:",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" "),
-        Span::styled(
-            branch.name.clone(),
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]));
-    lines.push(Line::from(""));
-
-    // Remote tracking (if available)
-    if let Some(ref remote) = branch.remote_tracking {
-        lines.push(Line::from(vec![
-            Span::raw(" "),
-            Span::styled(
-                "Remote:",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" "),
-            Span::styled(remote.clone(), Style::default().fg(Color::Magenta)),
-        ]));
-        lines.push(Line::from(""));
-    }
-
-    // Status
-    if branch.is_current {
-        lines.push(Line::from(vec![
-            Span::raw(" "),
-            Span::styled(
-                "Status:",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" "),
-            Span::styled("Current branch", Style::default().fg(Color::Green)),
-        ]));
-        lines.push(Line::from(""));
-    }
-
-    // Commit count
-    lines.push(Line::from(vec![
-        Span::raw(" "),
-        Span::styled(
-            "Commits:",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" "),
-        Span::styled(
-            format!("{}", branch.commit_count),
-            Style::default().fg(Color::White),
-        ),
-    ]));
-    lines.push(Line::from(""));
-
-    // Latest commit details
-    if let Some(ref commit) = branch.last_commit {
-        lines.push(Line::from(vec![
-            Span::raw(" "),
-            Span::styled(
-                "Latest Commit",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]));
-        lines.push(Line::from(""));
-
-        // Commit hash - short ID on its own line, full hash below
-        let commit_hash_short = short_hash(&commit.commit_hash);
-        let commit_hash_full = hash::hash_to_hex(&commit.commit_hash);
-
-        lines.push(Line::from(vec![
-            Span::raw(" "),
-            Span::styled(
-                "Short Hash:",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            Span::styled(commit_hash_short, Style::default().fg(Color::White)),
-        ]));
-        lines.push(Line::from(""));
-
-        lines.push(Line::from(vec![
-            Span::raw(" "),
-            Span::styled(
-                "Full Hash:",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            Span::styled(commit_hash_full, Style::default().fg(Color::White)),
-        ]));
-        lines.push(Line::from(""));
-
-        // Author
-        lines.push(Line::from(vec![
-            Span::raw(" "),
-            Span::styled(
-                "Author:",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            Span::styled(commit.author.clone(), Style::default().fg(Color::White)),
-        ]));
-        lines.push(Line::from(""));
-
-        // Date
-        let date_str = format_full_time(commit.commit_time);
-        lines.push(Line::from(vec![
-            Span::raw(" "),
-            Span::styled(
-                "Last Commit Date:",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("   "),
-            Span::styled(date_str, Style::default().fg(Color::White)), // Already owned
-        ]));
-        lines.push(Line::from(""));
-
-        // Message
-        lines.push(Line::from(vec![
-            Span::raw(" "),
-            Span::styled(
-                "Message:",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]));
-        lines.push(Line::from(""));
-
-        for line in commit.message.lines() {
-            lines.push(Line::from(vec![
-                Span::raw("   "),
-                Span::styled(line.to_string(), Style::default().fg(Color::White)),
-            ]));
-        }
-
-        // Parents
-        if !commit.parents.is_empty() {
-            lines.push(Line::from(""));
-            lines.push(Line::from(vec![
-                Span::raw(" "),
-                Span::styled(
-                    "Parents:",
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]));
-
-            for parent in &commit.parents {
-                let parent_hash_short = hash::hash_to_hex(parent)[..8].to_string();
-
-                // let parent_commit_name =
-                lines.push(Line::from(vec![
-                    Span::raw("   "),
-                    Span::styled(parent_hash_short, Style::default().fg(Color::Blue)),
-                ]));
-            }
-        }
-
-        // Merge commit indicator
-        if commit.parents.len() > 1 {
-            lines.push(Line::from(""));
-            lines.push(Line::from(vec![
-                Span::raw(" "),
-                Span::styled(
-                    "⚠ Merge commit",
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]));
-        }
-
-        // Initial commit indicator
-        if commit.parents.is_empty() {
-            lines.push(Line::from(""));
-            lines.push(Line::from(vec![
-                Span::raw(" "),
-                Span::styled(
-                    "✨ Initial commit",
-                    Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]));
-        }
-    } else {
-        lines.push(Line::from(vec![
-            Span::raw(" "),
-            Span::styled("No commits yet", Style::default().fg(Color::DarkGray)),
-        ]));
-    }
-
-    ratatui::text::Text::from(lines)
-}
-
 fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
     let help_text = if app.rename_mode {
         Line::from(vec![
@@ -787,14 +560,14 @@ fn format_relative_time(timestamp: u64) -> String {
     }
 }
 
-fn format_full_time(timestamp: u64) -> String {
-    if let Some(dt) = Local.timestamp_opt(timestamp as i64, 0).single() {
-        dt.format("%a %b %d %H:%M:%S %Y").to_string()
-    } else {
-        "Unknown time".to_string()
-    }
-}
+// fn format_full_time(timestamp: u64) -> String {
+//     if let Some(dt) = Local.timestamp_opt(timestamp as i64, 0).single() {
+//         dt.format("%a %b %d %H:%M:%S %Y").to_string()
+//     } else {
+//         "Unknown time".to_string()
+//     }
+// }
 
-fn short_hash(hash: &[u8; 32]) -> String {
-    hash::hash_to_hex(hash)[..8].to_string()
-}
+// fn short_hash(hash: &[u8; 32]) -> String {
+//     hash::hash_to_hex(hash)[..8].to_string()
+// }
