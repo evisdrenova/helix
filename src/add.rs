@@ -3,6 +3,7 @@
 use crate::helix_index::api::HelixIndexData;
 use crate::helix_index::blob_storage::{BlobBatch, BlobStorage};
 use crate::helix_index::format::{Entry, EntryFlags};
+use crate::ignore::IgnoreRules;
 use anyhow::{Context, Result};
 use rayon::prelude::*;
 use std::collections::HashSet;
@@ -83,12 +84,6 @@ pub fn add(repo_path: &Path, paths: &[PathBuf], options: AddOptions) -> Result<(
     Ok(())
 }
 
-/// Resolve which files need to be added
-///
-/// Checks:
-/// - File exists
-/// - Not already staged with same content
-/// - Respects .helixignore (if force=false)
 fn resolve_files_to_add(
     repo_path: &Path,
     index: &HelixIndexData,
@@ -97,6 +92,9 @@ fn resolve_files_to_add(
 ) -> Result<Vec<PathBuf>> {
     let tracked = index.get_tracked();
     let staged = index.get_staged();
+
+    // Load ignore rules
+    let ignore_rules = IgnoreRules::load(repo_path);
 
     if options.verbose {
         println!("Currently tracked: {}", tracked.len());
@@ -124,6 +122,14 @@ fn resolve_files_to_add(
                 return None;
             }
 
+            // Check if should be ignored (unless force)
+            if !options.force && ignore_rules.should_ignore(file_path) {
+                if options.verbose {
+                    println!("  skipping '{}' (ignored)", file_path.display());
+                }
+                return None;
+            }
+
             // Check if needs adding
             match should_add_file(file_path, &full_path, &tracked, &staged, index, options) {
                 Ok(true) => Some(file_path.clone()),
@@ -141,7 +147,6 @@ fn resolve_files_to_add(
     Ok(files_to_add)
 }
 
-/// Check if a single file should be added
 fn should_add_file(
     relative_path: &Path,
     full_path: &Path,
@@ -203,10 +208,6 @@ fn should_add_file(
 }
 
 /// Stage files by writing to blob storage and updating index
-///
-/// Performance: Parallel hashing + batch blob writes
-/// - 100 files (1MB each): ~120ms
-/// - 1,000 files (100KB each): ~600ms
 fn stage_files(
     repo_path: &Path,
     index: &mut HelixIndexData,
