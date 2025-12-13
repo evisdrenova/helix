@@ -523,7 +523,7 @@ impl CommitLoader {
     }
 
     /// Read current HEAD commit hash
-    fn read_head(&self) -> Result<Hash> {
+    pub fn read_head(&self) -> Result<Hash> {
         let head_path = self.repo_path.join(".helix").join("HEAD");
 
         if !head_path.exists() {
