@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use helix::{add, branch, commit, init::init_helix_repo};
+use helix::{add, branch, commit, init::init_helix_repo, push};
 use std::path::{Path, PathBuf};
 
 mod config;
@@ -11,8 +11,6 @@ mod status;
 mod workflow;
 
 use anyhow::Result;
-use config::Config;
-use workflow::Workflow;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -86,6 +84,21 @@ enum Commands {
         force: bool, // force operations
         #[arg(short, long)]
         verbose: bool, // verbose output
+    },
+    Push {
+        /// Remote name (e.g., "origin")
+        remote: String,
+        /// Branch name (e.g., "main")
+        branch: String,
+        /// Force push
+        #[arg(short, long)]
+        force: bool,
+        /// Show verbose output
+        #[arg(short, long)]
+        verbose: bool,
+        /// Dry run (show what would be pushed)
+        #[arg(short = 'n', long)]
+        dry_run: bool,
     },
 }
 
@@ -213,6 +226,24 @@ async fn main() -> Result<()> {
 
             return Ok(());
         }
+        Some(Commands::Push {
+            remote,
+            branch,
+            force,
+            verbose,
+            dry_run,
+        }) => {
+            let repo_path = resolve_repo_path(None)?;
+
+            let options = push::PushOptions {
+                verbose,
+                dry_run,
+                force,
+            };
+
+            push::push(&repo_path, &remote, &branch, options)?;
+            return Ok(());
+        }
         None => {
             // let config = load_config()?;
             // let workflow = Workflow::new(config);
@@ -247,15 +278,4 @@ fn resolve_repo_path(path: Option<&Path>) -> Result<PathBuf> {
     };
 
     Ok(repo_path.canonicalize()?)
-}
-
-// load config for a repo (merges global + repo config)
-fn load_config() -> Result<Config> {
-    Config::load().map_err(|e| {
-        eprintln!("Failed to load  ~/.helix.toml config: {}", e);
-        eprintln!();
-        eprintln!("Please create a ~/.helix.toml file by running `helix init`");
-        eprintln!();
-        e
-    })
 }

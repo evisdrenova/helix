@@ -271,39 +271,37 @@ fn get_author(repo_path: &Path) -> Result<String> {
     let config_path = repo_path.join("helix.toml");
 
     if config_path.exists() {
-        let config_content = fs::read_to_string(&config_path)?;
+        use ini::Ini;
 
-        // Simple TOML parsing for author field
-        for line in config_content.lines() {
-            let line = line.trim();
-            if line.starts_with("author") && line.contains('=') {
-                if let Some(value) = line.split('=').nth(1) {
-                    let author = value.trim().trim_matches('"').trim_matches('\'');
-                    if !author.is_empty() {
-                        return Ok(author.to_string());
+        // Parse INI file
+        if let Ok(conf) = Ini::load_from_file(&config_path) {
+            // Try to get from [user] section
+            if let Some(user_section) = conf.section(Some("user")) {
+                let name = user_section.get("name");
+                let email = user_section.get("email");
+
+                // If both name and email exist, format as "Name <email>"
+                if let (Some(n), Some(e)) = (name, email) {
+                    return Ok(format!("{} <{}>", n.trim(), e.trim()));
+                }
+
+                // If only name exists, use it as-is (might already be formatted)
+                if let Some(n) = name {
+                    let trimmed = n.trim();
+                    if !trimmed.is_empty() {
+                        return Ok(trimmed.to_string());
                     }
                 }
             }
         }
     }
 
-    // Try environment variables (Helix-specific)
-    if let Ok(name) = std::env::var("HELIX_AUTHOR_NAME") {
-        if let Ok(email) = std::env::var("HELIX_AUTHOR_EMAIL") {
-            return Ok(format!("{} <{}>", name, email));
-        }
-    }
-
-    // Try Git config as fallback
-    if let Ok(name) = std::env::var("GIT_AUTHOR_NAME") {
-        if let Ok(email) = std::env::var("GIT_AUTHOR_EMAIL") {
-            return Ok(format!("{} <{}>", name, email));
-        }
-    }
-
     anyhow::bail!(
         "Author not configured. Set in helix.toml:\n\
-         author = \"Your Name <your@email.com>\"\n\
+         \n\
+         [user]\n\
+         name = \"Your Name\"\n\
+         email = \"you@example.com\"\n\
          \n\
          Or use environment variables:\n\
          export HELIX_AUTHOR_NAME=\"Your Name\"\n\

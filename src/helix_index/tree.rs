@@ -462,11 +462,120 @@ impl TreeBuilder {
         }
     }
 
+    // /// Build tree from entries (parallel)
+    // pub fn build_from_entries(
+    //     &self,
+    //     entries: &[crate::helix_index::format::Entry],
+    // ) -> Result<Hash> {
+    //     // Group entries by directory (parallel)
+    //     use std::sync::{Arc, Mutex};
+
+    //     let dir_entries: Arc<Mutex<BTreeMap<PathBuf, Vec<&crate::helix_index::format::Entry>>>> =
+    //         Arc::new(Mutex::new(BTreeMap::new()));
+
+    //     entries.par_iter().for_each(|entry| {
+    //         let parent = entry.path.parent().unwrap_or(Path::new(""));
+    //         let mut map = dir_entries.lock().unwrap();
+    //         map.entry(parent.to_path_buf())
+    //             .or_insert_with(Vec::new)
+    //             .push(entry);
+    //     });
+
+    //     let dir_entries = Arc::try_unwrap(dir_entries).unwrap().into_inner().unwrap();
+
+    //     // Build trees bottom-up with parallel writes per level
+    //     let mut tree_hashes: BTreeMap<PathBuf, Hash> = BTreeMap::new();
+
+    //     // Sort directories by depth (deepest first)
+    //     let mut dirs: Vec<_> = dir_entries.keys().cloned().collect();
+    //     dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
+
+    //     // Group directories by depth for parallel processing
+    //     let mut depth_groups: Vec<Vec<PathBuf>> = Vec::new();
+    //     let mut current_depth = None;
+    //     let mut current_group = Vec::new();
+
+    //     for dir in dirs {
+    //         let depth = dir.components().count();
+    //         if current_depth != Some(depth) {
+    //             if !current_group.is_empty() {
+    //                 depth_groups.push(std::mem::take(&mut current_group));
+    //             }
+    //             current_depth = Some(depth);
+    //         }
+    //         current_group.push(dir);
+    //     }
+    //     if !current_group.is_empty() {
+    //         depth_groups.push(current_group);
+    //     }
+
+    //     // Process each depth level in parallel
+    //     for depth_dirs in depth_groups {
+    //         let tree_hashes_ref = &tree_hashes;
+
+    //         // Build all trees at this depth in parallel
+    //         let results: Vec<(PathBuf, Hash)> = depth_dirs
+    //             .par_iter()
+    //             .map(|dir| {
+    //                 let dir_entries = dir_entries.get(dir).unwrap();
+    //                 let mut tree = Tree::new();
+
+    //                 // Add file entries
+    //                 for entry in dir_entries {
+    //                     let name = entry
+    //                         .path
+    //                         .file_name()
+    //                         .unwrap()
+    //                         .to_string_lossy()
+    //                         .to_string();
+
+    //                     tree.add_entry(TreeEntry::new_file(
+    //                         name,
+    //                         entry.oid,
+    //                         entry.file_mode,
+    //                         entry.size,
+    //                     ));
+    //                 }
+
+    //                 // Add subdirectory entries (trees from previous depth levels)
+    //                 for (subdir, subdir_hash) in tree_hashes_ref {
+    //                     if subdir.parent() == Some(dir) {
+    //                         let name = subdir.file_name().unwrap().to_string_lossy().to_string();
+    //                         tree.add_entry(TreeEntry::new_tree(name, *subdir_hash));
+    //                     }
+    //                 }
+
+    //                 // Sort and store tree
+    //                 tree.sort();
+    //                 let tree_hash = self.storage.write(&tree).unwrap();
+    //                 (dir.clone(), tree_hash)
+    //             })
+    //             .collect();
+
+    //         // Add results to tree_hashes
+    //         for (dir, hash) in results {
+    //             tree_hashes.insert(dir, hash);
+    //         }
+    //     }
+
+    //     // Return root tree hash
+    //     tree_hashes
+    //         .get(Path::new(""))
+    //         .copied()
+    //         .ok_or_else(|| anyhow::anyhow!("No root tree created"))
+    // }
+
     /// Build tree from entries (parallel)
     pub fn build_from_entries(
         &self,
         entries: &[crate::helix_index::format::Entry],
     ) -> Result<Hash> {
+        // Handle empty entries case
+        if entries.is_empty() {
+            let empty_tree = Tree::new();
+            return self.storage.write(&empty_tree);
+        }
+
         // Group entries by directory (parallel)
         use std::sync::{Arc, Mutex};
 
@@ -483,11 +592,26 @@ impl TreeBuilder {
 
         let dir_entries = Arc::try_unwrap(dir_entries).unwrap().into_inner().unwrap();
 
+        // Collect all directories that need trees (including ancestors)
+        let mut all_dirs: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+
+        for dir in dir_entries.keys() {
+            // Add this directory
+            all_dirs.insert(dir.clone());
+
+            // Add all ancestor directories up to root
+            let mut current = dir.clone();
+            while let Some(parent) = current.parent() {
+                all_dirs.insert(parent.to_path_buf());
+                current = parent.to_path_buf();
+            }
+        }
+
         // Build trees bottom-up with parallel writes per level
         let mut tree_hashes: BTreeMap<PathBuf, Hash> = BTreeMap::new();
 
         // Sort directories by depth (deepest first)
-        let mut dirs: Vec<_> = dir_entries.keys().cloned().collect();
+        let mut dirs: Vec<_> = all_dirs.into_iter().collect();
         dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
 
         // Group directories by depth for parallel processing
@@ -517,29 +641,30 @@ impl TreeBuilder {
             let results: Vec<(PathBuf, Hash)> = depth_dirs
                 .par_iter()
                 .map(|dir| {
-                    let dir_entries = dir_entries.get(dir).unwrap();
                     let mut tree = Tree::new();
 
-                    // Add file entries
-                    for entry in dir_entries {
-                        let name = entry
-                            .path
-                            .file_name()
-                            .unwrap()
-                            .to_string_lossy()
-                            .to_string();
+                    // Add file entries (if any exist in this directory)
+                    if let Some(entries_in_dir) = dir_entries.get(dir) {
+                        for entry in entries_in_dir {
+                            let name = entry
+                                .path
+                                .file_name()
+                                .unwrap()
+                                .to_string_lossy()
+                                .to_string();
 
-                        tree.add_entry(TreeEntry::new_file(
-                            name,
-                            entry.oid,
-                            entry.file_mode,
-                            entry.size,
-                        ));
+                            tree.add_entry(TreeEntry::new_file(
+                                name,
+                                entry.oid,
+                                entry.file_mode,
+                                entry.size,
+                            ));
+                        }
                     }
 
                     // Add subdirectory entries (trees from previous depth levels)
                     for (subdir, subdir_hash) in tree_hashes_ref {
-                        if subdir.parent() == Some(dir) {
+                        if subdir.parent() == Some(dir.as_path()) {
                             let name = subdir.file_name().unwrap().to_string_lossy().to_string();
                             tree.add_entry(TreeEntry::new_tree(name, *subdir_hash));
                         }
