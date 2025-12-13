@@ -45,11 +45,6 @@ impl Default for CommitOptions {
 }
 
 /// Create a commit from staged files
-///
-/// Performance:
-/// - 100 files: ~10ms
-/// - 1,000 files: ~50ms
-/// - 10,000 files: ~300ms
 pub fn commit(repo_path: &Path, options: CommitOptions) -> Result<Hash> {
     let start = Instant::now();
 

@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use helix::{add, branch, init::init_helix_repo};
+use helix::{add, branch, commit, init::init_helix_repo};
 use std::path::{Path, PathBuf};
 
 mod config;
@@ -45,13 +45,21 @@ enum Commands {
         path: Option<PathBuf>, // Repository path (defaults to cwd)
     },
     Commit {
-        files: Vec<String>, // files to add to staging
+        /// Commit message
         #[arg(short, long)]
-        branch: Option<String>, // branch to push to (defaults to current branch)
+        message: Option<String>,
+        /// Author (overrides config)
         #[arg(short, long)]
-        generate: bool, // only generate commit message for staged changes
-        #[arg(short = 's', long)]
-        stage: bool, // add files and generate message (don't commit)
+        author: Option<String>,
+        /// Allow empty commit (no staged files)
+        #[arg(long)]
+        allow_empty: bool,
+        /// Amend previous commit
+        #[arg(long)]
+        amend: bool,
+        /// Show verbose output
+        #[arg(short, long)]
+        verbose: bool,
     },
     Add {
         #[arg(required = true)]
@@ -175,45 +183,56 @@ async fn main() -> Result<()> {
             return Ok(());
         }
         Some(Commands::Commit {
-            files,
-            branch,
-            generate,
-            stage,
+            message,
+            author,
+            allow_empty,
+            amend,
+            verbose,
         }) => {
-            let config = load_config()?;
-            let workflow = Workflow::new(config);
+            let repo_path = resolve_repo_path(None)?;
 
-            if generate {
-                if !files.is_empty() {
-                    eprintln!("Warning: Files specified with --generate will be ignored");
-                }
-                workflow.generate_message_only().await?;
-            } else if stage {
-                workflow.stage_and_generate(files).await?;
+            if let Some(msg) = message {
+                // Commit with message
+                let options = commit::CommitOptions {
+                    message: msg,
+                    author,
+                    allow_empty,
+                    amend,
+                    verbose,
+                };
+
+                commit::commit(&repo_path, options)?;
             } else {
-                workflow.auto_commit_and_push(files, branch).await?;
+                // No message provided - show what would be committed
+                commit::show_staged(&repo_path)?;
+                eprintln!();
+                eprintln!("Aborting commit due to empty commit message.");
+                eprintln!("Use 'helix commit -m <message>' to commit.");
+                std::process::exit(1);
             }
+
+            return Ok(());
         }
         None => {
-            let config = load_config()?;
-            let workflow = Workflow::new(config);
+            // let config = load_config()?;
+            // let workflow = Workflow::new(config);
 
-            if args.auto {
-                workflow
-                    .auto_commit_and_push(args.files, args.branch)
-                    .await?;
-            } else if args.generate {
-                if !args.files.is_empty() {
-                    eprintln!("Warning: Files specified with --generate will be ignored");
-                }
-                workflow.generate_message_only().await?;
-            } else if args.stage_and_generate {
-                workflow.stage_and_generate(args.files).await?;
-            } else {
-                workflow
-                    .auto_commit_and_push(args.files, args.branch)
-                    .await?;
-            }
+            // if args.auto {
+            //     workflow
+            //         .auto_commit_and_push(args.files, args.branch)
+            //         .await?;
+            // } else if args.generate {
+            //     if !args.files.is_empty() {
+            //         eprintln!("Warning: Files specified with --generate will be ignored");
+            //     }
+            //     workflow.generate_message_only().await?;
+            // } else if args.stage_and_generate {
+            //     workflow.stage_and_generate(args.files).await?;
+            // } else {
+            //     workflow
+            //         .auto_commit_and_push(args.files, args.branch)
+            //         .await?;
+            // }
         }
     }
 
