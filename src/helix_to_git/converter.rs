@@ -9,7 +9,7 @@ use super::push_cache::PushCache;
 use crate::helix_index::blob_storage::BlobStorage;
 use crate::helix_index::commit::{Commit, CommitStorage};
 use crate::helix_index::hash::Hash;
-use crate::helix_index::tree::{Tree, TreeEntry, TreeStorage};
+use crate::helix_index::tree::{Tree, TreeStorage};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -95,30 +95,34 @@ impl HelixToGitConverter {
         // Convert entries
         let mut git_tree_builder = GitTreeBuilder::new();
 
-        for entry in helix_tree.entries() {
-            match entry {
-                TreeEntry::File {
-                    name,
-                    blob_hash,
-                    mode,
-                } => {
+        for entry in &helix_tree.entries {
+            match entry.entry_type {
+                crate::helix_index::tree::EntryType::File
+                | crate::helix_index::tree::EntryType::FileExecutable => {
                     // Convert blob
-                    let git_blob_sha = self.convert_blob(blob_hash)?;
+                    let git_blob_sha = self.convert_blob(&entry.oid)?;
 
                     // Determine if executable
-                    let entry = if *mode == 0o100755 {
-                        GitTreeEntry::executable(name.clone(), git_blob_sha)
+                    let tree_entry = if entry.entry_type
+                        == crate::helix_index::tree::EntryType::FileExecutable
+                    {
+                        GitTreeEntry::executable(entry.name.clone(), git_blob_sha)
                     } else {
-                        GitTreeEntry::file(name.clone(), git_blob_sha)
+                        GitTreeEntry::file(entry.name.clone(), git_blob_sha)
                     };
 
-                    git_tree_builder = git_tree_builder.add_entry(entry);
+                    git_tree_builder = git_tree_builder.add_entry(tree_entry);
                 }
-                TreeEntry::Directory { name, tree_hash } => {
+                crate::helix_index::tree::EntryType::Tree => {
                     // Convert subtree recursively
-                    let git_subtree_sha = self.convert_tree(tree_hash)?;
+                    let git_subtree_sha = self.convert_tree(&entry.oid)?;
                     git_tree_builder =
-                        git_tree_builder.add_directory(name.clone(), git_subtree_sha);
+                        git_tree_builder.add_directory(entry.name.clone(), git_subtree_sha);
+                }
+                crate::helix_index::tree::EntryType::Symlink => {
+                    // For now, treat symlinks as regular files
+                    let git_blob_sha = self.convert_blob(&entry.oid)?;
+                    git_tree_builder = git_tree_builder.add_file(entry.name.clone(), git_blob_sha);
                 }
             }
         }
@@ -218,12 +222,14 @@ impl HelixToGitConverter {
         let helix_tree = self.tree_storage.read(helix_tree_hash)?;
 
         // Process entries
-        for entry in helix_tree.entries() {
-            match entry {
-                TreeEntry::File { blob_hash, .. } => {
+        for entry in &helix_tree.entries {
+            match entry.entry_type {
+                crate::helix_index::tree::EntryType::File
+                | crate::helix_index::tree::EntryType::FileExecutable
+                | crate::helix_index::tree::EntryType::Symlink => {
                     // Add blob
-                    if !git_objects.processed.contains(blob_hash) {
-                        let content = self.blob_storage.read(blob_hash)?;
+                    if !git_objects.processed.contains(&entry.oid) {
+                        let content = self.blob_storage.read(&entry.oid)?;
                         let git_blob_sha = compute_git_sha(GitObjectType::Blob, &content);
 
                         git_objects.blobs.insert(
@@ -231,12 +237,12 @@ impl HelixToGitConverter {
                             create_git_object(GitObjectType::Blob, &content),
                         );
 
-                        git_objects.processed.insert(*blob_hash);
+                        git_objects.processed.insert(entry.oid);
                     }
                 }
-                TreeEntry::Directory { tree_hash, .. } => {
+                crate::helix_index::tree::EntryType::Tree => {
                     // Process subtree recursively
-                    self.collect_tree_objects(tree_hash, git_objects)?;
+                    self.collect_tree_objects(&entry.oid, git_objects)?;
                 }
             }
         }
@@ -276,27 +282,22 @@ impl HelixToGitConverter {
     fn build_git_tree_content(&mut self, helix_tree: &Tree) -> Result<Vec<u8>> {
         let mut git_tree_builder = GitTreeBuilder::new();
 
-        for entry in helix_tree.entries() {
-            match entry {
-                TreeEntry::File {
-                    name,
-                    blob_hash,
-                    mode,
-                } => {
-                    let git_blob_sha = self.convert_blob(blob_hash)?;
-
-                    let entry = if *mode == 0o100755 {
-                        GitTreeEntry::executable(name.clone(), git_blob_sha)
-                    } else {
-                        GitTreeEntry::file(name.clone(), git_blob_sha)
-                    };
-
-                    git_tree_builder = git_tree_builder.add_entry(entry);
+        for entry in &helix_tree.entries {
+            match entry.entry_type {
+                crate::helix_index::tree::EntryType::File
+                | crate::helix_index::tree::EntryType::Symlink => {
+                    let git_blob_sha = self.convert_blob(&entry.oid)?;
+                    git_tree_builder = git_tree_builder.add_file(entry.name.clone(), git_blob_sha);
                 }
-                TreeEntry::Directory { name, tree_hash } => {
-                    let git_subtree_sha = self.convert_tree(tree_hash)?;
+                crate::helix_index::tree::EntryType::FileExecutable => {
+                    let git_blob_sha = self.convert_blob(&entry.oid)?;
+                    let tree_entry = GitTreeEntry::executable(entry.name.clone(), git_blob_sha);
+                    git_tree_builder = git_tree_builder.add_entry(tree_entry);
+                }
+                crate::helix_index::tree::EntryType::Tree => {
+                    let git_subtree_sha = self.convert_tree(&entry.oid)?;
                     git_tree_builder =
-                        git_tree_builder.add_directory(name.clone(), git_subtree_sha);
+                        git_tree_builder.add_directory(entry.name.clone(), git_subtree_sha);
                 }
             }
         }
