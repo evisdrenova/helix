@@ -146,64 +146,89 @@ fn resolve_files_to_add(
 
     Ok(files_to_add)
 }
-
 fn should_add_file(
     relative_path: &Path,
     full_path: &Path,
     tracked: &HashSet<PathBuf>,
     staged: &HashSet<PathBuf>,
     index: &HelixIndexData,
-    _options: &AddOptions,
+    options: &AddOptions,
 ) -> Result<bool> {
     // If untracked, always add
     if !tracked.contains(relative_path) {
         return Ok(true);
     }
 
-    // File is tracked - check if already staged and unchanged
-    if staged.contains(relative_path) {
-        // Get existing entry
-        let entry = index
-            .entries()
-            .iter()
-            .find(|e| e.path == relative_path)
-            .ok_or_else(|| anyhow::anyhow!("Entry not found for {}", relative_path.display()))?;
-
-        // Check if file modified since staging (mtime check)
-        let metadata = fs::metadata(full_path)?;
-        let current_mtime = metadata
-            .modified()?
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs();
-
-        if current_mtime == entry.mtime_sec {
-            // File unchanged since staging - skip
-            return Ok(false);
-        }
-
-        // File modified - re-add
+    // If force flag, always re-add
+    if options.force {
         return Ok(true);
     }
 
-    // File is tracked but not staged - check if modified
+    // Get existing entry
     let entry = index
         .entries()
         .iter()
         .find(|e| e.path == relative_path)
         .ok_or_else(|| anyhow::anyhow!("Entry not found for {}", relative_path.display()))?;
 
+    // Get current file metadata
     let metadata = fs::metadata(full_path)?;
     let current_mtime = metadata
         .modified()?
         .duration_since(std::time::UNIX_EPOCH)?
         .as_secs();
 
-    // If mtime different, file is modified
+    // Get repo_path by going up from full_path
+    let repo_path = full_path
+        .ancestors()
+        .find(|p| p.join(".helix").exists())
+        .ok_or_else(|| anyhow::anyhow!("Could not find repo root"))?;
+
+    let blob_storage = BlobStorage::for_repo(repo_path);
+
+    // Check if file is already staged
+    if staged.contains(relative_path) {
+        // File is staged - check if it's been modified since staging
+        if current_mtime != entry.mtime_sec {
+            // File modified after staging - need to re-stage
+            return Ok(true);
+        }
+
+        // Mtime unchanged - verify blob exists
+        if !blob_storage.exists(&entry.oid) {
+            if options.verbose {
+                eprintln!(
+                    "⚠️  Blob missing for staged file {}, re-creating...",
+                    relative_path.display()
+                );
+            }
+            return Ok(true);
+        }
+
+        // Already staged, unchanged, and blob exists - skip
+        return Ok(false);
+    }
+
+    // File is tracked but not staged
+    // Check if file has been modified since last commit
     if current_mtime != entry.mtime_sec {
+        // File modified - should be added/staged
         return Ok(true);
     }
 
-    // File unchanged - skip
+    // File unchanged since last commit - verify blob exists anyway
+    if !blob_storage.exists(&entry.oid) {
+        if options.verbose {
+            eprintln!(
+                "⚠️  Blob missing for {}, re-creating...",
+                relative_path.display()
+            );
+        }
+        return Ok(true);
+    }
+
+    // File is tracked, unchanged, blob exists, but not staged
+    // Don't auto-stage unchanged files - skip
     Ok(false)
 }
 
