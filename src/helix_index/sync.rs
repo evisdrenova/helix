@@ -808,13 +808,13 @@ impl SyncEngine {
         for (git_sha, helix_hash) in mapping {
             let git_hex = hex::encode(git_sha);
             let helix_hex = hash_to_hex(helix_hash);
-            content.push_str(&format!("{} {}\n", git_hex, helix_hex));
+            // Write: helix_hash (64 chars) THEN git_sha (40 chars)
+            content.push_str(&format!("{} {}\n", helix_hex, git_hex));
         }
 
         fs::write(&mapping_path, content)?;
         Ok(())
     }
-
     fn build_helix_commit_from_git_commit(
         &self,
         git_commit: &gix::Commit,

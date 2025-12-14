@@ -55,11 +55,38 @@ impl HelixToGitConverter {
         for line in content.lines() {
             let parts: Vec<_> = line.split_whitespace().collect();
             if parts.len() == 2 {
-                let git_sha = parts[0].to_string();
-                let helix_hash = hex_to_hash(parts[1])?;
+                // File format: helix_hash (64) git_sha (40)
+                let helix_hex = parts[0]; // 64 chars
+                let git_sha = parts[1].to_string(); // 40 chars
+
+                // Validate lengths
+                if helix_hex.len() != 64 {
+                    eprintln!(
+                        "Warning: Invalid helix hash length: {} (expected 64)",
+                        helix_hex
+                    );
+                    continue;
+                }
+                if git_sha.len() != 40 {
+                    eprintln!(
+                        "Warning: Invalid git hash length: {} (expected 40)",
+                        git_sha
+                    );
+                    continue;
+                }
+
+                // Convert helix_hash from hex string to Hash
+                let helix_bytes = hex::decode(helix_hex).context("Failed to decode helix hash")?;
+
+                let mut helix_hash = [0u8; 32];
+                helix_hash.copy_from_slice(&helix_bytes);
+
+                // Map: helix_hash -> git_sha
                 mapping.insert(helix_hash, git_sha);
             }
         }
+
+        eprintln!("DEBUG: Loaded {} Git->Helix mappings", mapping.len());
 
         Ok(mapping)
     }
