@@ -8,10 +8,11 @@ use super::git_objects::{
 use super::push_cache::PushCache;
 use crate::helix_index::blob_storage::BlobStorage;
 use crate::helix_index::commit::{Commit, CommitStorage};
-use crate::helix_index::hash::Hash;
+use crate::helix_index::hash::{hex_to_hash, Hash};
 use crate::helix_index::tree::{Tree, TreeStorage};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 pub struct HelixToGitConverter {
@@ -20,11 +21,14 @@ pub struct HelixToGitConverter {
     commit_storage: CommitStorage,
     tree_storage: TreeStorage,
     blob_storage: BlobStorage,
+    git_mapping: HashMap<Hash, String>,
 }
 
 impl HelixToGitConverter {
     pub fn new(repo_path: &Path) -> Result<Self> {
         let cache = PushCache::load(repo_path)?;
+        let git_mapping = Self::load_git_mapping(repo_path)?;
+
         let commit_storage = CommitStorage::for_repo(repo_path);
         let tree_storage = TreeStorage::for_repo(repo_path);
         let blob_storage = BlobStorage::for_repo(repo_path);
@@ -35,11 +39,39 @@ impl HelixToGitConverter {
             commit_storage,
             tree_storage,
             blob_storage,
+            git_mapping,
         })
+    }
+
+    fn load_git_mapping(repo_path: &Path) -> Result<HashMap<Hash, String>> {
+        let mapping_path = repo_path.join(".helix/git-commit-mapping");
+        let mut mapping = HashMap::new();
+
+        if !mapping_path.exists() {
+            return Ok(mapping);
+        }
+
+        let content = fs::read_to_string(&mapping_path)?;
+        for line in content.lines() {
+            let parts: Vec<_> = line.split_whitespace().collect();
+            if parts.len() == 2 {
+                let git_sha = parts[0].to_string();
+                let helix_hash = hex_to_hash(parts[1])?;
+                mapping.insert(helix_hash, git_sha);
+            }
+        }
+
+        Ok(mapping)
     }
 
     /// Convert Helix commit to Git SHA, using cache
     pub fn convert_commit(&mut self, helix_hash: &Hash) -> Result<String> {
+        // Check if this commit was originally imported from Git
+        if let Some(original_git_sha) = self.git_mapping.get(helix_hash) {
+            eprintln!("DEBUG: Using original Git SHA for Helix commit");
+            return Ok(original_git_sha.clone());
+        }
+
         // Check cache first
         if let Some(git_sha) = self.cache.get(helix_hash) {
             return Ok(git_sha.to_string());

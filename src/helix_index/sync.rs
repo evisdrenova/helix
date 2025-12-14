@@ -75,6 +75,7 @@ use super::tree::TreeBuilder;
 use super::writer::Writer;
 
 use crate::helix_index::blob_storage::BlobStorage;
+use crate::helix_index::hash::hash_to_hex;
 use crate::ignore::IgnoreRules;
 use crate::index::GitIndex;
 
@@ -795,7 +796,23 @@ impl SyncEngine {
 
         pb.finish_with_message(format!("Imported {} commits", helix_commits.len()));
 
+        self.save_git_helix_mapping(&git_hash_to_helix_hash)?;
+
         Ok(git_hash_to_helix_hash)
+    }
+
+    fn save_git_helix_mapping(&self, mapping: &HashMap<Vec<u8>, [u8; 32]>) -> Result<()> {
+        let mapping_path = self.repo_path.join(".helix/git-commit-mapping");
+
+        let mut content = String::new();
+        for (git_sha, helix_hash) in mapping {
+            let git_hex = hex::encode(git_sha);
+            let helix_hex = hash_to_hex(helix_hash);
+            content.push_str(&format!("{} {}\n", git_hex, helix_hex));
+        }
+
+        fs::write(&mapping_path, content)?;
+        Ok(())
     }
 
     fn build_helix_commit_from_git_commit(
