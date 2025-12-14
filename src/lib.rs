@@ -4,7 +4,6 @@ pub mod branch_tui;
 pub mod commit;
 pub mod fsmonitor;
 pub mod helix_index;
-pub mod helix_to_git;
 pub mod ignore;
 pub mod index;
 pub mod init;

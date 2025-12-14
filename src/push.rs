@@ -11,11 +11,9 @@
 use crate::helix_index::api::HelixIndexData;
 use crate::helix_index::blob_storage::BlobStorage;
 use crate::helix_index::commit::{CommitLoader, CommitStorage};
-use crate::helix_index::hash::{self, Hash};
+use crate::helix_index::hash::{self};
 use crate::helix_index::tree::{EntryType, TreeStorage};
-use crate::helix_to_git::{converter, git_objects};
 use anyhow::{Context, Result};
-use converter::HelixToGitConverter;
 use std::fs;
 use std::path::Path;
 
