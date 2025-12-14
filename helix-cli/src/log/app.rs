@@ -4,8 +4,8 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use helix::helix_index::commit::{Commit, CommitLoader};
-use helix::helix_index::hash::Hash;
+use helix_cli::helix_index::commit::{Commit, CommitLoader};
+use helix_cli::helix_index::hash::Hash;
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
 use std::path::Path;

@@ -5,7 +5,7 @@ use tempfile::TempDir;
 
 fn init_test_repo(path: &Path) -> Result<()> {
     // Initialize pure Helix repo (no Git needed)
-    helix::init::init_helix_repo(path, None)?;
+    helix_cli::init::init_helix_repo(path, None)?;
 
     // Set up author config
     let config_path = path.join("helix.toml");
@@ -31,7 +31,7 @@ fn test_helix_index_created_on_add() -> Result<()> {
     fs::write(temp_dir.path().join("file2.txt"), "content2")?;
 
     // Use helix add command
-    use helix::add::{add, AddOptions};
+    use helix_cli::add::{add, AddOptions};
     use std::path::PathBuf;
 
     add(
@@ -44,7 +44,7 @@ fn test_helix_index_created_on_add() -> Result<()> {
     assert!(temp_dir.path().join(".helix/helix.idx").exists());
 
     // Load and verify staging info
-    use helix::helix_index::api::HelixIndexData;
+    use helix_cli::helix_index::api::HelixIndexData;
     let index = HelixIndexData::load_or_rebuild(temp_dir.path())?;
 
     // Verify both files are staged
@@ -64,8 +64,8 @@ fn test_stage_unstage_workflow() -> Result<()> {
     // Create and add file
     fs::write(temp_dir.path().join("file1.txt"), "content")?;
 
-    use helix::add::{add, AddOptions};
-    use helix::helix_index::api::HelixIndexData;
+    use helix_cli::add::{add, AddOptions};
+    use helix_cli::helix_index::api::HelixIndexData;
     use std::path::PathBuf;
 
     add(
@@ -110,8 +110,8 @@ fn test_index_persistence_and_reload() -> Result<()> {
     // Create and stage files
     fs::write(temp_dir.path().join("file1.txt"), "content")?;
 
-    use helix::add::{add, AddOptions};
-    use helix::helix_index::api::HelixIndexData;
+    use helix_cli::add::{add, AddOptions};
+    use helix_cli::helix_index::api::HelixIndexData;
     use std::path::PathBuf;
 
     add(
@@ -152,9 +152,9 @@ fn test_commit_workflow() -> Result<()> {
     // Create and stage file
     fs::write(temp_dir.path().join("file1.txt"), "content")?;
 
-    use helix::add::{add, AddOptions};
-    use helix::commit::{commit, CommitOptions};
-    use helix::helix_index::api::HelixIndexData;
+    use helix_cli::add::{add, AddOptions};
+    use helix_cli::commit::{commit, CommitOptions};
+    use helix_cli::helix_index::api::HelixIndexData;
     use std::path::PathBuf;
 
     add(
@@ -180,7 +180,7 @@ fn test_commit_workflow() -> Result<()> {
     )?;
 
     // Verify commit was created
-    use helix::helix_index::commit::CommitStorage;
+    use helix_cli::helix_index::commit::CommitStorage;
     let storage = CommitStorage::for_repo(temp_dir.path());
     let commit_obj = storage.read(&commit_hash)?;
 
@@ -205,9 +205,9 @@ fn test_second_commit_workflow() -> Result<()> {
     let temp_dir = TempDir::new()?;
     init_test_repo(temp_dir.path())?;
 
-    use helix::add::{add, AddOptions};
-    use helix::commit::{commit, CommitOptions};
-    use helix::helix_index::commit::CommitStorage;
+    use helix_cli::add::{add, AddOptions};
+    use helix_cli::commit::{commit, CommitOptions};
+    use helix_cli::helix_index::commit::CommitStorage;
     use std::path::PathBuf;
 
     // First commit
@@ -273,9 +273,9 @@ fn test_blob_deduplication() -> Result<()> {
     fs::write(temp_dir.path().join("file1.txt"), "same content")?;
     fs::write(temp_dir.path().join("file2.txt"), "same content")?;
 
-    use helix::add::{add, AddOptions};
-    use helix::helix_index::api::HelixIndexData;
-    use helix::helix_index::blob_storage::BlobStorage;
+    use helix_cli::add::{add, AddOptions};
+    use helix_cli::helix_index::api::HelixIndexData;
+    use helix_cli::helix_index::blob_storage::BlobStorage;
     use std::path::PathBuf;
 
     add(
@@ -304,7 +304,7 @@ fn test_fsmonitor_integration() -> Result<()> {
     let temp_dir = TempDir::new()?;
     init_test_repo(temp_dir.path())?;
 
-    use helix::fsmonitor::FSMonitor;
+    use helix_cli::fsmonitor::FSMonitor;
 
     let mut monitor = FSMonitor::new(temp_dir.path())?;
     monitor.start_watching_repo()?;
@@ -335,8 +335,8 @@ fn test_stage_all_unstage_all() -> Result<()> {
     fs::write(temp_dir.path().join("file2.txt"), "content2")?;
     fs::write(temp_dir.path().join("file3.txt"), "content3")?;
 
-    use helix::add::{add, AddOptions};
-    use helix::helix_index::api::HelixIndexData;
+    use helix_cli::add::{add, AddOptions};
+    use helix_cli::helix_index::api::HelixIndexData;
     use std::path::PathBuf;
 
     add(

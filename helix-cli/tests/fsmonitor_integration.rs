@@ -1,5 +1,5 @@
 use anyhow::Result;
-use helix::{fsmonitor::FSMonitor, index::GitIndex};
+use helix_cli::{fsmonitor::FSMonitor, index::GitIndex};
 use std::fs;
 use std::thread;
 use std::time::Duration;

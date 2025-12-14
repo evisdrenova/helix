@@ -1,5 +1,5 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use helix::helix_index::api::HelixIndexData;
+use helix_cli::helix_index::api::HelixIndexData;
 use std::fs;
 use std::hint::black_box;
 use std::path::Path;
@@ -115,7 +115,7 @@ fn bench_helix_index_cached_run(c: &mut Criterion) {
         init_test_repo(temp_dir.path(), *size).unwrap();
 
         // Pre-build index
-        use helix::helix_index::api::HelixIndexData;
+        use helix_cli::helix_index::api::HelixIndexData;
         HelixIndexData::load_or_rebuild(temp_dir.path()).unwrap();
 
         group.throughput(Throughput::Elements(*size as u64));

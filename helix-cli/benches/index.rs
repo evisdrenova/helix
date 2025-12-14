@@ -1,5 +1,5 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use helix::index::GitIndex;
+use helix_cli::index::GitIndex;
 use std::collections::HashMap;
 use std::fs;
 use std::hint::black_box;

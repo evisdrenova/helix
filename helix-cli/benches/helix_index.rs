@@ -1,10 +1,10 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use helix::add::{add, AddOptions};
-use helix::commit::{commit, CommitOptions};
-use helix::helix_index::api::HelixIndexData;
-use helix::helix_index::blob_storage::BlobStorage;
-use helix::helix_index::tree::TreeBuilder;
-use helix::helix_index::Reader;
+use helix_cli::add::{add, AddOptions};
+use helix_cli::commit::{commit, CommitOptions};
+use helix_cli::helix_index::api::HelixIndexData;
+use helix_cli::helix_index::blob_storage::BlobStorage;
+use helix_cli::helix_index::tree::TreeBuilder;
+use helix_cli::helix_index::Reader;
 use std::fs;
 use std::hint::black_box;
 use std::path::{Path, PathBuf};
@@ -12,7 +12,7 @@ use tempfile::TempDir;
 
 fn init_test_repo(path: &Path, file_count: usize) -> anyhow::Result<()> {
     // Initialize pure Helix repo
-    helix::init::init_helix_repo(path, None)?;
+    helix_cli::init::init_helix_repo(path, None)?;
 
     // Set up author config
     let config_path = path.join(".helix/config.toml");
@@ -88,7 +88,7 @@ fn bench_add_command(c: &mut Criterion) {
                 || {
                     // Setup: create fresh repo for each iteration
                     let temp_dir = TempDir::new().unwrap();
-                    helix::init::init_helix_repo(temp_dir.path(), None).unwrap();
+                    helix_cli::init::init_helix_repo(temp_dir.path(), None).unwrap();
 
                     let config_path = temp_dir.path().join(".helix/config.toml");
                     fs::write(
@@ -136,7 +136,7 @@ fn bench_blob_write(c: &mut Criterion) {
             b.iter_batched(
                 || {
                     let temp_dir = TempDir::new().unwrap();
-                    helix::init::init_helix_repo(temp_dir.path(), None).unwrap();
+                    helix_cli::init::init_helix_repo(temp_dir.path(), None).unwrap();
                     let storage = BlobStorage::for_repo(temp_dir.path());
                     let contents: Vec<Vec<u8>> = (0..count)
                         .map(|i| format!("content {}", i).into_bytes())
@@ -383,7 +383,7 @@ fn bench_full_workflow(c: &mut Criterion) {
             b.iter_batched(
                 || {
                     let temp_dir = TempDir::new().unwrap();
-                    helix::init::init_helix_repo(temp_dir.path(), None).unwrap();
+                    helix_cli::init::init_helix_repo(temp_dir.path(), None).unwrap();
 
                     let config_path = temp_dir.path().join(".helix/config.toml");
                     fs::write(

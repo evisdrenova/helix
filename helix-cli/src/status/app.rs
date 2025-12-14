@@ -4,8 +4,8 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use helix::helix_index::{api::HelixIndexData, EntryFlags};
-use helix::{fsmonitor::FSMonitor, ignore::IgnoreRules};
+use helix_cli::helix_index::{api::HelixIndexData, EntryFlags};
+use helix_cli::{fsmonitor::FSMonitor, ignore::IgnoreRules};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::collections::HashSet;
 use std::fs;

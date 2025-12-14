@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use helix::{add, branch, commit, init::init_helix_repo, push};
+use helix_cli::{add, branch, commit, init::init_helix_repo, push};
 use std::path::{Path, PathBuf};
 
 mod config;
