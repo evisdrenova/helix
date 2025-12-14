@@ -74,6 +74,7 @@ use super::state::set_branch_upstream;
 use super::tree::TreeBuilder;
 use super::writer::Writer;
 
+use crate::helix_index::blob_storage::BlobStorage;
 use crate::ignore::IgnoreRules;
 use crate::index::GitIndex;
 
@@ -82,11 +83,13 @@ use blake3::Hash;
 use gix::revision::walk::Sorting;
 use hash::compute_blob_oid;
 use indicatif::{ProgressBar, ProgressStyle};
+use ini::Ini;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use toml::{value::Table, Value};
 use walkdir::WalkDir;
 
 pub struct SyncEngine {
@@ -109,10 +112,80 @@ impl SyncEngine {
         self.import_git_tags(&git_hash_to_helix_hash)?;
         self.import_git_head(&git_hash_to_helix_hash)?;
         self.import_git_remotes()?;
+        self.import_git_config()?;
 
         Ok(())
     }
 
+    fn import_git_config(&self) -> Result<()> {
+        // 1. Use gix to read Git config (handles Git's config format properly)
+        let repo = gix::open(&self.repo_path)?;
+        let config = repo.config_snapshot();
+
+        // Get user name and email from Git config
+        let author_name = match config.string("user.name") {
+            Some(name) => name.to_string(),
+            None => {
+                // No Git user config found
+                return Ok(());
+            }
+        };
+
+        let author_email = match config.string("user.email") {
+            Some(email) => email.to_string(),
+            None => {
+                // No email in Git config
+                return Ok(());
+            }
+        };
+
+        if author_name.trim().is_empty() || author_email.trim().is_empty() {
+            return Ok(());
+        }
+
+        println!("Found Git user config: {} <{}>", author_name, author_email);
+
+        // 2. Load helix.toml as TOML
+        let helix_toml_path = self.repo_path.join("helix.toml");
+        if !helix_toml_path.exists() {
+            return Ok(());
+        }
+
+        let content = fs::read_to_string(&helix_toml_path)
+            .with_context(|| format!("Failed to read {}", helix_toml_path.display()))?;
+
+        let mut root: Table = content
+            .parse::<Value>()
+            .context("Failed to parse helix.toml as TOML")?
+            .try_into()
+            .context("Root value is not a table")?;
+
+        // 3. Ensure [user] table exists and set fields
+        let user_value = root
+            .entry("user".to_string())
+            .or_insert_with(|| Value::Table(Table::new()));
+
+        let user_table = user_value
+            .as_table_mut()
+            .context("[user] is not a table in helix.toml")?;
+
+        user_table.insert("name".to_string(), Value::String(author_name.clone()));
+        user_table.insert("email".to_string(), Value::String(author_email.clone()));
+
+        // 4. Write back
+        let new_content =
+            toml::to_string_pretty(&root).context("Failed to serialize helix.toml")?;
+
+        fs::write(&helix_toml_path, new_content)
+            .with_context(|| format!("Failed to write {}", helix_toml_path.display()))?;
+
+        println!(
+            "✓ Imported Git user config to helix.toml: {} <{}>",
+            author_name, author_email
+        );
+
+        Ok(())
+    }
     // TODO: parallelize this as we walk the directory, we get the branch, transform it to a helix branch, get it's upstream adn then add it to the helix state
     fn import_git_branches(
         &self,
@@ -688,6 +761,8 @@ impl SyncEngine {
         let pb = ProgressBar::new_spinner();
         pb.set_message("Importing commits...");
 
+        println!("the commits {:?}", collected_git_commits);
+
         // Build Helix commits in oldest to newest order
         let mut helix_commits: Vec<Helix_Commit> = Vec::with_capacity(collected_git_commits.len());
 
@@ -760,7 +835,7 @@ impl SyncEngine {
             .breadthfirst(&mut recorder)
             .context("Failed to traverse tree")?;
 
-        let tree = self.build_helix_tree_from_recorder(recorder)?;
+        let tree = self.build_helix_tree_from_recorder(recorder, repo)?;
 
         let mut commit = Helix_Commit {
             commit_hash: ZERO_HASH,
@@ -781,11 +856,14 @@ impl SyncEngine {
     fn build_helix_tree_from_recorder(
         &self,
         recorder: gix::traverse::tree::Recorder,
+        repo: &gix::Repository, // ← ADD THIS PARAMETER
     ) -> Result<Hash> {
+        let blob_storage = BlobStorage::for_repo(&self.repo_path);
+
         // Convert gix records to Helix Entry format
         let entries: Vec<Entry> = recorder
             .records
-            .par_iter()
+            .iter()
             .filter_map(|record| {
                 // Only process blobs (files), skip trees (directories)
                 if !record.mode.is_blob() && !record.mode.is_link() {
@@ -794,8 +872,32 @@ impl SyncEngine {
 
                 let path = PathBuf::from(record.filepath.to_string());
 
-                // Convert Git OID to Helix hash
-                let oid = hash::hash_bytes(record.oid.as_bytes());
+                // ✅ FIX: Read actual blob content from Git and store it in Helix
+                let blob_content = match repo.find_object(record.oid) {
+                    Ok(obj) => match obj.try_into_blob() {
+                        Ok(blob) => blob.data.to_vec(),
+                        Err(_) => {
+                            eprintln!("Warning: Failed to read blob for {}", record.filepath);
+                            return None;
+                        }
+                    },
+                    Err(_) => {
+                        eprintln!("Warning: Failed to find object for {}", record.filepath);
+                        return None;
+                    }
+                };
+
+                // Write blob content to Helix storage and get the BLAKE3 hash
+                let oid = match blob_storage.write(&blob_content) {
+                    Ok(hash) => hash,
+                    Err(e) => {
+                        eprintln!(
+                            "Warning: Failed to write blob for {}: {}",
+                            record.filepath, e
+                        );
+                        return None;
+                    }
+                };
 
                 // Determine file mode
                 let file_mode = if record.mode.is_link() {
@@ -810,7 +912,7 @@ impl SyncEngine {
                     path,
                     oid,
                     flags: EntryFlags::TRACKED,
-                    size: 0, // Size not available from recorder
+                    size: blob_content.len() as u64,
                     mtime_sec: 0,
                     mtime_nsec: 0,
                     file_mode,

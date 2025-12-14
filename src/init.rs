@@ -260,15 +260,12 @@ fn create_repo_config(repo_path: &Path) -> Result<()> {
 # push=https://example.com/my-repo.git
 
 [ignore]
-# Additional patterns to ignore (this will get combined with .gitignore if you have one)
 patterns = [
-    "*.log",
+    "target/",
     "*.tmp",
-    "*.swp",
-    ".DS_Store",
-    ".helix/*",
-    ".git/",
-    "target"
+    "*.log",
+    ".helix/",
+    ".git/"
 ]
 "#;
 

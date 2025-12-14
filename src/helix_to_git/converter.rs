@@ -141,6 +141,19 @@ impl HelixToGitConverter {
 
     /// Convert Helix blob to Git SHA
     fn convert_blob(&mut self, helix_blob_hash: &Hash) -> Result<String> {
+        let hash_hex = crate::helix_index::hash::hash_to_hex(helix_blob_hash);
+        eprintln!("DEBUG: convert_blob called with hash: {}", &hash_hex[..16]);
+
+        // Check if blob exists
+        if !self.blob_storage.exists(helix_blob_hash) {
+            eprintln!("ERROR: Blob {} does NOT exist!", &hash_hex[..16]);
+            eprintln!("Available blobs:");
+            let all_blobs = self.blob_storage.list_all()?;
+            for (i, blob) in all_blobs.iter().take(10).enumerate() {
+                let blob_hex = crate::helix_index::hash::hash_to_hex(blob);
+                eprintln!("  {}. {}", i + 1, &blob_hex[..16]);
+            }
+        }
         // Check cache first
         if let Some(git_sha) = self.cache.get(helix_blob_hash) {
             return Ok(git_sha.to_string());
