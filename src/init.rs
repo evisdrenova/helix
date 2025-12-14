@@ -267,7 +267,7 @@ patterns = [
     "*.swp",
     ".DS_Store",
     ".helix/*",
-    ".git/"
+    ".git/",
     "target"
 ]
 "#;

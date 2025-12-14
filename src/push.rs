@@ -8,7 +8,11 @@
 // 4. Use gix to push to remote
 // 5. Save push cache
 
-use crate::helix_index::commit::CommitLoader;
+use crate::helix_index::api::HelixIndexData;
+use crate::helix_index::blob_storage::BlobStorage;
+use crate::helix_index::commit::{CommitLoader, CommitStorage};
+use crate::helix_index::hash::{self, Hash};
+use crate::helix_index::tree::{EntryType, TreeStorage};
 use crate::helix_to_git::{converter, git_objects};
 use anyhow::{Context, Result};
 use converter::HelixToGitConverter;
@@ -41,6 +45,8 @@ pub fn push(repo_path: &Path, remote: &str, branch: &str, options: PushOptions) 
     if options.verbose {
         println!("Pushing to {}/{}...", remote, branch);
     }
+
+    let _ = debug_check_objects(repo_path);
 
     // 1. Load Helix HEAD
     let loader = CommitLoader::new(repo_path)?;
@@ -113,6 +119,119 @@ pub fn push(repo_path: &Path, remote: &str, branch: &str, options: PushOptions) 
         .context("Failed to save push cache")?;
 
     println!("✓ Pushed to {}/{}", remote, branch);
+
+    Ok(())
+}
+
+pub fn debug_check_objects(repo_path: &Path) -> Result<()> {
+    println!("=== Checking Helix Object Integrity ===\n");
+
+    // 1. Check index entries
+    let index = HelixIndexData::load_or_rebuild(repo_path)?;
+    let blob_storage = BlobStorage::for_repo(repo_path);
+
+    println!("Index entries: {}", index.entries().len());
+
+    let mut missing_blobs = Vec::new();
+    for entry in index.entries() {
+        let hex = hash::hash_to_hex(&entry.oid);
+        if !blob_storage.exists(&entry.oid) {
+            println!(
+                "  ✗ MISSING blob for {}: {}",
+                entry.path.display(),
+                &hex[..16]
+            );
+            missing_blobs.push((entry.path.display().to_string(), hex));
+        } else {
+            println!(
+                "  ✓ Found blob for {}: {}",
+                entry.path.display(),
+                &hex[..16]
+            );
+        }
+    }
+
+    if !missing_blobs.is_empty() {
+        println!("\n⚠️  Found {} missing blobs:", missing_blobs.len());
+        for (path, hash) in &missing_blobs {
+            println!("  - {}: {}", path, &hash[..16]);
+        }
+        println!("\nThese files need to be re-added with 'helix add'");
+    }
+
+    // 2. Check HEAD commit
+    println!("\n=== Checking HEAD Commit ===\n");
+
+    let loader = CommitLoader::new(repo_path)?;
+    let head_hash = loader.read_head()?;
+    let head_hex = hash::hash_to_hex(&head_hash);
+
+    println!("HEAD: {}", &head_hex[..16]);
+
+    // 3. Check commit tree
+    let commit_storage = CommitStorage::for_repo(repo_path);
+    let commit = commit_storage.read(&head_hash)?;
+
+    // 4. Walk tree and check all blobs
+    let tree_storage = TreeStorage::for_repo(repo_path);
+    let mut trees_to_check = vec![commit.tree_hash];
+    let mut checked_trees = std::collections::HashSet::new();
+    let mut all_tree_blobs = Vec::new();
+
+    while let Some(tree_hash) = trees_to_check.pop() {
+        if checked_trees.contains(&tree_hash) {
+            continue;
+        }
+        checked_trees.insert(tree_hash);
+
+        let tree = tree_storage.read(&tree_hash)?;
+
+        for entry in &tree.entries {
+            match entry.entry_type {
+                EntryType::Tree => {
+                    trees_to_check.push(entry.oid);
+                }
+                _ => {
+                    // It's a blob
+                    all_tree_blobs.push((entry.name.clone(), entry.oid));
+                }
+            }
+        }
+    }
+
+    println!("\n=== Blobs in Commit Tree ===\n");
+    println!("Found {} blobs in tree:", all_tree_blobs.len());
+
+    let mut missing_tree_blobs = Vec::new();
+    for (name, oid) in &all_tree_blobs {
+        let hex = hash::hash_to_hex(oid);
+        if !blob_storage.exists(oid) {
+            println!("  ✗ MISSING: {} -> {}", name, &hex[..16]);
+            missing_tree_blobs.push((name.clone(), hex));
+        } else {
+            println!("  ✓ Found: {} -> {}", name, &hex[..16]);
+        }
+    }
+
+    if !missing_tree_blobs.is_empty() {
+        println!(
+            "\n❌ PROBLEM: {} blobs referenced in tree but missing from storage:",
+            missing_tree_blobs.len()
+        );
+        for (name, hash) in &missing_tree_blobs {
+            println!("  - {}: {}", name, hash);
+        }
+
+        println!("\n🔧 FIX:");
+        println!("This means the tree was built with blob hashes that don't exist.");
+        println!("You need to:");
+        println!("1. Re-add the files: helix add .");
+        println!("2. Create a new commit: helix commit -m 'Fix missing blobs'");
+
+        anyhow::bail!("Cannot push - missing blobs in tree");
+    }
+
+    println!("\n✅ All objects are consistent!");
 
     Ok(())
 }

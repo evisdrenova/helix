@@ -313,24 +313,19 @@ impl SyncEngine {
             return Ok(());
         }
 
-        // Read or create helix.toml
         let helix_toml_path = self.repo_path.join("helix.toml");
 
-        let mut toml_content = if helix_toml_path.exists() {
+        // Read existing file
+        let mut content = if helix_toml_path.exists() {
             fs::read_to_string(&helix_toml_path)?
         } else {
-            String::from("# Helix Configuration\n\n")
+            return Ok(()); // If no helix.toml, skip
         };
 
-        // Check if remotes section already exists
-        if !toml_content.contains("[remotes]") {
-            toml_content.push_str("\n# Imported remotes from Git\n");
-            toml_content.push_str("[remotes]\n");
-        }
+        // Build remote entries
+        let mut remote_lines = Vec::new();
 
-        let remote_clone = remote_names.clone();
-
-        for remote_name in remote_names {
+        for remote_name in &remote_names {
             let remote_name_str = remote_name.as_ref();
 
             // Find the remote in the Git config
@@ -345,37 +340,76 @@ impl SyncEngine {
                 }
             };
 
-            // Add remote section to TOML
-            toml_content.push_str(&format!("\n[remotes.{}]\n", remote_name_str));
-
-            // Get fetch URL
-            if let Some(url) = remote.url(gix::remote::Direction::Fetch) {
-                toml_content.push_str(&format!("pull=\"{}\"\n", url));
+            // Get fetch URL (for pull)
+            if let Some(fetch_url) = remote.url(gix::remote::Direction::Fetch) {
+                remote_lines.push(format!("{}_pull = \"{}\"", remote_name_str, fetch_url));
             }
 
-            // Get fetch refspecs
-            let fetch_specs: Vec<_> = remote
-                .refspecs(gix::remote::Direction::Fetch)
-                .into_iter()
-                .map(|spec| format!("\"{:?}\"", spec.to_ref()))
-                .collect();
-
-            if !fetch_specs.is_empty() {
-                toml_content.push_str(&format!("pull=[{}]\n", fetch_specs.join(", ")));
-            }
-
-            // Get push URL (only if different from fetch)
+            // Get push URL
             if let Some(push_url) = remote.url(gix::remote::Direction::Push) {
-                let fetch_url = remote.url(gix::remote::Direction::Fetch);
-                if fetch_url != Some(push_url) {
-                    toml_content.push_str(&format!("push=\"{}\"\n", push_url));
-                }
+                remote_lines.push(format!("{}_push = \"{}\"", remote_name_str, push_url));
+            } else if let Some(fetch_url) = remote.url(gix::remote::Direction::Fetch) {
+                // If no explicit push URL, use fetch URL
+                remote_lines.push(format!("{}_push = \"{}\"", remote_name_str, fetch_url));
             }
         }
 
-        fs::write(&helix_toml_path, toml_content)?;
+        if remote_lines.is_empty() {
+            return Ok(());
+        }
 
-        println!("✓ Imported {} remote(s) to helix.toml", remote_clone.len());
+        // Find the [remotes] section
+        if let Some(remotes_start) = content.find("[remotes]") {
+            // Find the end of the [remotes] line
+            let section_header_end = remotes_start + "[remotes]".len();
+
+            // Find where content after [remotes] starts (skip to next line)
+            let content_start = content[section_header_end..]
+                .find('\n')
+                .map(|pos| section_header_end + pos + 1)
+                .unwrap_or(section_header_end);
+
+            // Find the next section (starts with '[')
+            let remaining = &content[content_start..];
+            let next_section_offset = remaining
+                .lines()
+                .enumerate()
+                .find(|(_, line)| line.trim_start().starts_with('['))
+                .map(|(idx, _)| {
+                    // Calculate byte offset to the start of that line
+                    remaining
+                        .lines()
+                        .take(idx)
+                        .map(|l| l.len() + 1) // +1 for newline
+                        .sum::<usize>()
+                });
+
+            let next_section_pos = if let Some(offset) = next_section_offset {
+                content_start + offset
+            } else {
+                content.len()
+            };
+
+            // Build the new content
+            let before_section = &content[..section_header_end];
+            let after_section = &content[next_section_pos..];
+
+            // Combine: before + newline + our remotes + newline + after
+            content = format!(
+                "{}\n{}\n\n{}",
+                before_section,
+                remote_lines.join("\n"),
+                after_section.trim_start()
+            );
+        } else {
+            // [remotes] section doesn't exist, append it
+            content.push_str(&format!("\n[remotes]\n{}\n", remote_lines.join("\n")));
+        }
+
+        // Write back
+        fs::write(&helix_toml_path, content)?;
+
+        println!("✓ Imported {} remote(s) to helix.toml", remote_names.len());
 
         Ok(())
     }
@@ -2385,10 +2419,10 @@ mod tests {
             contents.contains("[remotes]"),
             "helix.toml should contain [remotes] section"
         );
-        // Has [remotes.origin] table
+        // Has [remotes] table
         assert!(
-            contents.contains("[remotes.origin]"),
-            "helix.toml should contain [remotes.origin] section"
+            contents.contains("[remotes]"),
+            "helix.toml should contain [remotes] section"
         );
         // URL is correct
         assert!(
@@ -2440,8 +2474,8 @@ mod tests {
         let contents = fs::read_to_string(&helix_toml_path)?;
 
         assert!(
-            contents.contains("[remotes.origin]"),
-            "remotes.origin section should exist"
+            contents.contains("[remotes]"),
+            "remotes section should exist"
         );
         assert!(
             contents.contains("pull=\"https://example.com/my-repo.git\""),
@@ -2487,7 +2521,7 @@ mod tests {
             "root [remotes] section should exist"
         );
         assert!(
-            contents.contains("[remotes.origin]"),
+            contents.contains("[remotes]"),
             "origin remote section should exist"
         );
         assert!(
@@ -2551,7 +2585,7 @@ key = "value"
 
         // New remote should be appended under remotes
         assert!(
-            contents.contains("[remotes.origin]"),
+            contents.contains("[remotes]"),
             "origin remote section should be added under [remotes]"
         );
         assert!(
