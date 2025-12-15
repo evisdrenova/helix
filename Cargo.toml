@@ -2,6 +2,7 @@
 members = [
     "helix-cli",
     "helix-server",
+    "helix-protocol",
 ]
 
 resolver = "2"

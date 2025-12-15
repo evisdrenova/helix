@@ -17,6 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 helix-server = { path = "../helix-server" }
+helix-protocol = { path = "../helix-protocol" }
 anyhow = "1.0.98"
 bitflags = "2.10.0"
 blake3 = "1.8.2"

@@ -1912,6 +1912,7 @@ dependencies = [
  "git2",
  "gix",
  "globset",
+ "helix-protocol",
  "helix-server",
  "hex",
  "indicatif",
@@ -1937,10 +1938,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "helix-protocol"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "helix-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "helix-protocol",
  "serde",
  "serde_json",
  "tokio",
