@@ -7,6 +7,7 @@ pub mod helix_index;
 pub mod ignore;
 pub mod index;
 pub mod init;
+pub mod pull;
 pub mod push;
 
 use std::result;

@@ -100,6 +100,12 @@ enum Commands {
         #[arg(short = 'n', long)]
         dry_run: bool,
     },
+    Pull {
+        /// Remote name (e.g., "origin")
+        remote: String,
+        /// Branch name (e.g., "main")
+        branch: String,
+    },
 }
 
 #[tokio::main]
@@ -242,6 +248,18 @@ async fn main() -> Result<()> {
             };
 
             push::push(&repo_path, &remote, &branch, options)?;
+            return Ok(());
+        }
+        Some(Commands::Pull { remote, branch }) => {
+            let repo_path = resolve_repo_path(None)?;
+
+            let options = push::PushOptions {
+                verbose,
+                dry_run,
+                force,
+            };
+
+            pull::pull(&repo_path, &remote, &branch, options)?;
             return Ok(());
         }
         None => {
