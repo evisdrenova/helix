@@ -1,9 +1,7 @@
+use crate::handlers::utils::{handle_handshake, respond_err};
 use crate::storage::storage::{FsObjectStore, FsRefStore};
 use axum::{extract::State, response::IntoResponse};
-use helix_protocol::{
-    read_message, write_message, Hash32, ObjectType, PushAck, PushObject, PushRequest, RpcError,
-    RpcMessage,
-};
+use helix_protocol::{read_message, write_message, PushAck, PushObject, RpcMessage};
 use std::io::Cursor;
 use std::sync::Arc;
 
@@ -19,22 +17,12 @@ pub async fn push_handler(
 ) -> impl IntoResponse {
     let mut cursor = Cursor::new(body.to_vec());
 
-    // 1) Expect Hello
-    let hello_msg = match read_message(&mut cursor) {
-        Ok(RpcMessage::Hello(_h)) => RpcMessage::HelloAck(helix_protocol::HelloAck {
-            server_version: "helix-server-mvp".into(),
-        }),
-        Ok(other) => {
-            return respond_err(400, format!("Expected Hello, got {:?}", other));
-        }
-        Err(e) => return respond_err(400, format!("Failed to read Hello: {e}")),
-    };
+    handle_handshake(&cursor);
 
     // write HelloAck to response buffer later; for now we don’t send partial responses,
     // so just ignore hello_msg and proceed.
 
     // 2) Expect PushRequest
-
     let push_req = match read_message(&mut cursor) {
         Ok(RpcMessage::PushRequest(req)) => req,
         Ok(other) => {
@@ -95,19 +83,6 @@ pub async fn push_handler(
 
     axum::response::Response::builder()
         .status(200)
-        .body(axum::body::Body::from(buf))
-        .unwrap()
-}
-
-fn respond_err(status: u16, msg: String) -> axum::response::Response {
-    let err = RpcMessage::Error(RpcError {
-        code: status,
-        message: msg,
-    });
-    let mut buf = Vec::new();
-    write_message(&mut buf, &err).unwrap();
-    axum::response::Response::builder()
-        .status(status)
         .body(axum::body::Body::from(buf))
         .unwrap()
 }
