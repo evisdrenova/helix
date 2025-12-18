@@ -17,24 +17,25 @@ pub async fn push_handler(
 ) -> impl IntoResponse {
     let mut cursor = Cursor::new(body.to_vec());
 
-    handle_handshake(&mut cursor);
+    // Collect all outbound RPC messages in one HTTP response body
+    let mut out = Vec::<u8>::new();
 
-    // expecting a push request
-    let push_req = match read_message(&mut cursor) {
-        Ok(RpcMessage::PushRequest(req)) => req,
-        Ok(other) => {
-            return respond_err(400, format!("Expected PushRequest, got {:?}", other));
-        }
-        Err(e) => return respond_err(400, format!("Failed to read PushRequest: {e}")),
+    let push_req = match handle_handshake(
+        &mut cursor,
+        &mut out,
+        |m| match m {
+            RpcMessage::PushRequest(req) => Some(req),
+            _ => None,
+        },
+        "PushRequest",
+    ) {
+        Ok(req) => req,
+        Err(response) => return response,
     };
 
-    // MVP: we ignore push_req.repo and treat state.root as the repo.
-    let ref_name = push_req.ref_name; // e.g. "refs/heads/main"
+    let ref_name = push_req.ref_name;
 
-    // 3) Optional fast-forward check later; for now just overwrite
-    // let current = state.refs.get_ref(&ref_name).unwrap_or(None);
-
-    // 4) Receive PushObject* until PushDone
+    // 3) Receive PushObject* until PushDone
     let mut received_objects = 0u64;
 
     loop {
@@ -44,11 +45,9 @@ pub async fn push_handler(
                 hash,
                 data,
             })) => {
-                // verify object hash
                 if blake3::hash(&data).as_bytes() != &hash {
                     return respond_err(400, "Hash mismatch for pushed object".into());
                 }
-                // Write if missing
                 if !state.objects.has_object(&object_type, &hash) {
                     if let Err(e) = state.objects.write_object(&object_type, &hash, &data) {
                         return respond_err(500, format!("Failed to write object: {e}"));
@@ -60,26 +59,24 @@ pub async fn push_handler(
             Ok(other) => {
                 return respond_err(400, format!("Unexpected message during push: {:?}", other));
             }
-            Err(e) => {
-                return respond_err(400, format!("Error reading message during push: {e}"));
-            }
+            Err(e) => return respond_err(400, format!("Error reading message during push: {e}")),
         }
     }
 
-    // 5) Update ref
+    // 4) Update ref
     if let Err(e) = state.refs.set_ref(&ref_name, push_req.new_target) {
         return respond_err(500, format!("Failed to update ref: {e}"));
     }
 
+    // 5) Write PushAck to `out`
     let ack = RpcMessage::PushAck(PushAck { received_objects });
-
-    let mut buf = Vec::new();
-    if let Err(e) = write_message(&mut buf, &ack) {
+    if let Err(e) = write_message(&mut out, &ack) {
         return respond_err(500, format!("Failed to encode PushAck: {e}"));
     }
 
     axum::response::Response::builder()
         .status(200)
-        .body(axum::body::Body::from(buf))
+        .header(axum::http::header::CONTENT_TYPE, "application/octet-stream")
+        .body(axum::body::Body::from(out))
         .unwrap()
 }
