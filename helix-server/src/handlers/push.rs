@@ -17,12 +17,9 @@ pub async fn push_handler(
 ) -> impl IntoResponse {
     let mut cursor = Cursor::new(body.to_vec());
 
-    handle_handshake(&cursor);
+    handle_handshake(&mut cursor);
 
-    // write HelloAck to response buffer later; for now we don’t send partial responses,
-    // so just ignore hello_msg and proceed.
-
-    // 2) Expect PushRequest
+    // expecting a push request
     let push_req = match read_message(&mut cursor) {
         Ok(RpcMessage::PushRequest(req)) => req,
         Ok(other) => {

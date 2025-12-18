@@ -33,7 +33,7 @@ pub struct HelloAck {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PushRequest {
-    pub repo: String,       // for MVP: just repo name or path
+    pub repo: String,       // just repo name or path
     pub ref_name: String,   // "refs/heads/main"
     pub old_target: Hash32, // ZERO_HASH for "no remote yet"
     pub new_target: Hash32, // commit we want remote ref to point to
