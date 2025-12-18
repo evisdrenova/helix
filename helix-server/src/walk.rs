@@ -5,6 +5,19 @@ use std::io::Cursor;
 
 use crate::storage::storage::FsObjectStore;
 
+/*
+Walks all commits reachable from remote_head
+
+For each commit:
+- Adds commit object bytes to objects_to_send
+- Follows its tree and parents
+
+For each tree:
+- Adds tree object bytes
+- Recurses into subtrees
+- Adds blob object bytes
+*/
+
 /// Collect all objects (commits + trees + blobs) reachable from `remote_head`.
 /// Returns tuples of (ObjectType, hash, raw_bytes) suitable for sending over the wire.
 pub fn collect_all_objects(

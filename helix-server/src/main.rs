@@ -1,11 +1,12 @@
 mod handlers;
-mod storage;
 
 use axum::{routing::post, Router};
-
+use helix_server::{
+    app_state::AppState,
+    storage::storage::{FsObjectStore, FsRefStore},
+};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use storage::storage::{FsObjectStore, FsRefStore};
 
 use crate::handlers::{pull::pull_handler, push::push_handler};
 
@@ -17,7 +18,7 @@ async fn main() -> anyhow::Result<()> {
     let objects = FsObjectStore::new(&repo_root);
     let refs = FsRefStore::new(&repo_root);
 
-    let state = Arc::new(handlers::push::AppState { objects, refs });
+    let state = Arc::new(AppState { objects, refs });
 
     let app = Router::new()
         .route("/rpc/push", post(push_handler))

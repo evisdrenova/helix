@@ -1,15 +1,9 @@
 use crate::handlers::utils::{handle_handshake, respond_err};
-use crate::storage::storage::{FsObjectStore, FsRefStore};
 use axum::{extract::State, response::IntoResponse};
 use helix_protocol::{read_message, write_message, PushAck, PushObject, RpcMessage};
+use helix_server::app_state::AppState;
 use std::io::Cursor;
 use std::sync::Arc;
-
-#[derive(Clone)]
-pub struct AppState {
-    pub objects: FsObjectStore,
-    pub refs: FsRefStore,
-}
 
 pub async fn push_handler(
     State(state): State<Arc<AppState>>,

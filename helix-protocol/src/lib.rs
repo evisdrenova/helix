@@ -39,7 +39,7 @@ pub struct PushRequest {
     pub new_target: Hash32, // commit we want remote ref to point to
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ObjectType {
     Blob,
     Tree,

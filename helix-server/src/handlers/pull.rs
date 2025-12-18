@@ -1,8 +1,7 @@
 use crate::handlers::utils::{handle_handshake, respond_err};
-
-use super::push::AppState;
 use axum::{extract::State, response::IntoResponse};
 use helix_protocol::{write_message, FetchAck, FetchObject, ObjectType, RpcMessage};
+use helix_server::app_state::AppState;
 use helix_server::walk::collect_all_objects;
 use std::io::Cursor;
 use std::sync::Arc;
@@ -40,12 +39,6 @@ pub async fn pull_handler(
     };
 
     // 3) Find objects to send
-    // MVP: send "everything reachable from remote_head".
-    // For now you can call into a small helper that:
-    // - reads commit object
-    // - follows parents
-    // - collects commit hashes
-    // - collects tree/blob hashes reachable from each commit
     let objects_to_send: Vec<(ObjectType, [u8; 32], Vec<u8>)> =
         collect_all_objects(&state.objects, &remote_head).unwrap_or_default();
 
