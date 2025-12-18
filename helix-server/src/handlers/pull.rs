@@ -2,7 +2,7 @@ use crate::handlers::utils::{handle_handshake, respond_err};
 
 use super::push::AppState;
 use axum::{extract::State, response::IntoResponse};
-use helix_protocol::{read_message, write_message, FetchAck, FetchObject, ObjectType, RpcMessage};
+use helix_protocol::{write_message, FetchAck, FetchObject, ObjectType, RpcMessage};
 use helix_server::walk::collect_all_objects;
 use std::io::Cursor;
 use std::sync::Arc;
@@ -12,18 +12,22 @@ pub async fn pull_handler(
     body: axum::body::Bytes,
 ) -> impl IntoResponse {
     let mut cursor = Cursor::new(body.to_vec());
+    let mut buf = Vec::<u8>::new();
 
-    // 1) Expect Hello
-    handle_handshake(&cursor);
-
-    // 2) Expect FetchRequest
-    let req = match read_message(&mut cursor) {
-        Ok(RpcMessage::FetchRequest(req)) => req,
-        Ok(other) => return respond_err(400, format!("Expected FetchRequest, got {:?}", other)),
-        Err(e) => return respond_err(400, format!("Error reading FetchRequest: {e}")),
+    let fetch_req = match handle_handshake(
+        &mut cursor,
+        &mut buf,
+        |m| match m {
+            RpcMessage::FetchRequest(req) => Some(req),
+            _ => None,
+        },
+        "FetchRequest",
+    ) {
+        Ok(req) => req,
+        Err(response) => return response,
     };
 
-    let ref_name = req.ref_name;
+    let ref_name = fetch_req.ref_name;
 
     let remote_head = match state.refs.get_ref(&ref_name) {
         Ok(Some(v)) => v,
@@ -46,7 +50,6 @@ pub async fn pull_handler(
         collect_all_objects(&state.objects, &remote_head).unwrap_or_default();
 
     // 4) Build response body: FetchObject* + FetchDone + FetchAck
-    let mut buf = Vec::new();
     for (ty, hash, data) in objects_to_send.iter() {
         let msg = RpcMessage::FetchObject(FetchObject {
             object_type: ty.clone(),
