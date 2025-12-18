@@ -1,5 +1,10 @@
 use clap::{Parser, Subcommand};
-use helix_cli::{add, branch, commit, init::init_helix_repo, push};
+use helix_cli::{
+    add, branch, commit,
+    init::init_helix_repo,
+    pull::pull,
+    push::{self, push},
+};
 use std::path::{Path, PathBuf};
 
 mod config;
@@ -247,19 +252,20 @@ async fn main() -> Result<()> {
                 force,
             };
 
-            push::push(&repo_path, &remote, &branch, options)?;
+            push(&repo_path, &remote, &branch, options).await;
             return Ok(());
         }
         Some(Commands::Pull { remote, branch }) => {
             let repo_path = resolve_repo_path(None)?;
 
-            let options = push::PushOptions {
-                verbose,
-                dry_run,
-                force,
-            };
+            //TODO
+            // let options = push::PushOptions {
+            //     verbose,
+            //     dry_run,
+            //     force,
+            // };
 
-            pull::pull(&repo_path, &remote, &branch, options)?;
+            pull(&repo_path, &remote, &branch).await;
             return Ok(());
         }
         None => {

@@ -1,9 +1,16 @@
 use anyhow::{Context, Result};
-use helix_protocol::{read_message, write_message, FetchObject, FetchRequest, Hello, RpcMessage};
-use std::io::Cursor;
+use helix_protocol::{
+    read_message, write_message, FetchObject, FetchRequest, Hash32, Hello, ObjectType, RpcMessage,
+};
+use std::{
+    fs,
+    io::Cursor,
+    path::{Path, PathBuf},
+};
 
-pub async fn pull(remote_name: &str, branch: &str) -> Result<()> {
-    let repo_path = std::env::current_dir()?;
+use crate::push::{read_remote_tracking, resolve_remote_and_ref, write_remote_tracking};
+
+pub async fn pull(repo_path: &PathBuf, remote_name: &str, branch: &str) -> Result<()> {
     let (remote_url, ref_name) = resolve_remote_and_ref(&repo_path, remote_name, branch)?;
 
     let last_known = read_remote_tracking(&repo_path, remote_name, branch).ok();
@@ -92,6 +99,33 @@ pub async fn pull(remote_name: &str, branch: &str) -> Result<()> {
             hex::encode(head)
         );
     }
+
+    Ok(())
+}
+
+fn write_local_object(
+    repo_path: &Path,
+    object_type: &ObjectType,
+    hash: &Hash32,
+    data: &[u8],
+) -> Result<()> {
+    // Map protocol object type → local subdirectory name
+    let subdir = match object_type {
+        ObjectType::Blob => "blobs",
+        ObjectType::Tree => "trees",
+        ObjectType::Commit => "commits",
+    };
+
+    // .helix/objects/<subdir>/<hex_hash>
+    let objects_dir = repo_path.join(".helix").join("objects").join(subdir);
+    fs::create_dir_all(&objects_dir)
+        .with_context(|| format!("Failed to create objects dir {}", objects_dir.display()))?;
+
+    let filename = hex::encode(hash);
+    let path = objects_dir.join(filename);
+
+    fs::write(&path, data)
+        .with_context(|| format!("Failed to write object to {}", path.display()))?;
 
     Ok(())
 }
