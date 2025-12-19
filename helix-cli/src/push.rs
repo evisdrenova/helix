@@ -2,7 +2,6 @@ use anyhow::{anyhow, bail, Context, Result};
 use helix_protocol::{
     read_message, write_message, Hash32, Hello, ObjectType, PushObject, PushRequest, RpcMessage,
 };
-use ini::Ini;
 use serde::Deserialize;
 use std::fs;
 use std::io::Cursor;
@@ -30,20 +29,26 @@ pub async fn push(
     branch: &str,
     options: PushOptions,
 ) -> Result<()> {
+    println!("starting the push..");
     let repo_path = std::env::current_dir()?;
     let remote_name = remote;
     let helix_dir = repo_path.join(".helix");
+
     if !helix_dir.exists() {
         bail!("Not a Helix repo (no .helix directory)");
     }
 
+    println!("1");
+
     // 1. Resolve remote URL & ref name
     let (remote_url, ref_name) = resolve_remote_and_ref(&repo_path, remote_name, branch)?;
 
+    println!("2");
     // 2. Find local branch HEAD
     let new_target =
         read_local_ref(&repo_path, &ref_name).context("Failed to read local branch head")?;
 
+    println!("3");
     // 3. Determine old_target (from remote-tracking ref)
     let old_target = read_remote_tracking(&repo_path, remote_name, branch).unwrap_or([0u8; 32]); // ZERO_HASH
 
@@ -58,6 +63,7 @@ pub async fn push(
         return Ok(());
     }
 
+    println!("4");
     // 4. Compute objects to send (MVP: send everything we have)
     let objects = compute_push_frontier(&repo_path, new_target, old_target)?;
 
@@ -68,6 +74,7 @@ pub async fn push(
     // 5. Build request body
     let mut buf = Vec::new();
 
+    println!("5");
     // Hello
     write_message(
         &mut buf,
@@ -75,6 +82,8 @@ pub async fn push(
             client_version: "helix-cli-mvp".into(),
         }),
     )?;
+
+    println!("6");
 
     // PushRequest
     write_message(
@@ -91,6 +100,7 @@ pub async fn push(
         }),
     )?;
 
+    println!("7");
     // PushObject*
     for (object_type, hash, data) in objects {
         write_message(
@@ -106,6 +116,7 @@ pub async fn push(
     // PushDone
     write_message(&mut buf, &RpcMessage::PushDone)?;
 
+    println!("8");
     // 6. POST to /rpc/push
     let client = reqwest::Client::new();
     let resp = client
@@ -114,8 +125,15 @@ pub async fn push(
         .send()
         .await?;
 
+    println!("9");
+
     let status = resp.status();
     let bytes = resp.bytes().await?;
+
+    println!("raw response status = {status}, len = {}", bytes.len());
+    // maybe:
+    println!("raw response bytes = {:?}", &bytes[..bytes.len().min(64)]);
+
     let mut cursor = Cursor::new(bytes.to_vec());
 
     let msg = read_message(&mut cursor)?;
