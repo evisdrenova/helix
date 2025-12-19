@@ -8,15 +8,16 @@ pub fn handle_handshake<T>(
     expect: fn(RpcMessage) -> Option<T>,
     expected_name: &'static str,
 ) -> Result<T, Response<Body>> {
-    // Expect Hello
+    // Expect Hello and return HelloAck with the server version
     let ack_msg = match read_message(&mut *cursor) {
         Ok(RpcMessage::Hello(_h)) => RpcMessage::HelloAck(HelloAck {
-            server_version: "helix-server".into(),
+            server_version: "helix-server".into(), // TODO: update this to be an actual server version
         }),
         Ok(other) => return Err(respond_err(400, format!("Expected Hello, got {:?}", other))),
         Err(e) => return Err(respond_err(400, format!("Failed to read Hello: {e}"))),
     };
 
+    // write HelloAck back to the stream
     if let Err(e) = write_message(out, &ack_msg) {
         return Err(respond_err(500, format!("Failed to write HelloAck: {e}")));
     }
@@ -32,7 +33,6 @@ pub fn handle_handshake<T>(
         }
     };
 
-    // Clone or debug-format msg before consuming it
     let msg_debug = format!("{:?}", msg);
 
     match expect(msg) {

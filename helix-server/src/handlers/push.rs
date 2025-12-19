@@ -9,6 +9,8 @@ pub async fn push_handler(
     State(state): State<Arc<AppState>>,
     body: axum::body::Bytes,
 ) -> impl IntoResponse {
+    println!(">>> /rpc/push called, body size = {}", body.len());
+
     let mut cursor = Cursor::new(body.to_vec());
 
     // Collect all outbound RPC messages in one HTTP response body
@@ -27,9 +29,7 @@ pub async fn push_handler(
         Err(response) => return response,
     };
 
-    let ref_name = push_req.ref_name;
-
-    // 3) Receive PushObject* until PushDone
+    // Receive PushObject* until PushDone
     let mut received_objects = 0u64;
 
     loop {
@@ -39,9 +39,14 @@ pub async fn push_handler(
                 hash,
                 data,
             })) => {
+                println!("reading RPC message from client");
+
+                // check hash integrity
                 if blake3::hash(&data).as_bytes() != &hash {
                     return respond_err(400, "Hash mismatch for pushed object".into());
                 }
+
+                // object store doesn't have hash, then write it
                 if !state.objects.has_object(&object_type, &hash) {
                     if let Err(e) = state.objects.write_object(&object_type, &hash, &data) {
                         return respond_err(500, format!("Failed to write object: {e}"));
@@ -58,7 +63,7 @@ pub async fn push_handler(
     }
 
     // 4) Update ref
-    if let Err(e) = state.refs.set_ref(&ref_name, push_req.new_target) {
+    if let Err(e) = state.refs.set_ref(&push_req.ref_name, push_req.new_target) {
         return respond_err(500, format!("Failed to update ref: {e}"));
     }
 

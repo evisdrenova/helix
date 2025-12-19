@@ -34,9 +34,9 @@ pub struct HelloAck {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PushRequest {
     pub repo: String,       // just repo name or path
-    pub ref_name: String,   // "refs/heads/main"
-    pub old_target: Hash32, // ZERO_HASH for "no remote yet"
-    pub new_target: Hash32, // commit we want remote ref to point to
+    pub ref_name: String,   // which pointer -> "refs/heads/main"
+    pub old_target: Hash32, // expected current value of the ref on the server; ZERO_HASH for "no remote yet", if the server's refs/head/main points to commit A, then old_target = A, branch is just a pointer to a commit
+    pub new_target: Hash32, // commit hash the ref should point to after the push
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,6 +115,7 @@ pub fn read_message<R: Read>(mut r: R) -> Result<RpcMessage, WireError> {
         }
         return Err(WireError::Io(e));
     }
+
     let len = u32::from_le_bytes(len_buf) as usize;
     let mut payload = vec![0u8; len];
     r.read_exact(&mut payload)?;
