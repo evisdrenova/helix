@@ -46,7 +46,7 @@ pub async fn push_handler(
                     return respond_err(400, "Hash mismatch for pushed object".into());
                 }
 
-                // object store doesn't have hash, then write it
+                // object store doesn't have hash and data, then write it to fsobjectstore
                 if !state.objects.has_object(&object_type, &hash) {
                     if let Err(e) = state.objects.write_object(&object_type, &hash, &data) {
                         return respond_err(500, format!("Failed to write object: {e}"));
@@ -62,12 +62,12 @@ pub async fn push_handler(
         }
     }
 
-    // 4) Update ref
+    // Update ref to point to latest target
     if let Err(e) = state.refs.set_ref(&push_req.ref_name, push_req.new_target) {
         return respond_err(500, format!("Failed to update ref: {e}"));
     }
 
-    // 5) Write PushAck to `out`
+    // Write PushAck to `out`
     let ack = RpcMessage::PushAck(PushAck { received_objects });
     if let Err(e) = write_message(&mut out, &ack) {
         return respond_err(500, format!("Failed to encode PushAck: {e}"));

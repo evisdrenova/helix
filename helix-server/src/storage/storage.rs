@@ -75,10 +75,6 @@ impl FsObjectStore {
         fs::rename(&tmp_path, &path)
             .with_context(|| format!("rename {:?} -> {:?}", tmp_path, path))?;
 
-        // Optional: fsync the directory for stronger durability guarantees.
-        // (Not strictly necessary for "atomic", more for crash-safety.)
-        // sync_dir(path.parent().unwrap())?;
-
         Ok(())
     }
 
