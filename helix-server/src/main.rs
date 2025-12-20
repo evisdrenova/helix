@@ -19,7 +19,7 @@ async fn main() -> anyhow::Result<()> {
     let refs = FsRefStore::new(&repo_root);
 
     let state = Arc::new(AppState { objects, refs });
-
+    // TODO: later let's move to a real streaming reader inside the handlers like from a TCP socket or chunked body since right nwo the entire HTTP body is buffered - would likely be more efficient
     let app = Router::new()
         .route("/rpc/push", post(push_handler))
         .route("/rpc/fetch", post(pull_handler))

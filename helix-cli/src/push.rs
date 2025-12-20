@@ -72,7 +72,7 @@ pub async fn push(
     }
 
     // 5. Build request body
-    let mut buf = Vec::new();
+    let mut buf: Vec<u8> = Vec::new();
 
     println!("5");
     // Hello
@@ -278,7 +278,7 @@ pub fn write_remote_tracking(
 
 /// MVP: compute push frontier by sending **all** local objects we know about.
 ///
-/// Later we can:
+/// TODO: Later we can:
 ///   - walk commits from new_target back to old_target
 ///   - only send the closure of reachable commits/trees/blobs
 fn compute_push_frontier(

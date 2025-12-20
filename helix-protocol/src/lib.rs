@@ -1,3 +1,14 @@
+/*
+┌──────────────┐          HTTP POST (binary RPC stream)          ┌──────────────┐
+│  helix CLI   │  -------------------------------------------->  │ helix-server │
+│  (push cmd)  │                                                  │  (/rpc/push) │
+└──────────────┘  <--------------------------------------------  └──────────────┘
+          build + send messages                         read + handle messages
+             (Hello, PushRequest, PushObject*, PushDone)  (… then PushAck back)
+
+
+*/
+
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
