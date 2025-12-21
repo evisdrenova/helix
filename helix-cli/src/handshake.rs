@@ -11,8 +11,6 @@ pub async fn push_handshake(
     new_target: Hash32,
     old_target: Option<Hash32>,
 ) -> Result<()> {
-    println!("checking if remote server is available..");
-
     let mut buf: Vec<u8> = Vec::new();
 
     write_message(

@@ -84,6 +84,7 @@ pub async fn push(
 
     // Compute objects to send (MVP: send everything we have)
     // TODO: update this only send teh difference between the remote and local by walking from new_target back to old_target
+    // TODO: as we create the objects, we should write them to the buffer at the same time instead of doing it in sequence
     let objects = compute_push_frontier(repo_path, new_target, old_target.unwrap_or([0u8; 32]))?;
     if options.verbose {
         println!("Sending {} objects...", objects.len());
@@ -91,7 +92,6 @@ pub async fn push(
 
     let mut buf = Vec::new();
 
-    // Hello
     write_message(
         &mut buf,
         &RpcMessage::Hello(Hello {
@@ -99,7 +99,6 @@ pub async fn push(
         }),
     )?;
 
-    // PushRequest
     write_message(
         &mut buf,
         &RpcMessage::PushRequest(PushRequest {
@@ -114,7 +113,6 @@ pub async fn push(
         }),
     )?;
 
-    // Objects
     for (object_type, hash, data) in objects {
         write_message(
             &mut buf,

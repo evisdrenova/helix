@@ -10,6 +10,7 @@ use std::{
 
 use crate::push::{read_remote_tracking, resolve_remote_and_ref, write_remote_tracking};
 
+// update to use the pull_handshake fucntion similar to push_handshake
 pub async fn pull(repo_path: &PathBuf, remote_name: &str, branch: &str) -> Result<()> {
     let (remote_url, ref_name) = resolve_remote_and_ref(&repo_path, remote_name, branch)?;
 
