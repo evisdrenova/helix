@@ -32,10 +32,12 @@ pub async fn push_handshake(
 
     let client = reqwest::Client::new();
     let resp = client
-        .post(format!("{remote_url}/rpc/push/handshake"))
+        .post(format!("{remote_url}/rpc/handshake"))
         .body(buf)
         .send()
         .await;
+
+    println!("1");
 
     let resp = match resp {
         Ok(r) => r,
@@ -48,11 +50,21 @@ pub async fn push_handshake(
     let bytes = resp.bytes().await?;
     let mut cursor = Cursor::new(bytes.to_vec());
 
-    let msg = read_message(&mut cursor)?;
+    let first_msg = read_message(&mut cursor)?;
+    match first_msg {
+        RpcMessage::HelloAck(_) => println!("Handshake: HelloAck received"),
+        RpcMessage::Error(e) => bail!("Server error: {}", e.message),
+        _ => bail!("Expected HelloAck, got {:?}", first_msg),
+    }
 
-    match msg {
-        RpcMessage::PushAck(_) if status.is_success() => {
+    println!("2 {:?}", status);
+
+    let second_message = read_message(&mut cursor)?;
+
+    match second_message {
+        RpcMessage::PushResponse(r) if status.is_success() => {
             // TODO: update with actual server response with what it has already, so we can calc diff between new and old
+            println!("3 {:?}", r.remote_head);
             Ok(())
         }
         RpcMessage::Error(err) => {

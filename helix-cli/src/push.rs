@@ -75,6 +75,7 @@ pub async fn push(
         old_target,
     )
     .await?;
+    println!("4");
     println!("remote server is available, gathering files to send..");
 
     if options.dry_run {
