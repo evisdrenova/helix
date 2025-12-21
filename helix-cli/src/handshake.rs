@@ -10,7 +10,7 @@ pub async fn push_handshake(
     ref_name: &str,
     new_target: Hash32,
     old_target: Option<Hash32>,
-) -> Result<()> {
+) -> Result<Option<Hash32>> {
     let mut buf: Vec<u8> = Vec::new();
 
     write_message(
@@ -37,8 +37,6 @@ pub async fn push_handshake(
         .send()
         .await;
 
-    println!("1");
-
     let resp = match resp {
         Ok(r) => r,
         Err(e) => {
@@ -50,22 +48,18 @@ pub async fn push_handshake(
     let bytes = resp.bytes().await?;
     let mut cursor = Cursor::new(bytes.to_vec());
 
-    let first_msg = read_message(&mut cursor)?;
-    match first_msg {
-        RpcMessage::HelloAck(_) => println!("Handshake: HelloAck received"),
-        RpcMessage::Error(e) => bail!("Server error: {}", e.message),
-        _ => bail!("Expected HelloAck, got {:?}", first_msg),
-    }
-
-    println!("2 {:?}", status);
-
-    let second_message = read_message(&mut cursor)?;
-
-    match second_message {
+    match read_message(&mut cursor)? {
         RpcMessage::PushResponse(r) if status.is_success() => {
             // TODO: update with actual server response with what it has already, so we can calc diff between new and old
-            println!("3 {:?}", r.remote_head);
-            Ok(())
+            println!("Connected to the server!");
+            let head_display = match r.remote_head {
+                Some(hash) => hex::encode(hash),
+                None => {
+                    "0000000000000000000000000000000000000000000000000000000000000000".to_string()
+                }
+            };
+            println!("Server is currently at: {}", hex::encode(head_display));
+            Ok(r.remote_head)
         }
         RpcMessage::Error(err) => {
             bail!(
