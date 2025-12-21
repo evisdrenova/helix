@@ -269,12 +269,12 @@ async fn compute_push_frontier(
 ) -> Result<Vec<(ObjectType, Hash32, Vec<u8>)>> {
     let objects_root = repo_path.join(".helix").join("objects");
 
-    // Launch all three futures concurrently
+    // run concurrently
     let commits_fut = load_objects_from_dir(objects_root.join("commits"), ObjectType::Commit);
     let trees_fut = load_objects_from_dir(objects_root.join("trees"), ObjectType::Tree);
     let blobs_fut = load_objects_from_dir(objects_root.join("blobs"), ObjectType::Blob);
 
-    // Use try_join! to await them all in parallel
+    // await them all in parallel
     let (commits, trees, blobs) = tokio::try_join!(commits_fut, trees_fut, blobs_fut)?;
 
     let mut out = commits;
@@ -296,10 +296,12 @@ async fn load_objects_from_dir(
     let mut entries = tokio::fs::read_dir(dir).await?;
     while let Some(entry) = entries.next_entry().await? {
         if entry.file_type().await?.is_file() {
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            let hash = convert_hex_to_hash32(name_str.trim())?;
             let data = tokio::fs::read(entry.path()).await?;
+
+            // Re-hash the data to ensure we are sending the absolute truth
+            let mut hash = [0u8; 32];
+            hash.copy_from_slice(blake3::hash(&data).as_bytes());
+
             results.push((obj_type.clone(), hash, data));
         }
     }
