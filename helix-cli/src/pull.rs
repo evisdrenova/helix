@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use helix_protocol::{
-    read_message, write_message, FetchObject, FetchRequest, Hash32, Hello, ObjectType, RpcMessage,
+    read_message, write_message, Hash32, Hello, ObjectType, PullObject, PullRequest, RpcMessage,
 };
 use std::{
     fs,
@@ -27,7 +27,7 @@ pub async fn pull(repo_path: &PathBuf, remote_name: &str, branch: &str) -> Resul
 
     write_message(
         &mut buf,
-        &RpcMessage::FetchRequest(FetchRequest {
+        &RpcMessage::PullRequest(PullRequest {
             repo: repo_path
                 .file_name()
                 .unwrap()
@@ -54,7 +54,7 @@ pub async fn pull(repo_path: &PathBuf, remote_name: &str, branch: &str) -> Resul
 
     loop {
         match read_message(&mut cursor) {
-            Ok(RpcMessage::FetchObject(FetchObject {
+            Ok(RpcMessage::PullObject(PullObject {
                 object_type,
                 hash,
                 data,
@@ -66,10 +66,10 @@ pub async fn pull(repo_path: &PathBuf, remote_name: &str, branch: &str) -> Resul
                 write_local_object(&repo_path, &object_type, &hash, &data)?;
                 received_objects += 1;
             }
-            Ok(RpcMessage::FetchDone) => {
+            Ok(RpcMessage::PullDone) => {
                 // just continue; final ack follows
             }
-            Ok(RpcMessage::FetchAck(ack)) => {
+            Ok(RpcMessage::PullAck(ack)) => {
                 new_remote_head = Some(ack.new_remote_head);
                 break;
             }
