@@ -86,7 +86,8 @@ pub async fn push(
     // Compute objects to send (MVP: send everything we have)
     // TODO: update this only send teh difference between the remote and local by walking from new_target back to old_target
     // TODO: as we create the objects, we should write them to the buffer at the same time instead of doing it in sequence
-    let objects = compute_push_frontier(repo_path, new_target, old_target.unwrap_or([0u8; 32]))?;
+    let objects =
+        compute_push_frontier(repo_path, new_target, old_target.unwrap_or([0u8; 32])).await?;
     if options.verbose {
         println!("Sending {} objects...", objects.len());
     }
@@ -261,29 +262,26 @@ pub fn write_remote_tracking(
 }
 
 /// send all local objects we know about.
-fn compute_push_frontier(
+async fn compute_push_frontier(
     repo_path: &Path,
     _new_target: Hash32,
     _old_target: Hash32,
 ) -> Result<Vec<(ObjectType, Hash32, Vec<u8>)>> {
     let objects_root = repo_path.join(".helix").join("objects");
 
-    let rt = tokio::runtime::Handle::current();
+    // Launch all three futures concurrently
+    let commits_fut = load_objects_from_dir(objects_root.join("commits"), ObjectType::Commit);
+    let trees_fut = load_objects_from_dir(objects_root.join("trees"), ObjectType::Tree);
+    let blobs_fut = load_objects_from_dir(objects_root.join("blobs"), ObjectType::Blob);
 
-    rt.block_on(async {
-        let commits_fut = load_objects_from_dir(objects_root.join("commits"), ObjectType::Commit);
-        let trees_fut = load_objects_from_dir(objects_root.join("trees"), ObjectType::Tree);
-        let blobs_fut = load_objects_from_dir(objects_root.join("blobs"), ObjectType::Blob);
+    // Use try_join! to await them all in parallel
+    let (commits, trees, blobs) = tokio::try_join!(commits_fut, trees_fut, blobs_fut)?;
 
-        // try_join! runs all three concurrently and returns when all are done
-        let (commits, trees, blobs) = tokio::try_join!(commits_fut, trees_fut, blobs_fut)?;
+    let mut out = commits;
+    out.extend(trees);
+    out.extend(blobs);
 
-        let mut out = commits;
-        out.extend(trees);
-        out.extend(blobs);
-
-        Ok(out)
-    })
+    Ok(out)
 }
 
 async fn load_objects_from_dir(
