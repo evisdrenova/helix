@@ -3,6 +3,7 @@ pub mod branch;
 pub mod branch_tui;
 pub mod commit;
 pub mod fsmonitor;
+pub mod handshake;
 pub mod helix_index;
 pub mod ignore;
 pub mod index;
