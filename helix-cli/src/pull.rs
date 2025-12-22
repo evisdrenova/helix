@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
-use helix_protocol::{
-    read_message, write_message, Hash32, Hello, ObjectType, PullObject, PullRequest, RpcMessage,
+use helix_protocol::hash::Hash;
+use helix_protocol::message::{
+    read_message, write_message, Hello, ObjectType, PullObject, PullRequest, RpcMessage,
 };
 use std::{
     fs,
@@ -107,7 +108,7 @@ pub async fn pull(repo_path: &PathBuf, remote_name: &str, branch: &str) -> Resul
 fn write_local_object(
     repo_path: &Path,
     object_type: &ObjectType,
-    hash: &Hash32,
+    hash: &Hash,
     data: &[u8],
 ) -> Result<()> {
     // Map protocol object type → local subdirectory name

@@ -1,6 +1,6 @@
 use crate::handlers::utils::{handle_handshake, respond_err};
 use axum::{extract::State, response::IntoResponse};
-use helix_protocol::{write_message, ObjectType, PullAck, PullObject, RpcMessage};
+use helix_protocol::message::{write_message, ObjectType, PullAck, PullObject, RpcMessage};
 use helix_server::app_state::AppState;
 use helix_server::walk::collect_all_objects;
 use std::io::Cursor;

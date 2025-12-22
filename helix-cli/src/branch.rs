@@ -11,8 +11,8 @@ use std::fs;
 use std::path::Path;
 
 use crate::branch_tui;
-use crate::helix_index::hash::Hash;
 use crate::helix_index::state::{get_branch_upstream, remove_branch_state, set_branch_upstream};
+use helix_protocol::hash::Hash;
 
 pub struct BranchOptions {
     pub delete: bool,

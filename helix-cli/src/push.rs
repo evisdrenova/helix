@@ -1,9 +1,8 @@
 use anyhow::{anyhow, bail, Context, Result};
-use helix_protocol::{
-    read_message, write_message, Hash32, Hello, ObjectType, PushObject, PushRequest, RpcMessage,
+use helix_protocol::hash::Hash;
+use helix_protocol::message::{
+    read_message, write_message, Hello, ObjectType, PushObject, PushRequest, RpcMessage,
 };
-use serde::Deserialize;
-use std::collections::HashMap;
 use std::fs;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
@@ -50,10 +49,10 @@ pub async fn push(
             "  old_target = {}",
             old_target
                 .as_ref()
-                .map(convert_hash32_to_hex32)
+                .map(convert_Hash_to_hex32)
                 .unwrap_or_else(|| "<none>".to_string())
         );
-        println!("  new_target = {}", convert_hash32_to_hex32(&new_target));
+        println!("  new_target = {}", convert_Hash_to_hex32(&new_target));
     }
 
     println!("checking if remote server is available..");
@@ -198,17 +197,17 @@ pub fn resolve_remote_and_ref(
 /// convert to 64 hex bytes and save to disk
 /// read hex bytes as strings to memory
 /// convert 64 hex bytes back to 32 byte hash string to compare
-fn read_local_ref(repo_path: &Path, ref_name: &str) -> Result<Hash32> {
+fn read_local_ref(repo_path: &Path, ref_name: &str) -> Result<Hash> {
     let ref_path = repo_path.join(".helix").join(ref_name);
 
     let hex_contents = fs::read_to_string(&ref_path)
         .with_context(|| format!("Failed to read ref {} ({})", ref_name, ref_path.display()))?;
 
-    convert_hex_to_hash32(hex_contents.trim())
+    convert_hex_to_Hash(hex_contents.trim())
 }
 
 /// Read remote-tracking ref: .helix/refs/remotes/<remote>/<branch>
-pub fn read_remote_tracking(repo_path: &Path, remote: &str, branch: &str) -> Result<Hash32> {
+pub fn read_remote_tracking(repo_path: &Path, remote: &str, branch: &str) -> Result<Hash> {
     let path = repo_path
         .join(".helix")
         .join("refs")
@@ -223,7 +222,7 @@ pub fn read_remote_tracking(repo_path: &Path, remote: &str, branch: &str) -> Res
     let hex_contents = fs::read_to_string(&path)
         .with_context(|| format!("Failed to read remote-tracking ref {}", path.display()))?;
 
-    convert_hex_to_hash32(hex_contents.trim())
+    convert_hex_to_Hash(hex_contents.trim())
 }
 
 /// Write remote-tracking ref: .helix/refs/remotes/<remote>/<branch>
@@ -231,7 +230,7 @@ pub fn write_remote_tracking(
     repo_path: &Path,
     remote: &str,
     branch: &str,
-    target: Hash32,
+    target: Hash,
 ) -> Result<()> {
     let path = repo_path
         .join(".helix")
@@ -242,7 +241,7 @@ pub fn write_remote_tracking(
     fs::create_dir_all(&path).with_context(|| format!("Failed to create {}", path.display()))?;
 
     let full = path.join(branch);
-    let hex = convert_hash32_to_hex32(&target);
+    let hex = convert_Hash_to_hex32(&target);
     fs::write(&full, hex + "\n").with_context(|| format!("Failed to write {}", full.display()))?;
 
     Ok(())
@@ -251,9 +250,9 @@ pub fn write_remote_tracking(
 /// send all local objects we know about.
 async fn compute_push_frontier(
     repo_path: &Path,
-    _new_target: Hash32,
-    _old_target: Hash32,
-) -> Result<Vec<(ObjectType, Hash32, Vec<u8>)>> {
+    _new_target: Hash,
+    _old_target: Hash,
+) -> Result<Vec<(ObjectType, Hash, Vec<u8>)>> {
     let objects_root = repo_path.join(".helix").join("objects");
 
     // run concurrently
@@ -274,7 +273,7 @@ async fn compute_push_frontier(
 async fn load_objects_from_dir(
     dir: PathBuf,
     obj_type: ObjectType,
-) -> Result<Vec<(ObjectType, Hash32, Vec<u8>)>> {
+) -> Result<Vec<(ObjectType, Hash, Vec<u8>)>> {
     let mut results = Vec::new();
     if !dir.exists() {
         return Ok(results);
@@ -295,12 +294,12 @@ async fn load_objects_from_dir(
 
 /// converts a hex string to a 32 byte hash
 /// this allows us to compare it against other hashes
-fn convert_hex_to_hash32(s: &str) -> Result<Hash32> {
+fn convert_hex_to_Hash(s: &str) -> Result<Hash> {
     let bytes = hex::decode(s).context("Failed to decode hex string")?;
     bytes.try_into().map_err(|_| anyhow!("Invalid hash length"))
 }
 
 /// conevrt a [u8; 32] → hex string
-fn convert_hash32_to_hex32(h: &Hash32) -> String {
+fn convert_Hash_to_hex32(h: &Hash) -> String {
     hex::encode(h)
 }

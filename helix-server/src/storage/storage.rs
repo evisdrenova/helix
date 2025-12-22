@@ -1,6 +1,7 @@
 use anyhow::Context;
 use anyhow::Result;
-use helix_protocol::{Hash32, ObjectType};
+use helix_protocol::hash::Hash;
+use helix_protocol::message::ObjectType;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -22,7 +23,7 @@ impl FsObjectStore {
         }
     }
 
-    fn obj_path(&self, ty: &ObjectType, hash: &Hash32) -> PathBuf {
+    fn obj_path(&self, ty: &ObjectType, hash: &Hash) -> PathBuf {
         let subdir = match ty {
             ObjectType::Blob => "blobs",
             ObjectType::Tree => "trees",
@@ -36,11 +37,11 @@ impl FsObjectStore {
             .join(hex)
     }
 
-    pub fn has_object(&self, ty: &ObjectType, hash: &Hash32) -> bool {
+    pub fn has_object(&self, ty: &ObjectType, hash: &Hash) -> bool {
         self.obj_path(ty, hash).exists()
     }
 
-    pub fn write_object(&self, ty: &ObjectType, hash: &Hash32, data: &[u8]) -> Result<()> {
+    pub fn write_object(&self, ty: &ObjectType, hash: &Hash, data: &[u8]) -> Result<()> {
         let path = self.obj_path(ty, hash);
 
         if let Some(parent) = path.parent() {
@@ -78,7 +79,7 @@ impl FsObjectStore {
         Ok(())
     }
 
-    pub fn read_object(&self, ty: &ObjectType, hash: &Hash32) -> Result<Vec<u8>> {
+    pub fn read_object(&self, ty: &ObjectType, hash: &Hash) -> Result<Vec<u8>> {
         let path = self.obj_path(ty, hash);
         let data = fs::read(path)?;
         Ok(data)
@@ -111,7 +112,7 @@ impl FsRefStore {
         self.root.join(".helix").join("refs").join(name)
     }
 
-    pub fn get_ref(&self, name: &str) -> Result<Option<Hash32>> {
+    pub fn get_ref(&self, name: &str) -> Result<Option<Hash>> {
         let path = self.ref_path(name);
         if !path.exists() {
             return Ok(None);
@@ -124,7 +125,7 @@ impl FsRefStore {
         Ok(Some(hash))
     }
 
-    pub fn set_ref(&self, name: &str, new: Hash32) -> Result<()> {
+    pub fn set_ref(&self, name: &str, new: Hash) -> Result<()> {
         let path = self.ref_path(name);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;

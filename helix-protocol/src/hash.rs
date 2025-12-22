@@ -1,7 +1,3 @@
-/*
-Functions and methods for hashing data
-*/
-
 use anyhow::Result;
 use blake3::Hasher;
 use rayon::prelude::*;
@@ -10,7 +6,7 @@ use std::{fs, io::Read, path::Path};
 /// 32-byte BLAKE3 hash
 pub type Hash = [u8; 32];
 
-/// Hash arbitrary bytes with BLAKE3
+/// Hash arbitrary bytes with BLAKE3 and return the hash's raw bytes
 #[inline]
 pub fn hash_bytes(data: &[u8]) -> Hash {
     let hash = blake3::hash(data);
@@ -101,6 +97,16 @@ mod tests {
         let hash2 = hash_bytes(data);
 
         assert_eq!(hash1, hash2, "Same input should produce same hash");
+    }
+
+    #[test]
+    fn helix_blob_hash_is_blake3_of_raw_bytes() {
+        let content = b"hello\n"; // byte string literal
+        let h1 = hash_bytes(content);
+
+        // Simulate any other path that claims to compute the same oid:
+        let h2 = blake3::hash(content);
+        assert_eq!(h1, *h2.as_bytes());
     }
 
     #[test]

@@ -1,8 +1,8 @@
 /* Defines the methods and functions that create and update blob storage for hashed files
 Content addressed storage: same content = same hash = auto deduplication*/
 
-use super::hash::{hash_bytes, Hash};
 use anyhow::{Context, Result};
+use helix_protocol::hash::{hash_bytes, Hash};
 use rayon::prelude::*;
 use std::{
     fs,

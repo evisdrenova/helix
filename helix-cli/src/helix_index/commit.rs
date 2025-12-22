@@ -11,8 +11,8 @@
 //
 // Storage: .helix/objects/commits/{BLAKE3_HASH}
 
-use crate::helix_index::hash::{hash_bytes, hash_to_hex, hex_to_hash, Hash};
 use anyhow::{Context, Result};
+use helix_protocol::hash::{hash_bytes, hash_to_hex, hex_to_hash, Hash};
 use rayon::prelude::*;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -126,7 +126,7 @@ impl Commit {
 
     /// Get short hash (first 8 hex characters)
     pub fn short_hash(&self) -> String {
-        let hex = crate::helix_index::hash::hash_to_hex(&self.commit_hash);
+        let hex = hash_to_hex(&self.commit_hash);
         hex[..8].to_string()
     }
 
@@ -268,7 +268,7 @@ impl Commit {
 
     /// Format commit for display
     pub fn format(&self, hash: &Hash) -> String {
-        let hash_hex = crate::helix_index::hash::hash_to_hex(hash);
+        let hash_hex = hash_to_hex(hash);
         let short_hash = &hash_hex[..8];
 
         format!(
@@ -392,7 +392,7 @@ impl CommitStorage {
                     if let Some(filename_str) = filename.to_str() {
                         if filename_str.len() == 64 {
                             // BLAKE3 hash in hex
-                            if let Ok(hash) = crate::helix_index::hash::hex_to_hash(filename_str) {
+                            if let Ok(hash) = hex_to_hash(filename_str) {
                                 hashes.push(hash);
                             }
                         }
@@ -405,7 +405,7 @@ impl CommitStorage {
     }
 
     fn commit_path(&self, hash: &Hash) -> PathBuf {
-        let hex = crate::helix_index::hash::hash_to_hex(hash);
+        let hex = hash_to_hex(hash);
         self.commits_dir.join(hex)
     }
 

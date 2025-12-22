@@ -13,8 +13,8 @@
 // - Entries are sorted by name for deterministic hashing
 // - Trees are immutable once created
 
-use crate::helix_index::hash::{hash_bytes, Hash};
 use anyhow::{Context, Result};
+use helix_protocol::hash::{hash_bytes, hash_to_hex, hex_to_hash, Hash};
 use rayon::prelude::*;
 use std::collections::BTreeMap;
 use std::fs;
@@ -370,7 +370,7 @@ impl TreeStorage {
                     if let Some(filename_str) = filename.to_str() {
                         if filename_str.len() == 64 {
                             // BLAKE3 hash in hex
-                            if let Ok(hash) = crate::helix_index::hash::hex_to_hash(filename_str) {
+                            if let Ok(hash) = hex_to_hash(filename_str) {
                                 hashes.push(hash);
                             }
                         }
@@ -383,7 +383,7 @@ impl TreeStorage {
     }
 
     fn tree_path(&self, hash: &Hash) -> PathBuf {
-        let hex = crate::helix_index::hash::hash_to_hex(hash);
+        let hex = hash_to_hex(hash);
         self.trees_dir.join(hex)
     }
 

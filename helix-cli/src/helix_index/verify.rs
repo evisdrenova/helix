@@ -59,9 +59,9 @@ mod tests {
     use super::*;
     use crate::helix_index::{
         format::{Entry, Header},
-        hash,
         writer::Writer,
     };
+    use helix_protocol::hash;
     use std::fs;
     use std::path::PathBuf;
     use std::process::Command;

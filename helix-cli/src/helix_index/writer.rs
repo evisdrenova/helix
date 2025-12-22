@@ -433,10 +433,8 @@ impl IndexBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::helix_index::{
-        format::EntryFlags,
-        hash::{self, hash_bytes},
-    };
+    use crate::helix_index::format::EntryFlags;
+    use helix_protocol::hash::{self, hash_bytes};
     use tempfile::TempDir;
 
     #[test]

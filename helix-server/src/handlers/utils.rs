@@ -1,5 +1,5 @@
 use axum::{body::Body, response::Response};
-use helix_protocol::{read_message, write_message, RpcError, RpcMessage};
+use helix_protocol::message::{read_message, write_message, RpcError, RpcMessage};
 use std::io::Cursor;
 
 pub fn handle_handshake<T>(

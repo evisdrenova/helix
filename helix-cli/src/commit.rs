@@ -17,10 +17,10 @@
 use crate::helix_index::api::HelixIndexData;
 use crate::helix_index::commit::{Commit, CommitStorage};
 use crate::helix_index::format::EntryFlags;
-use crate::helix_index::hash::Hash;
 use crate::helix_index::tree::TreeBuilder;
 use crate::init::HelixConfig;
 use anyhow::{Context, Result};
+use helix_protocol::hash::{hash_to_hex, hex_to_hash, Hash};
 use std::fs;
 use std::path::Path;
 use std::time::Instant;
@@ -98,10 +98,7 @@ pub fn commit(repo_path: &Path, options: CommitOptions) -> Result<Hash> {
         .context("Failed to build tree")?;
 
     if options.verbose {
-        println!(
-            "Created tree: {}",
-            crate::helix_index::hash::hash_to_hex(&tree_hash)[..8].to_string()
-        );
+        println!("Created tree: {}", hash_to_hex(&tree_hash)[..8].to_string());
     }
 
     // Check if tree would be same as HEAD (no changes)
@@ -165,7 +162,7 @@ pub fn commit(repo_path: &Path, options: CommitOptions) -> Result<Hash> {
     if options.verbose {
         println!(
             "Created commit: {}",
-            crate::helix_index::hash::hash_to_hex(&commit_hash)[..8].to_string()
+            hash_to_hex(&commit_hash)[..8].to_string()
         );
     }
 
@@ -185,7 +182,7 @@ pub fn commit(repo_path: &Path, options: CommitOptions) -> Result<Hash> {
     }
 
     // Print commit summary
-    let short_hash = crate::helix_index::hash::hash_to_hex(&commit_hash);
+    let short_hash = hash_to_hex(&commit_hash);
     let short_hash = &short_hash[..8];
 
     if commit.is_initial() {
@@ -226,11 +223,10 @@ fn read_head(repo_path: &Path) -> Result<Hash> {
 
         let ref_content = fs::read_to_string(&full_ref_path).context("Failed to read reference")?;
 
-        crate::helix_index::hash::hex_to_hash(ref_content.trim())
-            .context("Invalid hash in reference")
+        hex_to_hash(ref_content.trim()).context("Invalid hash in reference")
     } else {
         // Direct hash
-        crate::helix_index::hash::hex_to_hash(content).context("Invalid hash in HEAD")
+        hex_to_hash(content).context("Invalid hash in HEAD")
     }
 }
 
@@ -253,14 +249,14 @@ fn write_head(repo_path: &Path, commit_hash: Hash) -> Result<()> {
                 fs::create_dir_all(parent)?;
             }
 
-            let hash_hex = crate::helix_index::hash::hash_to_hex(&commit_hash);
+            let hash_hex = hash_to_hex(&commit_hash);
             fs::write(&full_ref_path, hash_hex)?;
             return Ok(());
         }
     }
 
     // Direct HEAD update (detached HEAD)
-    let hash_hex = crate::helix_index::hash::hash_to_hex(&commit_hash);
+    let hash_hex = hash_to_hex(&commit_hash);
     fs::write(&head_path, hash_hex)?;
 
     Ok(())

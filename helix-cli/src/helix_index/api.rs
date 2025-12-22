@@ -1,4 +1,3 @@
-use crate::helix_index::hash::{self};
 use crate::helix_index::Writer;
 
 use super::format::{Entry, EntryFlags};
@@ -6,6 +5,7 @@ use super::reader::{HelixIndex, Reader};
 use super::sync::SyncEngine;
 use super::verify::{Verifier, VerifyResult};
 use anyhow::Result;
+use helix_protocol::hash;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -472,7 +472,7 @@ impl HelixIndexData {
 
 #[cfg(test)]
 mod tests {
-    use crate::helix_index::hash::hash_bytes;
+    use helix_protocol::hash::hash_bytes;
 
     use super::*;
     use std::fs;

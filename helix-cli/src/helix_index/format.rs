@@ -15,9 +15,8 @@ Binary file format for helix.idx V1.0
  └─────────────────────────────────────┘
 */
 
+use helix_protocol::hash::Hash;
 use std::{path::PathBuf, str::Utf8Error};
-
-use crate::helix_index::hash::Hash;
 
 pub const MAGIC: [u8; 4] = *b"HLIX";
 pub const VERSION: u32 = 1;
@@ -409,7 +408,7 @@ pub enum FormatError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::helix_index::hash::hash_bytes;
+    use helix_protocol::hash::hash_bytes;
 
     #[test]
     fn test_header_serialization() {

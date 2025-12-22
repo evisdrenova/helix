@@ -1,7 +1,7 @@
 // ui command for log.rs
 
 use helix_cli::helix_index::commit::{format_timestamp, Commit};
-use helix_cli::helix_index::hash::hash_to_hex;
+use helix_protocol::hash::hash_to_hex;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},

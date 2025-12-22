@@ -336,7 +336,8 @@ impl HelixIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::helix_index::{hash, writer::Writer};
+    use crate::helix_index::writer::Writer;
+    use helix_protocol::hash;
     use std::fs;
     use tempfile::TempDir;
 

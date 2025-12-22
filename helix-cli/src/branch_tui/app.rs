@@ -4,6 +4,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use helix_protocol::hash;
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::collections::{HashMap, HashSet};
 use std::io;
@@ -11,7 +12,6 @@ use std::path::Path;
 
 use super::ui;
 use crate::helix_index::commit::{Commit, CommitLoader, CommitStorage};
-use crate::helix_index::hash;
 use crate::helix_index::state::get_branch_upstream;
 
 #[derive(Debug)]

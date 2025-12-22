@@ -4,7 +4,7 @@
 use crate::handlers::utils::respond_err;
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
-use helix_protocol::{read_message, write_message, PushResponse, RpcMessage};
+use helix_protocol::message::{read_message, write_message, PushResponse, RpcMessage};
 use helix_server::app_state::AppState;
 use std::io::Cursor;
 use std::sync::Arc;

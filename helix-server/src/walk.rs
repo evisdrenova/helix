@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use helix_protocol::ObjectType;
+use helix_protocol::message::ObjectType;
 use std::collections::HashSet;
 use std::io::Cursor;
 

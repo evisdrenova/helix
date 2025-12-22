@@ -68,21 +68,19 @@ under `.helix/` and `helix.toml`.
 use super::commit::Commit as Helix_Commit;
 use super::commit::CommitStorage;
 use super::format::{Entry, EntryFlags, Header};
-use super::hash::{self, ZERO_HASH};
 use super::reader::Reader;
 use super::state::set_branch_upstream;
 use super::tree::TreeBuilder;
 use super::writer::Writer;
-
 use crate::helix_index::blob_storage::BlobStorage;
-use crate::helix_index::hash::hash_to_hex;
 use crate::ignore::IgnoreRules;
 use crate::index::GitIndex;
+use helix_protocol::hash::{self, hash_to_hex, ZERO_HASH};
 
 use anyhow::{Context, Result};
-use blake3::Hash;
 use gix::revision::walk::Sorting;
 use hash::compute_blob_oid;
+use helix_protocol::hash::Hash;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};

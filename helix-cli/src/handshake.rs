@@ -1,16 +1,17 @@
 use std::io::Cursor;
 
 use anyhow::{bail, Result};
-use helix_protocol::{read_message, write_message, Hash32, Hello, PushRequest, RpcMessage};
+use helix_protocol::message::{read_message, write_message, Hello, PushRequest, RpcMessage};
+use helix_protocol::hash::Hash;
 
 // handshake between the CLI and Server
 pub async fn push_handshake(
     remote_url: &str,
     repo_name: &str,
     ref_name: &str,
-    new_target: Hash32,
-    old_target: Option<Hash32>,
-) -> Result<Option<Hash32>> {
+    new_target: Hash,
+    old_target: Option<Hash>,
+) -> Result<Option<Hash>> {
     let mut buf: Vec<u8> = Vec::new();
 
     write_message(
