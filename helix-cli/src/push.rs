@@ -49,10 +49,10 @@ pub async fn push(
             "  old_target = {}",
             old_target
                 .as_ref()
-                .map(convert_Hash_to_hex32)
+                .map(convert_hash_to_hex32)
                 .unwrap_or_else(|| "<none>".to_string())
         );
-        println!("  new_target = {}", convert_Hash_to_hex32(&new_target));
+        println!("  new_target = {}", convert_hash_to_hex32(&new_target));
     }
 
     println!("checking if remote server is available..");
@@ -203,7 +203,7 @@ fn read_local_ref(repo_path: &Path, ref_name: &str) -> Result<Hash> {
     let hex_contents = fs::read_to_string(&ref_path)
         .with_context(|| format!("Failed to read ref {} ({})", ref_name, ref_path.display()))?;
 
-    convert_hex_to_Hash(hex_contents.trim())
+    convert_hex_to_hash(hex_contents.trim())
 }
 
 /// Read remote-tracking ref: .helix/refs/remotes/<remote>/<branch>
@@ -222,7 +222,7 @@ pub fn read_remote_tracking(repo_path: &Path, remote: &str, branch: &str) -> Res
     let hex_contents = fs::read_to_string(&path)
         .with_context(|| format!("Failed to read remote-tracking ref {}", path.display()))?;
 
-    convert_hex_to_Hash(hex_contents.trim())
+    convert_hex_to_hash(hex_contents.trim())
 }
 
 /// Write remote-tracking ref: .helix/refs/remotes/<remote>/<branch>
@@ -241,7 +241,7 @@ pub fn write_remote_tracking(
     fs::create_dir_all(&path).with_context(|| format!("Failed to create {}", path.display()))?;
 
     let full = path.join(branch);
-    let hex = convert_Hash_to_hex32(&target);
+    let hex = convert_hash_to_hex32(&target);
     fs::write(&full, hex + "\n").with_context(|| format!("Failed to write {}", full.display()))?;
 
     Ok(())
@@ -294,12 +294,12 @@ async fn load_objects_from_dir(
 
 /// converts a hex string to a 32 byte hash
 /// this allows us to compare it against other hashes
-fn convert_hex_to_Hash(s: &str) -> Result<Hash> {
+fn convert_hex_to_hash(s: &str) -> Result<Hash> {
     let bytes = hex::decode(s).context("Failed to decode hex string")?;
     bytes.try_into().map_err(|_| anyhow!("Invalid hash length"))
 }
 
 /// conevrt a [u8; 32] → hex string
-fn convert_Hash_to_hex32(h: &Hash) -> String {
+fn convert_hash_to_hex32(h: &Hash) -> String {
     hex::encode(h)
 }

@@ -65,8 +65,7 @@ This file is intentionally read-only with respect to Git: it never mutates
 under `.helix/` and `helix.toml`.
 */
 
-use super::commit::Commit as Helix_Commit;
-use super::commit::CommitStorage;
+use super::commit::{Commit as Helix_Commit, CommitStorage};
 use super::format::{Entry, EntryFlags, Header};
 use super::reader::Reader;
 use super::state::set_branch_upstream;
@@ -75,12 +74,10 @@ use super::writer::Writer;
 use crate::helix_index::blob_storage::BlobStorage;
 use crate::ignore::IgnoreRules;
 use crate::index::GitIndex;
-use helix_protocol::hash::{self, hash_to_hex, ZERO_HASH};
-
 use anyhow::{Context, Result};
 use gix::revision::walk::Sorting;
 use hash::compute_blob_oid;
-use helix_protocol::hash::Hash;
+use helix_protocol::hash::{self, hash_to_hex, Hash, ZERO_HASH};
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -116,11 +113,9 @@ impl SyncEngine {
     }
 
     fn import_git_config(&self) -> Result<()> {
-        // 1. Use gix to read Git config (handles Git's config format properly)
         let repo = gix::open(&self.repo_path)?;
         let config = repo.config_snapshot();
 
-        // Get user name and email from Git config
         let author_name = match config.string("user.name") {
             Some(name) => name.to_string(),
             None => {
@@ -143,7 +138,6 @@ impl SyncEngine {
 
         println!("Found Git user config: {} <{}>", author_name, author_email);
 
-        // 2. Load helix.toml as TOML
         let helix_toml_path = self.repo_path.join("helix.toml");
         if !helix_toml_path.exists() {
             return Ok(());
@@ -158,7 +152,6 @@ impl SyncEngine {
             .try_into()
             .context("Root value is not a table")?;
 
-        // 3. Ensure [user] table exists and set fields
         let user_value = root
             .entry("user".to_string())
             .or_insert_with(|| Value::Table(Table::new()));
@@ -170,7 +163,6 @@ impl SyncEngine {
         user_table.insert("name".to_string(), Value::String(author_name.clone()));
         user_table.insert("email".to_string(), Value::String(author_email.clone()));
 
-        // 4. Write back
         let new_content =
             toml::to_string_pretty(&root).context("Failed to serialize helix.toml")?;
 
@@ -178,12 +170,13 @@ impl SyncEngine {
             .with_context(|| format!("Failed to write {}", helix_toml_path.display()))?;
 
         println!(
-            "✓ Imported Git user config to helix.toml: {} <{}>",
+            "Imported Git user config to helix.toml: {} <{}>",
             author_name, author_email
         );
 
         Ok(())
     }
+
     // TODO: parallelize this as we walk the directory, we get the branch, transform it to a helix branch, get it's upstream adn then add it to the helix state
     fn import_git_branches(
         &self,
@@ -253,8 +246,6 @@ impl SyncEngine {
 
         // Determine the default branch (main or master)
         let default_branch = self.find_default_branch(branch_names);
-
-        println!("the deafult branch {:?}", default_branch);
 
         // Parse Git config for each branch
         for branch_name in branch_names {
@@ -751,15 +742,13 @@ impl SyncEngine {
         // Sort oldest → newest by commit time
         collected_git_commits.sort_by_key(|(_, c)| c.time().unwrap().seconds);
 
-        println!(
+        let pb = ProgressBar::new_spinner();
+
+        let msg = format!(
             "Git reports {} commits in history",
             collected_git_commits.len()
         );
-
-        let pb = ProgressBar::new_spinner();
-        pb.set_message("Importing commits...");
-
-        println!("the commits {:?}", collected_git_commits);
+        pb.set_message(msg);
 
         // Build Helix commits in oldest to newest order
         let mut helix_commits: Vec<Helix_Commit> = Vec::with_capacity(collected_git_commits.len());
@@ -812,6 +801,7 @@ impl SyncEngine {
         fs::write(&mapping_path, content)?;
         Ok(())
     }
+
     fn build_helix_commit_from_git_commit(
         &self,
         git_commit: &gix::Commit,
@@ -946,9 +936,6 @@ impl SyncEngine {
     fn store_imported_commits(&self, commits: &[Helix_Commit]) -> Result<()> {
         let commit_storage = CommitStorage::for_repo(&self.repo_path);
 
-        println!("Storing {} commits to Helix...", commits.len());
-
-        // Store all commits (with progress bar)
         let pb = ProgressBar::new(commits.len() as u64);
         pb.set_style(
             ProgressStyle::with_template(

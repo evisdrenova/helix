@@ -4,6 +4,7 @@ use rayon::prelude::*;
 use std::{fs, io::Read, path::Path};
 
 /// 32-byte BLAKE3 hash
+/// We use our own hash type instead of the blake3::Hash type for speed
 pub type Hash = [u8; 32];
 
 /// Hash arbitrary bytes with BLAKE3 and return the hash's raw bytes
