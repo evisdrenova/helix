@@ -13,12 +13,11 @@ pub async fn push_handler(
 
     let mut cursor = Cursor::new(body.to_vec());
 
-    // Collect all outbound RPC messages in one HTTP response body
-    let mut out = Vec::<u8>::new();
+    let mut out_buf = Vec::<u8>::new();
 
     let push_req = match handle_handshake(
         &mut cursor,
-        &mut out,
+        &mut out_buf,
         |m| match m {
             RpcMessage::PushRequest(req) => Some(req),
             _ => None,
@@ -40,6 +39,12 @@ pub async fn push_handler(
                 data,
             })) => {
                 println!("reading RPC message from client");
+
+                println!(
+                    "the incoming hash {:?} and the current hash {:?}",
+                    blake3::hash(&data).as_bytes(),
+                    &hash
+                );
 
                 // check hash integrity
                 if blake3::hash(&data).as_bytes() != &hash {
@@ -69,13 +74,13 @@ pub async fn push_handler(
 
     // Write PushAck to `out`
     let ack = RpcMessage::PushAck(PushAck { received_objects });
-    if let Err(e) = write_message(&mut out, &ack) {
+    if let Err(e) = write_message(&mut out_buf, &ack) {
         return respond_err(500, format!("Failed to encode PushAck: {e}"));
     }
 
     axum::response::Response::builder()
         .status(200)
         .header(axum::http::header::CONTENT_TYPE, "application/octet-stream")
-        .body(axum::body::Body::from(out))
+        .body(axum::body::Body::from(out_buf))
         .unwrap()
 }

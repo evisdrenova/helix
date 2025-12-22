@@ -236,6 +236,7 @@ fn create_head_file(repo_path: &Path) -> Result<()> {
 
     Ok(())
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HelixConfig {
     pub user: Option<UserConfig>,
@@ -268,34 +269,33 @@ fn create_repo_config(repo_path: &Path) -> Result<()> {
         return Ok(());
     }
 
-    let default_config = r#"# Helix repository configuration
-#
-# This file configures Helix behavior for this repository.
-# Settings here override global settings in ~/.helix.toml
+    let config = HelixConfig {
+        user: None,
+        remotes: Some(RemotesTable {
+            map: HashMap::new(),
+        }),
+        ignore: IgnoreSection {
+            patterns: vec![
+                "target/".to_string(),
+                "*.tmp".to_string(),
+                "*.log".to_string(),
+                ".helix/".to_string(),
+                ".git/".to_string(),
+            ],
+        },
+    };
 
-[user]
-# Author information for commits
-# Uncomment and set these, or use environment variables:
-#   HELIX_AUTHOR_NAME, HELIX_AUTHOR_EMAIL
-# name = "Your Name"
-# email = "you@example.com"
+    let toml_string = toml::to_string_pretty(&config)
+        .context("Failed to serialize default Helix configuration")?;
 
+    let final_output = format!(
+        "# Helix repository configuration\n\
+         # Settings here override the global settings in ~/.helix.toml\n\n\
+         {}",
+        toml_string
+    );
 
-[remotes]
-# pull=https://example.com/my-repo.git
-# push=https://example.com/my-repo.git
-
-[ignore]
-patterns = [
-    "target/",
-    "*.tmp",
-    "*.log",
-    ".helix/",
-    ".git/"
-]
-"#;
-
-    fs::write(&config_path, default_config).context("Failed to write helix.toml")?;
+    fs::write(&config_path, final_output).context("Failed to write helix.toml")?;
 
     Ok(())
 }

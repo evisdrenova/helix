@@ -8,7 +8,7 @@ use helix_server::{
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use crate::handlers::{pull::pull_handler, push::push_handler};
+use crate::handlers::{handshake::handshake_handler, pull::pull_handler, push::push_handler};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -21,6 +21,7 @@ async fn main() -> anyhow::Result<()> {
     let state = Arc::new(AppState { objects, refs });
     // TODO: later let's move to a real streaming reader inside the handlers like from a TCP socket or chunked body since right nwo the entire HTTP body is buffered - would likely be more efficient
     let app = Router::new()
+        .route("/rpc/handshake", post(handshake_handler))
         .route("/rpc/push", post(push_handler))
         .route("/rpc/fetch", post(pull_handler))
         .with_state(state);

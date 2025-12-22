@@ -1,5 +1,5 @@
 use axum::{body::Body, response::Response};
-use helix_protocol::{read_message, write_message, HelloAck, RpcError, RpcMessage};
+use helix_protocol::{read_message, write_message, RpcError, RpcMessage};
 use std::io::Cursor;
 
 pub fn handle_handshake<T>(
@@ -8,19 +8,10 @@ pub fn handle_handshake<T>(
     expect: fn(RpcMessage) -> Option<T>,
     expected_name: &'static str,
 ) -> Result<T, Response<Body>> {
-    // Expect Hello and return HelloAck with the server version
-    let ack_msg = match read_message(&mut *cursor) {
-        Ok(RpcMessage::Hello(_h)) => RpcMessage::HelloAck(HelloAck {
-            server_version: "helix-server".into(), // TODO: update this to be an actual server version
-        }),
-        Ok(other) => return Err(respond_err(400, format!("Expected Hello, got {:?}", other))),
-        Err(e) => return Err(respond_err(400, format!("Failed to read Hello: {e}"))),
+    match read_message(&mut *cursor) {
+        Ok(RpcMessage::Hello(_)) => {} // handle version matches and stuff here
+        _ => return Err(respond_err(400, "Missing Hello".into())),
     };
-
-    // write HelloAck back to the stream
-    if let Err(e) = write_message(out, &ack_msg) {
-        return Err(respond_err(500, format!("Failed to write HelloAck: {e}")));
-    }
 
     // Expect the next message (PushRequest, PullRequest, etc.)
     let msg = match read_message(&mut *cursor) {

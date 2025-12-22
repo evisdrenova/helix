@@ -12,22 +12,23 @@
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
+/// Output of blake3 hashing
 pub type Hash32 = [u8; 32];
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum RpcMessage {
     Hello(Hello),
-    HelloAck(HelloAck),
 
     PushRequest(PushRequest),
+    PushResponse(PushResponse),
     PushObject(PushObject),
     PushDone,
     PushAck(PushAck),
 
-    FetchRequest(FetchRequest),
-    FetchObject(FetchObject),
-    FetchDone,
-    FetchAck(FetchAck),
+    PullRequest(PullRequest),
+    PullObject(PullObject),
+    PullDone,
+    PullAck(PullAck),
 
     Error(RpcError),
 }
@@ -38,16 +39,16 @@ pub struct Hello {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct HelloAck {
-    pub server_version: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 pub struct PushRequest {
     pub repo: String,       // just repo name or path
     pub ref_name: String,   // which pointer -> "refs/heads/main"
     pub old_target: Hash32, // expected current value of the ref on the server; ZERO_HASH for "no remote yet", if the server's refs/head/main points to commit A, then old_target = A, branch is just a pointer to a commit
     pub new_target: Hash32, // commit hash the ref should point to after the push
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PushResponse {
+    pub remote_head: Option<Hash32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,21 +71,21 @@ pub struct PushAck {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct FetchRequest {
+pub struct PullRequest {
     pub repo: String,
     pub ref_name: String,                  // "refs/heads/main"
     pub last_known_remote: Option<Hash32>, // from refs/remotes/origin/main
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct FetchObject {
+pub struct PullObject {
     pub object_type: ObjectType,
     pub hash: Hash32,
     pub data: Vec<u8>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct FetchAck {
+pub struct PullAck {
     pub sent_objects: u64,
     pub new_remote_head: Hash32,
 }

@@ -1,6 +1,6 @@
 use crate::handlers::utils::{handle_handshake, respond_err};
 use axum::{extract::State, response::IntoResponse};
-use helix_protocol::{write_message, FetchAck, FetchObject, ObjectType, RpcMessage};
+use helix_protocol::{write_message, ObjectType, PullAck, PullObject, RpcMessage};
 use helix_server::app_state::AppState;
 use helix_server::walk::collect_all_objects;
 use std::io::Cursor;
@@ -17,7 +17,7 @@ pub async fn pull_handler(
         &mut cursor,
         &mut buf,
         |m| match m {
-            RpcMessage::FetchRequest(req) => Some(req),
+            RpcMessage::PullRequest(req) => Some(req),
             _ => None,
         },
         "FetchRequest",
@@ -44,7 +44,7 @@ pub async fn pull_handler(
 
     // 4) Build response body: FetchObject* + FetchDone + FetchAck
     for (ty, hash, data) in objects_to_send.iter() {
-        let msg = RpcMessage::FetchObject(FetchObject {
+        let msg = RpcMessage::PullObject(PullObject {
             object_type: ty.clone(),
             hash: *hash,
             data: data.clone(),
@@ -54,12 +54,12 @@ pub async fn pull_handler(
         }
     }
 
-    let done_msg = RpcMessage::FetchDone;
+    let done_msg = RpcMessage::PullDone;
     if let Err(e) = write_message(&mut buf, &done_msg) {
         return respond_err(500, format!("Failed to encode FetchDone: {e}"));
     }
 
-    let ack_msg = RpcMessage::FetchAck(FetchAck {
+    let ack_msg = RpcMessage::PullAck(PullAck {
         sent_objects: objects_to_send.len() as u64,
         new_remote_head: remote_head,
     });
