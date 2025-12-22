@@ -5,6 +5,8 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
+use crate::init::HelixConfig;
+
 /// Ignore rules from multiple sources with clear precedence:
 /// 1. Built-in patterns (always apply)
 /// 2. .gitignore (repo-level git rules)
@@ -14,18 +16,6 @@ use std::path::Path;
 #[derive(Debug, Clone)]
 pub struct IgnoreRules {
     globset: GlobSet,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct HelixConfig {
-    #[serde(default)]
-    ignore: IgnoreSection,
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub struct IgnoreSection {
-    #[serde(default)]
-    patterns: Vec<String>,
 }
 
 impl IgnoreRules {

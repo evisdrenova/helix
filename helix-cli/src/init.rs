@@ -74,7 +74,9 @@ data, and will only create missing pieces.
 */
 
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashMap,
     fs,
     io::{stdin, BufRead},
     path::Path,
@@ -233,6 +235,30 @@ fn create_head_file(repo_path: &Path) -> Result<()> {
     fs::write(&head_path, "ref: refs/heads/main\n").context("Failed to create HEAD file")?;
 
     Ok(())
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HelixConfig {
+    pub user: Option<UserConfig>,
+    pub remotes: Option<RemotesTable>,
+    pub ignore: IgnoreSection,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UserConfig {
+    pub name: Option<String>,
+    pub email: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RemotesTable {
+    #[serde(flatten)]
+    pub map: HashMap<String, String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct IgnoreSection {
+    #[serde(default)]
+    pub patterns: Vec<String>,
 }
 
 fn create_repo_config(repo_path: &Path) -> Result<()> {

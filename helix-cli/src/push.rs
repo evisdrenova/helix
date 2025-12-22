@@ -9,6 +9,7 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
 use crate::handshake::push_handshake;
+use crate::init::HelixConfig;
 
 pub struct PushOptions {
     pub verbose: bool,
@@ -24,17 +25,6 @@ impl Default for PushOptions {
             force: false,
         }
     }
-}
-
-#[derive(Debug, Deserialize)]
-struct HelixToml {
-    remotes: Option<RemotesTable>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RemotesTable {
-    #[serde(flatten)]
-    map: HashMap<String, String>,
 }
 
 pub async fn push(
@@ -67,6 +57,7 @@ pub async fn push(
     }
 
     println!("checking if remote server is available..");
+
     push_handshake(
         &remote_url,
         &repo_path.file_name().unwrap_or_default().to_string_lossy(),
@@ -75,7 +66,7 @@ pub async fn push(
         old_target,
     )
     .await?;
-    println!("4");
+
     println!("remote server is available, gathering files to send..");
 
     if options.dry_run {
@@ -138,10 +129,6 @@ pub async fn push(
     let status = resp.status();
     let bytes = resp.bytes().await?;
 
-    println!("raw response status = {status}, len = {}", bytes.len());
-    // maybe:
-    println!("raw response bytes = {:?}", &bytes[..bytes.len().min(64)]);
-
     println!("as utf8 string: {}", String::from_utf8_lossy(&bytes));
 
     let mut cursor = Cursor::new(bytes.to_vec());
@@ -184,7 +171,7 @@ pub fn resolve_remote_and_ref(
     let config_text = fs::read_to_string(&config_path)
         .with_context(|| format!("Failed to read {}", config_path.display()))?;
 
-    let parsed_config: HelixToml = toml::from_str(&config_text)
+    let parsed_config: HelixConfig = toml::from_str(&config_text)
         .with_context(|| format!("Failed to parse {}", config_path.display()))?;
 
     let remotes = parsed_config
@@ -297,8 +284,6 @@ async fn load_objects_from_dir(
     while let Some(entry) = entries.next_entry().await? {
         if entry.file_type().await?.is_file() {
             let data = tokio::fs::read(entry.path()).await?;
-
-            // Re-hash the data to ensure we are sending the absolute truth
             let mut hash = [0u8; 32];
             hash.copy_from_slice(blake3::hash(&data).as_bytes());
 

@@ -84,7 +84,6 @@ use blake3::Hash;
 use gix::revision::walk::Sorting;
 use hash::compute_blob_oid;
 use indicatif::{ProgressBar, ProgressStyle};
-use ini::Ini;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -616,7 +615,7 @@ impl SyncEngine {
         let helix_oid = hash::hash_bytes(index_git_oid);
 
         // STAGED check: index vs HEAD
-        // check if the hashed head oid from git head  is the same as the hashed helix oid from .git/index
+        // check if the hashed head oid from git head is the same as the hashed helix oid from .git/index
         // if the same then the file is staged, if they're are different then the file is not staged
         // if it's a new file it will default be being staged
         let is_staged = head_tree

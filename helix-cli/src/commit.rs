@@ -19,6 +19,7 @@ use crate::helix_index::commit::{Commit, CommitStorage};
 use crate::helix_index::format::EntryFlags;
 use crate::helix_index::hash::Hash;
 use crate::helix_index::tree::TreeBuilder;
+use crate::init::HelixConfig;
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
@@ -267,31 +268,30 @@ fn write_head(repo_path: &Path, commit_hash: Hash) -> Result<()> {
 
 /// Get author from config or environment
 fn get_author(repo_path: &Path) -> Result<String> {
-    // Try reading from helix.toml
     let config_path = repo_path.join("helix.toml");
 
     if config_path.exists() {
-        use ini::Ini;
+        let content = fs::read_to_string(&config_path)
+            .with_context(|| format!("Failed to read {}", config_path.display()))?;
 
-        // Parse INI file
-        if let Ok(conf) = Ini::load_from_file(&config_path) {
-            // Try to get from [user] section
-            if let Some(user_section) = conf.section(Some("user")) {
-                let name = user_section.get("name");
-                let email = user_section.get("email");
+        // Parse TOML into our struct
+        let config: HelixConfig = toml::from_str(&content)
+            .with_context(|| format!("Failed to parse TOML in {}", config_path.display()))?;
 
+        if let Some(user) = config.user {
+            match (user.name, user.email) {
                 // If both name and email exist, format as "Name <email>"
-                if let (Some(n), Some(e)) = (name, email) {
+                (Some(n), Some(e)) => {
                     return Ok(format!("{} <{}>", n.trim(), e.trim()));
                 }
-
-                // If only name exists, use it as-is (might already be formatted)
-                if let Some(n) = name {
+                // If only name exists, use it as-is
+                (Some(n), None) => {
                     let trimmed = n.trim();
                     if !trimmed.is_empty() {
                         return Ok(trimmed.to_string());
                     }
                 }
+                _ => {}
             }
         }
     }

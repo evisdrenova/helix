@@ -58,7 +58,7 @@ pub async fn push_handshake(
                     "0000000000000000000000000000000000000000000000000000000000000000".to_string()
                 }
             };
-            println!("Server is currently at: {}", hex::encode(head_display));
+            println!("Server is currently at: {}", head_display);
             Ok(r.remote_head)
         }
         RpcMessage::Error(err) => {
