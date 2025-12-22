@@ -71,7 +71,6 @@ pub struct GitIndex {
     entry_count: u32,
 }
 
-// index entries are usually files from our working directory
 pub struct IndexEntry<'a> {
     pub path: &'a str,
     pub oid: Oid,

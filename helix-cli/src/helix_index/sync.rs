@@ -75,6 +75,7 @@ use crate::helix_index::blob_storage::BlobStorage;
 use crate::ignore::IgnoreRules;
 use crate::index::GitIndex;
 use anyhow::{Context, Result};
+use console::{style, Emoji};
 use gix::revision::walk::Sorting;
 use hash::compute_blob_oid;
 use helix_protocol::hash::{self, hash_to_hex, Hash, ZERO_HASH};
@@ -91,6 +92,13 @@ pub struct SyncEngine {
     repo_path: PathBuf,
 }
 
+pub struct ImportSummary {
+    pub commits_count: usize,
+    pub files_count: usize,
+    pub remotes_count: usize,
+    pub author: Option<String>,
+}
+
 impl SyncEngine {
     pub fn new(repo_path: &Path) -> Self {
         Self {
@@ -99,50 +107,110 @@ impl SyncEngine {
     }
 
     pub fn import_from_git(&self) -> Result<()> {
-        wait_for_git_lock(&self.repo_path, Duration::from_secs(5))?;
+        println!("\n  {}", style("Helix").bold());
+        println!(
+            "  {}",
+            style("────────────────────────────────────────────").dim()
+        );
 
-        self.import_git_index()?;
-        let git_hash_to_helix_hash = self.import_git_commits()?;
-        self.import_git_branches(&git_hash_to_helix_hash)?;
-        self.import_git_tags(&git_hash_to_helix_hash)?;
-        self.import_git_head(&git_hash_to_helix_hash)?;
-        self.import_git_remotes()?;
-        self.import_git_config()?;
+        let main_pb = ProgressBar::new_spinner();
+        main_pb.set_style(
+            ProgressStyle::default_spinner()
+                .template("{spinner:.cyan} {msg}")?
+                .tick_strings(&["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"]),
+        );
+        main_pb.set_message("Analyzing Git history...");
+        main_pb.enable_steady_tick(Duration::from_millis(80));
+
+        let file_count = self.import_git_index()?;
+        let mapping = self.import_git_commits(&main_pb)?;
+        let commit_count = mapping.len();
+
+        self.import_git_branches(&mapping)?;
+        self.import_git_tags(&mapping)?;
+        self.import_git_head(&mapping)?;
+
+        let remote_count = self.import_git_remotes()?;
+        let author = self.import_git_config()?;
+
+        main_pb.finish_and_clear();
+
+        println!(
+            "  {} Imported {} commits to Helix storage",
+            style("✓").green(),
+            style(commit_count).bold()
+        );
+        println!(
+            "  {} Imported {} tracked files to index",
+            style("✓").green(),
+            style(file_count).bold()
+        );
+
+        if remote_count > 0 {
+            println!(
+                "  {} Migrated {} remote(s) to helix.toml",
+                style("✓").green(),
+                style(remote_count).bold()
+            );
+        }
+
+        if let Some(a) = author {
+            println!(
+                "  {} Migrated author: {}",
+                style("✓").green(),
+                style(a).dim()
+            );
+        }
+
+        println!("\n  {}", style("Helix repository initialized!").bold());
+
+        println!("\n  {}", style("Next steps:").underlined());
+        println!(
+            "    {}      - Check working tree state",
+            style("helix status").cyan()
+        );
+        println!(
+            "    {}         - View imported history",
+            style("helix log").cyan()
+        );
+        println!(
+            "    {}      - Record new changes",
+            style("helix commit").cyan()
+        );
+        println!("");
 
         Ok(())
     }
 
-    fn import_git_config(&self) -> Result<()> {
+    fn import_git_config(&self) -> Result<Option<String>> {
         let repo = gix::open(&self.repo_path)?;
         let config = repo.config_snapshot();
 
+        // Extract author info
         let author_name = match config.string("user.name") {
             Some(name) => name.to_string(),
-            None => {
-                // No Git user config found
-                return Ok(());
-            }
+            None => return Ok(None),
         };
 
         let author_email = match config.string("user.email") {
             Some(email) => email.to_string(),
-            None => {
-                // No email in Git config
-                return Ok(());
-            }
+            None => return Ok(None),
         };
 
         if author_name.trim().is_empty() || author_email.trim().is_empty() {
-            return Ok(());
+            return Ok(None);
         }
-
-        println!("Found Git user config: {} <{}>", author_name, author_email);
 
         let helix_toml_path = self.repo_path.join("helix.toml");
+
+        // If helix.toml doesn't exist yet, we can't write to it.
+        // In a 'h init', you might want to create it if it's missing,
+        // but here we follow your original logic of skipping.
         if !helix_toml_path.exists() {
-            return Ok(());
+            return Ok(None);
         }
 
+        // Parse and update TOML
         let content = fs::read_to_string(&helix_toml_path)
             .with_context(|| format!("Failed to read {}", helix_toml_path.display()))?;
 
@@ -152,11 +220,9 @@ impl SyncEngine {
             .try_into()
             .context("Root value is not a table")?;
 
-        let user_value = root
+        let user_table = root
             .entry("user".to_string())
-            .or_insert_with(|| Value::Table(Table::new()));
-
-        let user_table = user_value
+            .or_insert_with(|| Value::Table(Table::new()))
             .as_table_mut()
             .context("[user] is not a table in helix.toml")?;
 
@@ -169,12 +235,8 @@ impl SyncEngine {
         fs::write(&helix_toml_path, new_content)
             .with_context(|| format!("Failed to write {}", helix_toml_path.display()))?;
 
-        println!(
-            "Imported Git user config to helix.toml: {} <{}>",
-            author_name, author_email
-        );
-
-        Ok(())
+        // Return the formatted string for the final TUI summary
+        Ok(Some(format!("{} <{}>", author_name, author_email)))
     }
 
     // TODO: parallelize this as we walk the directory, we get the branch, transform it to a helix branch, get it's upstream adn then add it to the helix state
@@ -197,20 +259,16 @@ impl SyncEngine {
             }
 
             let git_sha = fs::read_to_string(entry.path())?.trim().to_string();
-            let git_sha_bytes = hex::decode(&git_sha)?;
+            let git_sha_bytes: Vec<u8> = hex::decode(&git_sha)?;
 
             // Convert Git SHA to Helix hash
             let helix_hash = match git_hash_to_helix_hash.get(&git_sha_bytes) {
                 Some(hash) => hash,
                 None => {
-                    //     eprintln!("Warning: Branch at {:?} points to Git SHA {} which is not in the imported commits map",
-                    //   entry.path(), git_sha);
-                    //     eprintln!("Map contains {} commits", git_hash_to_helix_hash.len());
-                    //     eprintln!("First few keys in map:");
                     for (i, key) in git_hash_to_helix_hash.keys().take(3).enumerate() {
                         eprintln!("  {}: {}", i, hex::encode(key));
                     }
-                    continue; // Skip this branch instead of failing
+                    continue;
                 }
             };
 
@@ -361,7 +419,7 @@ impl SyncEngine {
         Ok(())
     }
 
-    fn import_git_remotes(&self) -> Result<()> {
+    fn import_git_remotes(&self) -> Result<(usize)> {
         let repo = gix::open(&self.repo_path)?;
 
         // Get remote names
@@ -372,7 +430,7 @@ impl SyncEngine {
             .collect();
 
         if remote_names.is_empty() {
-            return Ok(());
+            return Ok(0);
         }
 
         let helix_toml_path = self.repo_path.join("helix.toml");
@@ -381,7 +439,7 @@ impl SyncEngine {
         let mut content = if helix_toml_path.exists() {
             fs::read_to_string(&helix_toml_path)?
         } else {
-            return Ok(()); // If no helix.toml, skip
+            return Ok(0); // If no helix.toml, skip
         };
 
         // Build remote entries
@@ -417,7 +475,7 @@ impl SyncEngine {
         }
 
         if remote_lines.is_empty() {
-            return Ok(());
+            return Ok(0);
         }
 
         // Find the [remotes] section
@@ -471,9 +529,7 @@ impl SyncEngine {
         // Write back
         fs::write(&helix_toml_path, content)?;
 
-        println!("✓ Imported {} remote(s) to helix.toml", remote_names.len());
-
-        Ok(())
+        Ok(remote_names.len())
     }
 
     fn import_git_tags(&self, git_hash_to_helix_hash: &HashMap<Vec<u8>, [u8; 32]>) -> Result<()> {
@@ -514,7 +570,7 @@ impl SyncEngine {
         Ok(())
     }
 
-    fn import_git_index(&self) -> Result<()> {
+    fn import_git_index(&self) -> Result<(usize)> {
         let git_index_path = self.repo_path.join(".git/index");
 
         // Handle brand-new repo with no .git/index yet, return new empty Helix index
@@ -523,7 +579,7 @@ impl SyncEngine {
             let writer = Writer::new_canonical(&self.repo_path);
             writer.write(&header, &[])?;
 
-            return Ok(());
+            return Ok(0);
         }
 
         let reader = Reader::new(&self.repo_path);
@@ -539,32 +595,39 @@ impl SyncEngine {
 
         let git_index = GitIndex::open(&self.repo_path)?;
         let index_entries: Vec<_> = git_index.entries().collect();
+        let total = index_entries.len();
 
-        if index_entries.len() == 0 {
-            return Ok(());
+        if total == 0 {
+            return Ok(0);
         }
 
-        // filter out any files that we want to ignore
         let ignore_rules = IgnoreRules::load(&self.repo_path);
 
         let head_tree = self.load_full_head_tree()?;
 
-        let pb = ProgressBar::new(index_entries.len() as u64);
-        pb.set_style(
-            ProgressStyle::with_template(
-                "{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] \
-             {pos}/{len} entries ({eta})",
-            )?
-            .progress_chars(">-"),
-        );
+        // only show if more than 1000 entries otherwise it flickers and looks weird
+        let pb = if total > 1000 {
+            let p = ProgressBar::new(total as u64);
+            p.set_style(
+                ProgressStyle::with_template(
+                    "  {spinner:.green} [{wide_bar:.cyan/blue}] {pos}/{len} files",
+                )?
+                .progress_chars("#>-"),
+            );
+            Some(p)
+        } else {
+            None
+        };
 
         // Build entries in parallel, updating the progress bar as we go
         let entries: Vec<Entry> = index_entries
             .into_par_iter()
             .map_init(
-                || (pb.clone(), ignore_rules.clone()),
+                || (pb.clone(), &ignore_rules),
                 |(pb, ignore_rules), e| {
-                    pb.inc(1);
+                    if let Some(ref p) = pb {
+                        p.inc(1);
+                    }
 
                     // Check if ignored
                     let path = Path::new(&e.path);
@@ -578,13 +641,15 @@ impl SyncEngine {
             .flatten()
             .collect();
 
-        pb.finish_with_message("Helix index built");
+        if let Some(p) = pb {
+            p.finish_and_clear();
+        }
 
         let header = Header::new(&current_generation + 1, entries.len() as u32);
         let writer = Writer::new_canonical(&self.repo_path);
         writer.write(&header, &entries)?;
 
-        Ok(())
+        Ok(entries.len())
     }
 
     fn build_helix_entry_from_git_entry(
@@ -689,12 +754,11 @@ impl SyncEngine {
                 }
             })
             .collect();
-        println!("HEAD tree has {} files", map.len());
         Ok(map)
     }
 
     // TODO: parallelize the two different passes here: 1. to compute all committ hashes inparallel, 2. build final commits with correct parents in parallel
-    fn import_git_commits(&self) -> Result<HashMap<Vec<u8>, [u8; 32]>> {
+    fn import_git_commits(&self, pb: &ProgressBar) -> Result<HashMap<Vec<u8>, [u8; 32]>> {
         let repo = gix::open(&self.repo_path)?;
 
         let mut seen = HashSet::new();
@@ -742,20 +806,15 @@ impl SyncEngine {
         // Sort oldest → newest by commit time
         collected_git_commits.sort_by_key(|(_, c)| c.time().unwrap().seconds);
 
-        let pb = ProgressBar::new_spinner();
-
-        let msg = format!(
-            "Git reports {} commits in history",
+        pb.set_message(format!(
+            "Importing {} commits...",
             collected_git_commits.len()
-        );
-        pb.set_message(msg);
+        ));
 
         // Build Helix commits in oldest to newest order
         let mut helix_commits: Vec<Helix_Commit> = Vec::with_capacity(collected_git_commits.len());
 
         for (i, (git_id_bytes, git_commit)) in collected_git_commits.into_iter().enumerate() {
-            pb.set_message(format!("Importing commit {}", i + 1));
-
             let helix_commit = self.build_helix_commit_from_git_commit(
                 &git_commit,
                 &repo,
@@ -779,8 +838,6 @@ impl SyncEngine {
                 }
             }
         }
-
-        pb.finish_with_message(format!("Imported {} commits", helix_commits.len()));
 
         self.save_git_helix_mapping(&git_hash_to_helix_hash)?;
 
@@ -876,7 +933,7 @@ impl SyncEngine {
 
                 let path = PathBuf::from(record.filepath.to_string());
 
-                // ✅ FIX: Read actual blob content from Git and store it in Helix
+                // Read actual blob content from Git and store it in Helix
                 let blob_content = match repo.find_object(record.oid) {
                     Ok(obj) => match obj.try_into_blob() {
                         Ok(blob) => blob.data.to_vec(),
@@ -1398,7 +1455,8 @@ mod tests {
 
         // No commits yet
         let syncer = SyncEngine::new(temp_dir.path());
-        syncer.import_git_commits()?;
+        let main_pb = ProgressBar::new_spinner();
+        syncer.import_git_commits(&main_pb)?;
         let commit_reader = CommitStorage::new(temp_dir.path());
 
         assert_eq!(
@@ -1420,9 +1478,11 @@ mod tests {
         git(temp_dir.path(), &["add", "test.txt"])?;
         git(temp_dir.path(), &["commit", "-m", "Initial commit"])?;
 
+        let main_pb = ProgressBar::new_spinner();
+
         // Import commits
         let syncer = SyncEngine::new(temp_dir.path());
-        syncer.import_git_commits()?;
+        syncer.import_git_commits(&main_pb)?;
 
         let commit_reader = CommitStorage::for_repo(temp_dir.path());
 
@@ -1448,7 +1508,8 @@ mod tests {
 
     fn import_commits(repo_dir: &Path) -> Result<Vec<Helix_Commit>> {
         let syncer = SyncEngine::new(repo_dir);
-        syncer.import_git_commits()?;
+        let main_pb = ProgressBar::new_spinner();
+        syncer.import_git_commits(&main_pb)?;
         let commit_reader = CommitStorage::for_repo(repo_dir);
         let commits = &commit_reader.list_all()?;
 
@@ -1703,7 +1764,8 @@ mod tests {
         let git_sha_bytes = hex::decode(&git_sha)?;
 
         let engine = SyncEngine::new(repo);
-        let git_to_helix = engine.import_git_commits()?;
+        let main_pb = ProgressBar::new_spinner();
+        let git_to_helix = engine.import_git_commits(&main_pb)?;
 
         // There should be an entry for HEAD
         let helix_hash_from_map = git_to_helix
@@ -1735,7 +1797,8 @@ mod tests {
         git(repo, &["commit", "-m", "Test commit"])?;
 
         let engine = SyncEngine::new(repo);
-        let git_to_helix = engine.import_git_commits()?;
+        let main_pb = ProgressBar::new_spinner();
+        let git_to_helix = engine.import_git_commits(&main_pb)?;
 
         // Find HEAD Git SHA
         let output = Command::new("git")

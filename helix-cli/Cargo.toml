@@ -53,6 +53,7 @@ unicode-width = "0.2.0"
 walkdir = "2.5.0"
 zstd = "0.13.3"
 rust-ini = "0.21.3"
+console = "0.16.2"
 
 
 [[bench]]

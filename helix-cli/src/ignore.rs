@@ -1,5 +1,4 @@
 use globset::{Glob, GlobSet, GlobSetBuilder};
-use serde::Deserialize;
 use std::env;
 use std::fs::File;
 use std::io::{BufRead, BufReader};

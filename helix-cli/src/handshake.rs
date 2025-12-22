@@ -1,8 +1,8 @@
 use std::io::Cursor;
 
 use anyhow::{bail, Result};
-use helix_protocol::message::{read_message, write_message, Hello, PushRequest, RpcMessage};
 use helix_protocol::hash::Hash;
+use helix_protocol::message::{read_message, write_message, Hello, PushRequest, RpcMessage};
 
 // handshake between the CLI and Server
 pub async fn push_handshake(

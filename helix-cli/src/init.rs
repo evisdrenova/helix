@@ -91,7 +91,6 @@ pub fn init_helix_repo(repo_path: &Path, auto: Option<String>) -> Result<()> {
     create_head_file(repo_path)?;
     create_repo_config(repo_path)?;
     detect_git(repo_path, auto)?;
-    print_success_message(repo_path)?;
 
     Ok(())
 }
@@ -148,15 +147,6 @@ fn import_from_git(repo_path: &Path) -> Result<()> {
     let index_data = reader
         .read()
         .context("Failed to read newly created helix index")?;
-    let file_count = index_data.entries.len();
-
-    if file_count > 0 {
-        println!(
-            "Imported {} tracked files from Git in {:.0?}",
-            file_count, elapsed
-        );
-    }
-
     Ok(())
 }
 
@@ -296,25 +286,6 @@ fn create_repo_config(repo_path: &Path) -> Result<()> {
     );
 
     fs::write(&config_path, final_output).context("Failed to write helix.toml")?;
-
-    Ok(())
-}
-
-fn print_success_message(repo_path: &Path) -> Result<()> {
-    println!();
-    println!(
-        "Initialized empty Helix repository at {}",
-        repo_path.display()
-    );
-    println!();
-    println!("Next steps:");
-    println!("  1. Configure author (edit helix.toml or set env vars)");
-    println!("  2. Add files:    helix add <files>");
-    println!("  3. Create a commit:  helix commit -m \"Initial commit\"");
-    println!();
-    println!("View status:       helix status");
-    println!("View history:      helix log");
-    println!();
 
     Ok(())
 }
