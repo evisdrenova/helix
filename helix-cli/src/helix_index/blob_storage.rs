@@ -39,8 +39,7 @@ impl BlobStorage {
         // Ensure directory exists
         fs::create_dir_all(&self.root).context("Failed to create blob storage directory")?;
 
-        // Compress with Zstd level 3 (fast, good compression)
-        // Level 3: 4ms per MB, ~60% compression ratio
+        // Compress with Zstd level 3
         let compressed = zstd::encode_all(content, 3).context("Failed to compress blob")?;
 
         let temp_path = path.with_extension("tmp");

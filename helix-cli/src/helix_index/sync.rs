@@ -75,7 +75,7 @@ use crate::helix_index::blob_storage::BlobStorage;
 use crate::ignore::IgnoreRules;
 use crate::index::GitIndex;
 use anyhow::{Context, Result};
-use console::{style, Emoji};
+use console::style;
 use gix::revision::walk::Sorting;
 use hash::compute_blob_oid;
 use helix_protocol::hash::{self, hash_to_hex, Hash, ZERO_HASH};
@@ -657,48 +657,85 @@ impl SyncEngine {
         git_index_entry: &crate::index::IndexEntry,
         head_tree: &HashMap<PathBuf, Vec<u8>>,
     ) -> Result<Entry> {
-        let path = PathBuf::from(&git_index_entry.path);
-        let full_path = self.repo_path.join(&path);
+        let entry_path = PathBuf::from(&git_index_entry.path);
+        let full_entry_path = self.repo_path.join(&PathBuf::from(&git_index_entry.path));
 
         let mut flags = EntryFlags::TRACKED;
 
         // Git's index snapshot blob-hash
-        let index_git_oid = git_index_entry.oid.as_bytes();
+        let git_entry_oid: &[u8; 20] = git_index_entry.oid.as_bytes();
 
         // Helix stores its own hash (of the Git oid bytes)
-        let helix_oid = hash::hash_bytes(index_git_oid);
+        // let helix_entry_oid = hash::hash_bytes(git_entry_oid);
+
+        let blob_storage = BlobStorage::for_repo(&self.repo_path);
+
+        let working_content = if full_entry_path.exists() && full_entry_path.is_file() {
+            Some(fs::read(&full_entry_path)?)
+        } else {
+            None
+        };
+
+        // let helix_entry_oid = if full_entry_path.exists() && full_entry_path.is_file() {
+        //     let working_content = fs::read(&full_entry_path)?;
+        //     // Store blob content in Helix object store; returns BLAKE3(content) as [u8; 32]
+        //     blob_storage.write(&working_content)?
+        // } else {
+        //     // If it was in HEAD but missing on disk, mark deleted and use ZERO_HASH as placeholder oid.
+        //     // (You could also choose to keep the old oid if you have it somewhere, but from git index alone
+        //     // you can't reconstruct content without reading git objects.)
+        //     flags |= EntryFlags::DELETED;
+        //     ZERO_HASH
+        // };
+        let helix_entry_oid = if let Some(ref bytes) = working_content {
+            blob_storage.write(bytes)?
+        } else {
+            if head_tree.contains_key(&entry_path) {
+                flags |= EntryFlags::DELETED;
+            }
+            ZERO_HASH
+        };
 
         // STAGED check: index vs HEAD
         // check if the hashed head oid from git head is the same as the hashed helix oid from .git/index
         // if the same then the file is staged, if they're are different then the file is not staged
         // if it's a new file it will default be being staged
         let is_staged = head_tree
-            .get(&path)
-            .map(|head_git_oid| head_git_oid.as_slice() != index_git_oid)
+            .get(&entry_path)
+            .map(|head_git_oid| head_git_oid.as_slice() != git_entry_oid)
             .unwrap_or(true);
 
         if is_staged {
             flags |= EntryFlags::STAGED;
         }
 
-        let was_in_head = head_tree.contains_key(&path);
+        // let was_in_head = head_tree.contains_key(&entry_path);
 
         // Always check working tree vs. index, this will catch repos with no commits yet
-        if full_path.exists() && full_path.is_file() {
-            let working_content = fs::read(&full_path)?;
-            let working_git_oid = compute_blob_oid(&working_content);
+        // if full_entry_path.exists() && full_entry_path.is_file() {
+        //     let working_content = fs::read(&full_entry_path)?;
+        //     let working_git_oid = compute_blob_oid(&working_content);
 
-            if &working_git_oid != index_git_oid {
+        //     if &working_git_oid != git_entry_oid {
+        //         flags |= EntryFlags::MODIFIED;
+        //     }
+        // } else if was_in_head {
+        //     // Only mark DELETED if file was in HEAD
+        //     // don't mark new staged files as deleted if they don't exist
+        //     flags |= EntryFlags::DELETED;
+        // }
+
+        if let Some(ref bytes) = working_content {
+            let working_git_oid = compute_blob_oid(bytes);
+            if &working_git_oid != git_entry_oid {
                 flags |= EntryFlags::MODIFIED;
             }
-        } else if was_in_head {
-            // Only mark DELETED if file was in HEAD
-            // (Don't mark new staged files as deleted if they don't exist)
+        } else if head_tree.contains_key(&entry_path) {
             flags |= EntryFlags::DELETED;
         }
 
-        let (mtime_sec, file_size) = if full_path.exists() {
-            let metadata = fs::metadata(&full_path)?;
+        let (mtime_sec, file_size) = if full_entry_path.exists() {
+            let metadata = fs::metadata(&full_entry_path)?;
             let mtime = metadata
                 .modified()?
                 .duration_since(std::time::UNIX_EPOCH)?
@@ -709,14 +746,14 @@ impl SyncEngine {
         };
 
         Ok(Entry {
-            path,
+            path: entry_path,
             size: file_size,
             mtime_sec,
             mtime_nsec: 0,
             flags,
             merge_conflict_stage: 0,
             file_mode: git_index_entry.file_mode,
-            oid: helix_oid,
+            oid: helix_entry_oid,
             reserved: [0; 33],
         })
     }
