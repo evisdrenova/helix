@@ -136,7 +136,7 @@ pub fn commit(repo_path: &Path, options: CommitOptions) -> Result<Hash> {
         )
     } else if let Some(parent_hash) = head_commit_hash {
         // Normal commit with parent
-        // ✅ Use Commit::with_parent() helper
+        //  Use Commit::with_parent() helper
         Commit::with_parent(tree_hash, parent_hash, author, options.message)
     } else {
         // Initial commit
@@ -360,8 +360,8 @@ pub fn show_staged(repo_path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::helix_index::blob_storage::BlobStorage;
     use crate::helix_index::format::Entry;
+    use helix_protocol::storage::FsObjectStore;
     use std::path::PathBuf;
     use std::process::Command;
     use tempfile::TempDir;
@@ -397,8 +397,8 @@ mod tests {
         fs::write(repo_path.join(filename), content)?;
 
         // Store blob
-        let storage = BlobStorage::create_blob_storage(repo_path);
-        let hash = storage.write(content)?;
+        let storage = FsObjectStore::new(repo_path);
+        let hash = storage.write_object(&helix_protocol::message::ObjectType::Blob, content)?;
 
         // Add to index as staged
         let mut index = HelixIndexData::load_or_rebuild(repo_path)?;

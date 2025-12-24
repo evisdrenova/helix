@@ -1,10 +1,8 @@
 mod handlers;
 
 use axum::{routing::post, Router};
-use helix_server::{
-    app_state::AppState,
-    storage::storage::{FsObjectStore, FsRefStore},
-};
+use helix_protocol::storage::{FsObjectStore, FsRefStore};
+use helix_server::app_state::AppState;
 use std::net::SocketAddr;
 use std::sync::Arc;
 

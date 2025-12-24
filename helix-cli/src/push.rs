@@ -3,12 +3,13 @@ use helix_protocol::hash::{hash_to_hex, hex_to_hash, Hash};
 use helix_protocol::message::{
     read_message, write_message, Hello, ObjectType, PushObject, PushRequest, RpcMessage,
 };
+use helix_protocol::storage::FsObjectStore;
 use std::fs;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
+use tokio::task;
 
 use crate::handshake::push_handshake;
-use crate::helix_index::blob_storage::BlobStorage;
 use crate::init::HelixConfig;
 
 pub struct PushOptions {
@@ -248,41 +249,17 @@ pub fn write_remote_tracking(
     Ok(())
 }
 
-/// send all local objects we know about.
-// async fn compute_push_frontier(
-//     repo_path: &Path,
-//     _new_target: Hash,
-//     _old_target: Hash,
-// ) -> Result<Vec<(ObjectType, Hash, Vec<u8>)>> {
-//     let objects_root = repo_path.join(".helix").join("objects");
-
-//     // run concurrently
-//     let commits_fut = load_objects_from_dir(objects_root.join("commits"), ObjectType::Commit);
-//     let trees_fut = load_objects_from_dir(objects_root.join("trees"), ObjectType::Tree);
-//     let blobs_fut = load_objects_from_dir(objects_root.join("blobs"), ObjectType::Blob);
-
-//     // await them all in parallel
-//     let (commits, trees, blobs) = tokio::try_join!(commits_fut, trees_fut, blobs_fut)?;
-
-//     let mut out = commits;
-//     out.extend(trees);
-//     out.extend(blobs);
-
-//     Ok(out)
-// }
-
 async fn compute_push_frontier(
     repo_path: &Path,
     _new_target: Hash,
     _old_target: Hash,
 ) -> Result<Vec<(ObjectType, Hash, Vec<u8>)>> {
-    let objects_root = repo_path.join(".helix").join("objects");
+    // NOTE: this is the *shared* store; it knows how to decode blobs (zstd) and validate hashes.
+    let store = FsObjectStore::new(repo_path);
 
-    let commits_fut = load_objects_from_dir(objects_root.join("commits"), ObjectType::Commit);
-    let trees_fut = load_objects_from_dir(objects_root.join("trees"), ObjectType::Tree);
-
-    // blobs: special handling (stored compressed on disk)
-    let blobs_fut = load_blobs(repo_path);
+    let commits_fut = load_objects_from_dir(store.clone(), repo_path, ObjectType::Commit);
+    let trees_fut = load_objects_from_dir(store.clone(), repo_path, ObjectType::Tree);
+    let blobs_fut = load_objects_from_dir(store.clone(), repo_path, ObjectType::Blob);
 
     let (commits, trees, blobs) = tokio::try_join!(commits_fut, trees_fut, blobs_fut)?;
 
@@ -292,76 +269,70 @@ async fn compute_push_frontier(
 
     Ok(out)
 }
-
+/// Enumerate object ids from `.helix/objects/<subdir>/` and read *raw* bytes via FsObjectStore.
 async fn load_objects_from_dir(
-    dir: PathBuf,
+    store: FsObjectStore,
+    repo_path: &Path,
     obj_type: ObjectType,
 ) -> Result<Vec<(ObjectType, Hash, Vec<u8>)>> {
-    let mut results = Vec::new();
+    let dir = objects_subdir(repo_path, &obj_type);
+
     if !dir.exists() {
-        return Ok(results);
+        return Ok(vec![]);
     }
 
-    let mut entries = tokio::fs::read_dir(dir).await?;
-    while let Some(entry) = entries.next_entry().await? {
-        if entry.file_type().await?.is_file() {
+    // Offload enumeration + sync reads/decompression to blocking pool.
+    task::spawn_blocking(move || -> Result<Vec<(ObjectType, Hash, Vec<u8>)>> {
+        let mut results = Vec::new();
+
+        for entry in
+            std::fs::read_dir(&dir).with_context(|| format!("read_dir {}", dir.display()))?
+        {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+
             let path = entry.path();
             let file_name = path
                 .file_name()
                 .and_then(|s| s.to_str())
                 .context("object filename is not utf8")?;
 
-            // IMPORTANT: commits/trees should also use filename as hash if filenames are the oid.
-            // If they aren’t, keep your old blake3(data) approach.
-            let bytes =
-                hex::decode(file_name).context("failed to decode object filename as hex")?;
+            // Filenames are the oid hex (32 bytes)
+            let bytes = hex::decode(file_name)
+                .with_context(|| format!("failed to decode object filename as hex: {file_name}"))?;
             if bytes.len() != 32 {
-                anyhow::bail!("object filename is not a 32-byte hex hash: {file_name}");
+                // skip temp files or anything unexpected
+                continue;
             }
             let mut hash = [0u8; 32];
             hash.copy_from_slice(&bytes);
 
-            let data = tokio::fs::read(&path).await?;
-            results.push((obj_type.clone(), hash, data));
+            // IMPORTANT: read_object returns RAW bytes (and verifies BLAKE3(raw) == hash)
+            let raw = store.read_object(&obj_type, &hash).with_context(|| {
+                format!(
+                    "read_object ty={:?} hash={} path={}",
+                    obj_type,
+                    file_name,
+                    path.display()
+                )
+            })?;
+
+            results.push((obj_type.clone(), hash, raw));
         }
-    }
 
-    Ok(results)
+        Ok(results)
+    })
+    .await
+    .context("join spawn_blocking(load_objects_from_dir)")?
 }
 
-async fn load_blobs(repo_path: &Path) -> Result<Vec<(ObjectType, Hash, Vec<u8>)>> {
-    let storage = BlobStorage::create_blob_storage(repo_path);
-
-    // list_all is sync; fine for now, or wrap in spawn_blocking if you want
-    let blob_hashes = storage.list_all()?;
-
-    let mut out = Vec::with_capacity(blob_hashes.len());
-    for h in blob_hashes {
-        // read() returns *decompressed raw bytes*
-        let raw = storage.read(&h)?;
-        out.push((ObjectType::Blob, h, raw));
-    }
-    Ok(out)
+fn objects_subdir(repo_path: &Path, ty: &ObjectType) -> PathBuf {
+    let subdir = match ty {
+        ObjectType::Blob => "blobs",
+        ObjectType::Tree => "trees",
+        ObjectType::Commit => "commits",
+    };
+    repo_path.join(".helix").join("objects").join(subdir)
 }
-
-// async fn load_objects_from_dir(
-//     dir: PathBuf,
-//     obj_type: ObjectType,
-// ) -> Result<Vec<(ObjectType, Hash, Vec<u8>)>> {
-//     let mut results = Vec::new();
-//     if !dir.exists() {
-//         return Ok(results);
-//     }
-
-//     let mut entries = tokio::fs::read_dir(dir).await?;
-//     while let Some(entry) = entries.next_entry().await? {
-//         if entry.file_type().await?.is_file() {
-//             let data = tokio::fs::read(entry.path()).await?;
-//             let mut hash = [0u8; 32];
-//             hash.copy_from_slice(blake3::hash(&data).as_bytes());
-
-//             results.push((obj_type.clone(), hash, data));
-//         }
-//     }
-//     Ok(results)
-// }

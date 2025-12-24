@@ -1,9 +1,8 @@
 use anyhow::{anyhow, Result};
 use helix_protocol::message::ObjectType;
+use helix_protocol::storage::FsObjectStore;
 use std::collections::HashSet;
 use std::io::Cursor;
-
-use crate::storage::storage::FsObjectStore;
 
 /*
 Walks all commits reachable from remote_head

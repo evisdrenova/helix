@@ -1,4 +1,4 @@
-use crate::storage::storage::{FsObjectStore, FsRefStore};
+use helix_protocol::storage::{FsObjectStore, FsRefStore};
 
 #[derive(Clone)]
 pub struct AppState {

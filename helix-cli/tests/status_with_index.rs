@@ -1,4 +1,6 @@
 use anyhow::Result;
+use helix_protocol::message::ObjectType;
+use helix_protocol::storage::FsObjectStore;
 use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
@@ -275,7 +277,6 @@ fn test_blob_deduplication() -> Result<()> {
 
     use helix_cli::add::{add, AddOptions};
     use helix_cli::helix_index::api::HelixIndexData;
-    use helix_cli::helix_index::blob_storage::BlobStorage;
     use std::path::PathBuf;
 
     add(
@@ -292,8 +293,8 @@ fn test_blob_deduplication() -> Result<()> {
     assert_eq!(entries[0].oid, entries[1].oid, "Should have same hash");
 
     // Verify only one blob stored
-    let storage = BlobStorage::create_blob_storage(temp_dir.path());
-    let all_blobs = storage.list_all()?;
+    let storage = FsObjectStore::new(temp_dir.path());
+    let all_blobs = storage.list_object_hashes(&ObjectType::Blob)?;
     assert_eq!(all_blobs.len(), 1, "Should only store one blob");
 
     Ok(())

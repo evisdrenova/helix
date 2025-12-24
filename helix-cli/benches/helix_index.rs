@@ -2,9 +2,9 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Through
 use helix_cli::add::{add, AddOptions};
 use helix_cli::commit::{commit, CommitOptions};
 use helix_cli::helix_index::api::HelixIndexData;
-use helix_cli::helix_index::blob_storage::BlobStorage;
 use helix_cli::helix_index::tree::TreeBuilder;
 use helix_cli::helix_index::Reader;
+use helix_protocol::storage::FsObjectStore;
 use std::fs;
 use std::hint::black_box;
 use std::path::{Path, PathBuf};
@@ -137,7 +137,7 @@ fn bench_blob_write(c: &mut Criterion) {
                 || {
                     let temp_dir = TempDir::new().unwrap();
                     helix_cli::init::init_helix_repo(temp_dir.path(), None).unwrap();
-                    let storage = BlobStorage::create_blob_storage(temp_dir.path());
+                    let storage = FsObjectStore::new(temp_dir.path());
                     let contents: Vec<Vec<u8>> = (0..count)
                         .map(|i| format!("content {}", i).into_bytes())
                         .collect();
@@ -145,7 +145,11 @@ fn bench_blob_write(c: &mut Criterion) {
                 },
                 |(temp_dir, storage, contents)| {
                     for content in &contents {
-                        black_box(storage.write(content).unwrap());
+                        black_box(
+                            storage
+                                .write_object(&helix_protocol::message::ObjectType::Blob, content)
+                                .unwrap(),
+                        );
                     }
                     drop(temp_dir);
                 },

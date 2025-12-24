@@ -71,7 +71,7 @@ use super::reader::Reader;
 use super::state::set_branch_upstream;
 use super::tree::TreeBuilder;
 use super::writer::Writer;
-use crate::helix_index::blob_storage::BlobStorage;
+// use crate::helix_index::blob_storage::BlobStorage;
 use crate::ignore::IgnoreRules;
 use crate::index::GitIndex;
 use anyhow::{Context, Result};
@@ -80,6 +80,8 @@ use gix::revision::walk::Sorting;
 use gix::ObjectId;
 use hash::compute_blob_oid;
 use helix_protocol::hash::{self, hash_to_hex, Hash, ZERO_HASH};
+use helix_protocol::message::ObjectType;
+use helix_protocol::storage::FsObjectStore;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -691,10 +693,12 @@ impl SyncEngine {
         };
         // Helix stores its own hash (of the Git oid bytes)
         // let helix_entry_oid = hash::hash_bytes(git_entry_oid);
-        let blob_storage: BlobStorage = BlobStorage::create_blob_storage(&self.repo_path);
+        // let blob_storage: BlobStorage = BlobStorage::create_blob_storage(&self.repo_path);
+
+        let store = FsObjectStore::new(&self.repo_path);
 
         // returns raw hashed byes
-        let helix_oid: [u8; 32] = blob_storage.write(&blob_content)?;
+        let helix_oid: [u8; 32] = store.write_object(&ObjectType::Blob, &blob_content)?;
 
         // let working_content = if full_entry_path.exists() && full_entry_path.is_file() {
         //     Some(fs::read(&full_entry_path)?)
@@ -1003,7 +1007,8 @@ impl SyncEngine {
         recorder: gix::traverse::tree::Recorder,
         repo: &gix::Repository, // ← ADD THIS PARAMETER
     ) -> Result<Hash> {
-        let blob_storage = BlobStorage::create_blob_storage(&self.repo_path);
+        // let blob_storage = BlobStorage::create_blob_storage(&self.repo_path);
+        let blob_storage = FsObjectStore::new(&self.repo_path);
 
         // Convert gix records to Helix Entry format
         let entries: Vec<Entry> = recorder
@@ -1033,7 +1038,7 @@ impl SyncEngine {
                 };
 
                 // Write blob content to Helix storage and get the BLAKE3 hash
-                let oid = match blob_storage.write(&blob_content) {
+                let oid = match blob_storage.write_object(&ObjectType::Blob, &blob_content) {
                     Ok(hash) => hash,
                     Err(e) => {
                         eprintln!(

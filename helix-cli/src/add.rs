@@ -1,10 +1,11 @@
 // Add command - Stage files using pure Helix storage
 
 use crate::helix_index::api::HelixIndexData;
-use crate::helix_index::blob_storage::{BlobBatch, BlobStorage};
 use crate::helix_index::format::{Entry, EntryFlags};
 use crate::ignore::IgnoreRules;
 use anyhow::{Context, Result};
+use helix_protocol::message::ObjectType;
+use helix_protocol::storage::FsObjectStore;
 use rayon::prelude::*;
 use std::collections::HashSet;
 use std::fs;
@@ -184,7 +185,7 @@ fn should_add_file(
         .find(|p| p.join(".helix").exists())
         .ok_or_else(|| anyhow::anyhow!("Could not find repo root"))?;
 
-    let blob_storage = BlobStorage::create_blob_storage(repo_path);
+    let store = FsObjectStore::new(repo_path);
 
     // Check if file is already staged
     if staged.contains(relative_path) {
@@ -195,7 +196,8 @@ fn should_add_file(
         }
 
         // Mtime unchanged - verify blob exists
-        if !blob_storage.exists(&entry.oid) {
+
+        if !store.has_object(&ObjectType::Blob, &entry.oid) {
             if options.verbose {
                 eprintln!(
                     "⚠️  Blob missing for staged file {}, re-creating...",
@@ -217,7 +219,7 @@ fn should_add_file(
     }
 
     // File unchanged since last commit - verify blob exists anyway
-    if !blob_storage.exists(&entry.oid) {
+    if !store.has_object(&ObjectType::Blob, &entry.oid) {
         if options.verbose {
             eprintln!(
                 "⚠️  Blob missing for {}, re-creating...",
@@ -260,14 +262,19 @@ fn stage_files(
         println!("Writing blobs to storage...");
     }
 
-    // Write all blobs in batch (parallel)
-    let storage = BlobStorage::create_blob_storage(repo_path);
-    let batch = BlobBatch::new(&storage);
+    // Write all blobs
+
+    let store = FsObjectStore::new(repo_path);
 
     let contents: Vec<Vec<u8>> = file_data.iter().map(|(_, c, _)| c.clone()).collect();
-    let hashes = batch
-        .write_all(&contents)
-        .context("Failed to write blobs")?;
+
+    let mut hashes = Vec::with_capacity(contents.len());
+    for raw in &contents {
+        let h = store
+            .write_object(&ObjectType::Blob, raw)
+            .context("Failed to write blob")?;
+        hashes.push(h);
+    }
 
     if options.verbose {
         println!("Updating index entries...");
@@ -403,6 +410,7 @@ fn collect_files_from_directory(dir: &Path, repo_root: &Path) -> Result<Vec<Path
 mod tests {
     use super::*;
     use crate::helix_index::{EntryFlags, Reader};
+    use git2::Object;
     use std::fs;
     use std::process::Command;
     use tempfile::TempDir;
@@ -459,8 +467,8 @@ mod tests {
         assert!(data.entries[0].flags.contains(EntryFlags::STAGED));
 
         // Verify blob exists
-        let storage = BlobStorage::create_blob_storage(repo_path);
-        assert!(storage.exists(&data.entries[0].oid));
+        let storage = FsObjectStore::new(repo_path);
+        assert!(storage.has_object(&ObjectType::Blob, &data.entries[0].oid));
 
         Ok(())
     }
@@ -585,8 +593,9 @@ mod tests {
         assert_eq!(data.entries[0].oid, data.entries[1].oid);
 
         // Verify only one blob stored
-        let storage = BlobStorage::create_blob_storage(repo_path);
-        let all_blobs = storage.list_all()?;
+        let storage = FsObjectStore::new(repo_path);
+
+        let all_blobs = storage.list_object_hashes(&ObjectType::Blob)?;
         assert_eq!(all_blobs.len(), 1);
 
         Ok(())
