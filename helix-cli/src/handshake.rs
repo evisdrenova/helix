@@ -1,6 +1,6 @@
 use std::io::Cursor;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use helix_protocol::hash::Hash;
 use helix_protocol::message::{read_message, write_message, Hello, PushRequest, RpcMessage};
 
@@ -31,26 +31,30 @@ pub async fn push_handshake(
         }),
     )?;
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
+
     let resp = client
         .post(format!("{remote_url}/rpc/handshake"))
         .body(buf)
         .send()
-        .await;
+        .await
+        .with_context(|| {
+            format!("Remote server at {remote_url} is unreachable. Is the Helix server running?")
+        })?;
 
-    let resp = match resp {
-        Ok(r) => r,
-        Err(e) => {
-            bail!("Failed to reach Helix remote at {remote_url}: {e}");
-        }
-    };
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let error_body = resp.text().await.unwrap_or_default();
+        bail!("Remote returned error {}: {}", status, error_body);
+    }
 
-    let status = resp.status();
     let bytes = resp.bytes().await?;
     let mut cursor = Cursor::new(bytes.to_vec());
 
     match read_message(&mut cursor)? {
-        RpcMessage::PushResponse(r) if status.is_success() => {
+        RpcMessage::PushResponse(r) => {
             // TODO: update with actual server response with what it has already, so we can calc diff between new and old
             println!("Connected to the server!");
             let head_display = match r.remote_head {
@@ -69,11 +73,6 @@ pub async fn push_handshake(
                 err.message
             );
         }
-        other => {
-            bail!(
-                "Unexpected response from server during handshake: {:?} (status {status})",
-                other
-            );
-        }
+        _ => bail!("Unexpected response during handshake"),
     }
 }

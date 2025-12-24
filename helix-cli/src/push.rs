@@ -125,7 +125,8 @@ pub async fn push(
         .post(format!("{remote_url}/rpc/push"))
         .body(buf)
         .send()
-        .await?;
+        .await
+        .with_context(|| "Connection to server lost during data transfer.")?;
 
     let status = resp.status();
     let bytes = resp.bytes().await?;

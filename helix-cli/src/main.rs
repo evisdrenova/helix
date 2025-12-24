@@ -252,20 +252,13 @@ async fn main() -> Result<()> {
                 force,
             };
 
-            push(&repo_path, &remote, &branch, options).await;
+            push(&repo_path, &remote, &branch, options).await?;
             return Ok(());
         }
         Some(Commands::Pull { remote, branch }) => {
             let repo_path = resolve_repo_path(None)?;
 
-            //TODO
-            // let options = push::PushOptions {
-            //     verbose,
-            //     dry_run,
-            //     force,
-            // };
-
-            pull(&repo_path, &remote, &branch).await;
+            pull(&repo_path, &remote, &branch).await?;
             return Ok(());
         }
         None => {
