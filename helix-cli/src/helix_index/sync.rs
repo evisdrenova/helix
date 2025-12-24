@@ -110,6 +110,8 @@ impl SyncEngine {
     }
 
     pub fn import_from_git(&self) -> Result<()> {
+        let _ = wait_for_git_lock(&self.repo_path, Duration::from_secs(1));
+
         println!("\n  {}", style("Helix").bold());
         println!(
             "  {}",
