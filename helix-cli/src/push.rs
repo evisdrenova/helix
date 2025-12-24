@@ -8,6 +8,7 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
 use crate::handshake::push_handshake;
+use crate::helix_index::blob_storage::BlobStorage;
 use crate::init::HelixConfig;
 
 pub struct PushOptions {
@@ -248,6 +249,28 @@ pub fn write_remote_tracking(
 }
 
 /// send all local objects we know about.
+// async fn compute_push_frontier(
+//     repo_path: &Path,
+//     _new_target: Hash,
+//     _old_target: Hash,
+// ) -> Result<Vec<(ObjectType, Hash, Vec<u8>)>> {
+//     let objects_root = repo_path.join(".helix").join("objects");
+
+//     // run concurrently
+//     let commits_fut = load_objects_from_dir(objects_root.join("commits"), ObjectType::Commit);
+//     let trees_fut = load_objects_from_dir(objects_root.join("trees"), ObjectType::Tree);
+//     let blobs_fut = load_objects_from_dir(objects_root.join("blobs"), ObjectType::Blob);
+
+//     // await them all in parallel
+//     let (commits, trees, blobs) = tokio::try_join!(commits_fut, trees_fut, blobs_fut)?;
+
+//     let mut out = commits;
+//     out.extend(trees);
+//     out.extend(blobs);
+
+//     Ok(out)
+// }
+
 async fn compute_push_frontier(
     repo_path: &Path,
     _new_target: Hash,
@@ -255,12 +278,12 @@ async fn compute_push_frontier(
 ) -> Result<Vec<(ObjectType, Hash, Vec<u8>)>> {
     let objects_root = repo_path.join(".helix").join("objects");
 
-    // run concurrently
     let commits_fut = load_objects_from_dir(objects_root.join("commits"), ObjectType::Commit);
     let trees_fut = load_objects_from_dir(objects_root.join("trees"), ObjectType::Tree);
-    let blobs_fut = load_objects_from_dir(objects_root.join("blobs"), ObjectType::Blob);
 
-    // await them all in parallel
+    // blobs: special handling (stored compressed on disk)
+    let blobs_fut = load_blobs(repo_path);
+
     let (commits, trees, blobs) = tokio::try_join!(commits_fut, trees_fut, blobs_fut)?;
 
     let mut out = commits;
@@ -282,12 +305,63 @@ async fn load_objects_from_dir(
     let mut entries = tokio::fs::read_dir(dir).await?;
     while let Some(entry) = entries.next_entry().await? {
         if entry.file_type().await?.is_file() {
-            let data = tokio::fs::read(entry.path()).await?;
-            let mut hash = [0u8; 32];
-            hash.copy_from_slice(blake3::hash(&data).as_bytes());
+            let path = entry.path();
+            let file_name = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .context("object filename is not utf8")?;
 
+            // IMPORTANT: commits/trees should also use filename as hash if filenames are the oid.
+            // If they aren’t, keep your old blake3(data) approach.
+            let bytes =
+                hex::decode(file_name).context("failed to decode object filename as hex")?;
+            if bytes.len() != 32 {
+                anyhow::bail!("object filename is not a 32-byte hex hash: {file_name}");
+            }
+            let mut hash = [0u8; 32];
+            hash.copy_from_slice(&bytes);
+
+            let data = tokio::fs::read(&path).await?;
             results.push((obj_type.clone(), hash, data));
         }
     }
+
     Ok(results)
 }
+
+async fn load_blobs(repo_path: &Path) -> Result<Vec<(ObjectType, Hash, Vec<u8>)>> {
+    let storage = BlobStorage::create_blob_storage(repo_path);
+
+    // list_all is sync; fine for now, or wrap in spawn_blocking if you want
+    let blob_hashes = storage.list_all()?;
+
+    let mut out = Vec::with_capacity(blob_hashes.len());
+    for h in blob_hashes {
+        // read() returns *decompressed raw bytes*
+        let raw = storage.read(&h)?;
+        out.push((ObjectType::Blob, h, raw));
+    }
+    Ok(out)
+}
+
+// async fn load_objects_from_dir(
+//     dir: PathBuf,
+//     obj_type: ObjectType,
+// ) -> Result<Vec<(ObjectType, Hash, Vec<u8>)>> {
+//     let mut results = Vec::new();
+//     if !dir.exists() {
+//         return Ok(results);
+//     }
+
+//     let mut entries = tokio::fs::read_dir(dir).await?;
+//     while let Some(entry) = entries.next_entry().await? {
+//         if entry.file_type().await?.is_file() {
+//             let data = tokio::fs::read(entry.path()).await?;
+//             let mut hash = [0u8; 32];
+//             hash.copy_from_slice(blake3::hash(&data).as_bytes());
+
+//             results.push((obj_type.clone(), hash, data));
+//         }
+//     }
+//     Ok(results)
+// }
