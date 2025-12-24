@@ -1,5 +1,4 @@
 pub mod api;
-pub mod blob_storage;
 pub mod commit;
 pub mod format;
 pub mod reader;
