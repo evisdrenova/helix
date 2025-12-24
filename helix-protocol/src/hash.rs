@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use blake3::Hasher;
 use rayon::prelude::*;
 use std::{fs, io::Read, path::Path};
@@ -57,23 +57,17 @@ pub fn compute_blob_oid(content: &[u8]) -> Vec<u8> {
     hasher.finalize().to_vec()
 }
 
-/// Convert hash to hex string for display/storage
+///conevrt a [u8; 32] → hex string
 #[inline]
-pub fn hash_to_hex(hash: &Hash) -> String {
-    hex::encode(hash)
+pub fn hash_to_hex(h: &Hash) -> String {
+    hex::encode(h)
 }
 
-/// Parse hex string back to hash
-pub fn hex_to_hash(hex_str: &str) -> Result<Hash> {
-    let bytes = hex::decode(hex_str)?;
-    if bytes.len() != 32 {
-        anyhow::bail!(
-            "Invalid hash length: expected 32 bytes, got {}",
-            bytes.len()
-        );
-    }
+/// converts a hex string to a 32 byte hash
+/// this allows us to compare it against other hashes
+pub fn hex_to_hash(s: &str) -> Result<Hash> {
     let mut hash = [0u8; 32];
-    hash.copy_from_slice(&bytes);
+    hex::decode_to_slice(s, &mut hash).context("Failed to decode hex or invalid length")?;
     Ok(hash)
 }
 

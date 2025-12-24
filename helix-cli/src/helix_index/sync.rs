@@ -691,8 +691,10 @@ impl SyncEngine {
         };
         // Helix stores its own hash (of the Git oid bytes)
         // let helix_entry_oid = hash::hash_bytes(git_entry_oid);
-        let blob_storage = BlobStorage::create_blob_storage(&self.repo_path);
-        let helix_oid = blob_storage.write(&blob_content)?; // <- returns BLAKE3(raw bytes)
+        let blob_storage: BlobStorage = BlobStorage::create_blob_storage(&self.repo_path);
+
+        // returns raw hashed byes
+        let helix_oid: [u8; 32] = blob_storage.write(&blob_content)?;
 
         // let working_content = if full_entry_path.exists() && full_entry_path.is_file() {
         //     Some(fs::read(&full_entry_path)?)
