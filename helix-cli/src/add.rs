@@ -184,7 +184,7 @@ fn should_add_file(
         .find(|p| p.join(".helix").exists())
         .ok_or_else(|| anyhow::anyhow!("Could not find repo root"))?;
 
-    let blob_storage = BlobStorage::for_repo(repo_path);
+    let blob_storage = BlobStorage::create_blob_storage(repo_path);
 
     // Check if file is already staged
     if staged.contains(relative_path) {
@@ -261,7 +261,7 @@ fn stage_files(
     }
 
     // Write all blobs in batch (parallel)
-    let storage = BlobStorage::for_repo(repo_path);
+    let storage = BlobStorage::create_blob_storage(repo_path);
     let batch = BlobBatch::new(&storage);
 
     let contents: Vec<Vec<u8>> = file_data.iter().map(|(_, c, _)| c.clone()).collect();
@@ -459,7 +459,7 @@ mod tests {
         assert!(data.entries[0].flags.contains(EntryFlags::STAGED));
 
         // Verify blob exists
-        let storage = BlobStorage::for_repo(repo_path);
+        let storage = BlobStorage::create_blob_storage(repo_path);
         assert!(storage.exists(&data.entries[0].oid));
 
         Ok(())
@@ -585,7 +585,7 @@ mod tests {
         assert_eq!(data.entries[0].oid, data.entries[1].oid);
 
         // Verify only one blob stored
-        let storage = BlobStorage::for_repo(repo_path);
+        let storage = BlobStorage::create_blob_storage(repo_path);
         let all_blobs = storage.list_all()?;
         assert_eq!(all_blobs.len(), 1);
 

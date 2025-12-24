@@ -397,7 +397,7 @@ mod tests {
         fs::write(repo_path.join(filename), content)?;
 
         // Store blob
-        let storage = BlobStorage::for_repo(repo_path);
+        let storage = BlobStorage::create_blob_storage(repo_path);
         let hash = storage.write(content)?;
 
         // Add to index as staged

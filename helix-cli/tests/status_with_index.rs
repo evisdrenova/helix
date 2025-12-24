@@ -292,7 +292,7 @@ fn test_blob_deduplication() -> Result<()> {
     assert_eq!(entries[0].oid, entries[1].oid, "Should have same hash");
 
     // Verify only one blob stored
-    let storage = BlobStorage::for_repo(temp_dir.path());
+    let storage = BlobStorage::create_blob_storage(temp_dir.path());
     let all_blobs = storage.list_all()?;
     assert_eq!(all_blobs.len(), 1, "Should only store one blob");
 

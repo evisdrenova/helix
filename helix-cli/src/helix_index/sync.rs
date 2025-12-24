@@ -77,6 +77,7 @@ use crate::index::GitIndex;
 use anyhow::{Context, Result};
 use console::style;
 use gix::revision::walk::Sorting;
+use gix::ObjectId;
 use hash::compute_blob_oid;
 use helix_protocol::hash::{self, hash_to_hex, Hash, ZERO_HASH};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -663,18 +664,41 @@ impl SyncEngine {
         let mut flags = EntryFlags::TRACKED;
 
         // Git's index snapshot blob-hash
-        let git_entry_oid: &[u8; 20] = git_index_entry.oid.as_bytes();
+        let git_index_entry_oid: &[u8; 20] = git_index_entry.oid.as_bytes();
 
+        //  read the blob bytes that the git index refers to, otherwise fallback to working tree.
+        //TODO: can move this up out of the helper so we don't open it every time
+        let repo = gix::open(&self.repo_path).context("Failed to open repositoy")?;
+
+        let git_object_id: ObjectId = ObjectId::from(*git_index_entry_oid);
+
+        let blob_content: Vec<u8> = match repo.find_object(git_object_id) {
+            Ok(obj) => obj
+                .try_into_blob()
+                .map(|b| b.data.to_vec())
+                .unwrap_or_else(|_| {
+                    // fallback to working tree if not a blob for some reason
+                    fs::read(&full_entry_path).unwrap_or_default()
+                }),
+            Err(_) => {
+                // fallback (e.g. very fresh file not in object DB yet in weird cases)
+                if full_entry_path.exists() && full_entry_path.is_file() {
+                    fs::read(&full_entry_path)?
+                } else {
+                    Vec::new()
+                }
+            }
+        };
         // Helix stores its own hash (of the Git oid bytes)
         // let helix_entry_oid = hash::hash_bytes(git_entry_oid);
+        let blob_storage = BlobStorage::create_blob_storage(&self.repo_path);
+        let helix_oid = blob_storage.write(&blob_content)?; // <- returns BLAKE3(raw bytes)
 
-        let blob_storage = BlobStorage::for_repo(&self.repo_path);
-
-        let working_content = if full_entry_path.exists() && full_entry_path.is_file() {
-            Some(fs::read(&full_entry_path)?)
-        } else {
-            None
-        };
+        // let working_content = if full_entry_path.exists() && full_entry_path.is_file() {
+        //     Some(fs::read(&full_entry_path)?)
+        // } else {
+        //     None
+        // };
 
         // let helix_entry_oid = if full_entry_path.exists() && full_entry_path.is_file() {
         //     let working_content = fs::read(&full_entry_path)?;
@@ -687,14 +711,14 @@ impl SyncEngine {
         //     flags |= EntryFlags::DELETED;
         //     ZERO_HASH
         // };
-        let helix_entry_oid = if let Some(ref bytes) = working_content {
-            blob_storage.write(bytes)?
-        } else {
-            if head_tree.contains_key(&entry_path) {
-                flags |= EntryFlags::DELETED;
-            }
-            ZERO_HASH
-        };
+        // let helix_entry_oid = if let Some(ref bytes) = working_content {
+        //     blob_storage.write(bytes)?
+        // } else {
+        //     if head_tree.contains_key(&entry_path) {
+        //         flags |= EntryFlags::DELETED;
+        //     }
+        //     ZERO_HASH
+        // };
 
         // STAGED check: index vs HEAD
         // check if the hashed head oid from git head is the same as the hashed helix oid from .git/index
@@ -702,14 +726,14 @@ impl SyncEngine {
         // if it's a new file it will default be being staged
         let is_staged = head_tree
             .get(&entry_path)
-            .map(|head_git_oid| head_git_oid.as_slice() != git_entry_oid)
+            .map(|head_git_oid| head_git_oid.as_slice() != git_index_entry_oid)
             .unwrap_or(true);
 
         if is_staged {
             flags |= EntryFlags::STAGED;
         }
 
-        // let was_in_head = head_tree.contains_key(&entry_path);
+        let was_in_head = head_tree.contains_key(&entry_path);
 
         // Always check working tree vs. index, this will catch repos with no commits yet
         // if full_entry_path.exists() && full_entry_path.is_file() {
@@ -725,12 +749,33 @@ impl SyncEngine {
         //     flags |= EntryFlags::DELETED;
         // }
 
-        if let Some(ref bytes) = working_content {
-            let working_git_oid = compute_blob_oid(bytes);
-            if &working_git_oid != git_entry_oid {
+        // if let Some(ref bytes) = working_content {
+        //     let working_git_oid = compute_blob_oid(bytes);
+        //     if &working_git_oid != git_index_entry_oid {
+        //         flags |= EntryFlags::MODIFIED;
+        //     }
+        // } else if head_tree.contains_key(&entry_path) {
+        //     flags |= EntryFlags::DELETED;
+        // }
+
+        // let (mtime_sec, file_size) = if full_entry_path.exists() {
+        //     let metadata = fs::metadata(&full_entry_path)?;
+        //     let mtime = metadata
+        //         .modified()?
+        //         .duration_since(std::time::UNIX_EPOCH)?
+        //         .as_secs();
+        //     (mtime, metadata.len())
+        // } else {
+        //     (git_index_entry.mtime as u64, git_index_entry.size as u64)
+        // };
+
+        if full_entry_path.exists() && full_entry_path.is_file() {
+            let working_content = fs::read(&full_entry_path)?;
+            let working_git_oid = compute_blob_oid(&working_content);
+            if &working_git_oid != git_index_entry_oid {
                 flags |= EntryFlags::MODIFIED;
             }
-        } else if head_tree.contains_key(&entry_path) {
+        } else if was_in_head {
             flags |= EntryFlags::DELETED;
         }
 
@@ -753,7 +798,7 @@ impl SyncEngine {
             flags,
             merge_conflict_stage: 0,
             file_mode: git_index_entry.file_mode,
-            oid: helix_entry_oid,
+            oid: helix_oid,
             reserved: [0; 33],
         })
     }
@@ -956,7 +1001,7 @@ impl SyncEngine {
         recorder: gix::traverse::tree::Recorder,
         repo: &gix::Repository, // ← ADD THIS PARAMETER
     ) -> Result<Hash> {
-        let blob_storage = BlobStorage::for_repo(&self.repo_path);
+        let blob_storage = BlobStorage::create_blob_storage(&self.repo_path);
 
         // Convert gix records to Helix Entry format
         let entries: Vec<Entry> = recorder

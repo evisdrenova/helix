@@ -21,7 +21,7 @@ impl BlobStorage {
     }
 
     /// Create blob storage for a repository
-    pub fn for_repo(repo_path: &Path) -> Self {
+    pub fn create_blob_storage(repo_path: &Path) -> Self {
         let root = repo_path.join(".helix/objects/blobs");
         Self::new(root)
     }
@@ -198,7 +198,7 @@ mod tests {
 
     fn setup_storage() -> (TempDir, BlobStorage) {
         let temp_dir = TempDir::new().unwrap();
-        let storage = BlobStorage::for_repo(temp_dir.path());
+        let storage = BlobStorage::create_blob_storage(temp_dir.path());
         (temp_dir, storage)
     }
 

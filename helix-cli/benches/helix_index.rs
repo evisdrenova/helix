@@ -137,7 +137,7 @@ fn bench_blob_write(c: &mut Criterion) {
                 || {
                     let temp_dir = TempDir::new().unwrap();
                     helix_cli::init::init_helix_repo(temp_dir.path(), None).unwrap();
-                    let storage = BlobStorage::for_repo(temp_dir.path());
+                    let storage = BlobStorage::create_blob_storage(temp_dir.path());
                     let contents: Vec<Vec<u8>> = (0..count)
                         .map(|i| format!("content {}", i).into_bytes())
                         .collect();
