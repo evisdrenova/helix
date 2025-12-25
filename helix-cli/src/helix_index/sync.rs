@@ -71,13 +71,12 @@ use super::reader::Reader;
 use super::state::set_branch_upstream;
 use super::tree::TreeBuilder;
 use super::writer::Writer;
-// use crate::helix_index::blob_storage::BlobStorage;
 use crate::ignore::IgnoreRules;
 use crate::index::GitIndex;
 use anyhow::{Context, Result};
 use console::style;
 use gix::revision::walk::Sorting;
-use gix::ObjectId;
+use gix::{ObjectId, Repository};
 use hash::compute_blob_oid;
 use helix_protocol::hash::{self, hash_to_hex, Hash, ZERO_HASH};
 use helix_protocol::message::ObjectType;
@@ -111,6 +110,7 @@ impl SyncEngine {
 
     pub fn import_from_git(&self) -> Result<()> {
         let _ = wait_for_git_lock(&self.repo_path, Duration::from_secs(1));
+        let store = FsObjectStore::new(&self.repo_path);
 
         println!("\n  {}", style("Helix").bold());
         println!(
@@ -127,8 +127,8 @@ impl SyncEngine {
         main_pb.set_message("Analyzing Git history...");
         main_pb.enable_steady_tick(Duration::from_millis(80));
 
-        let file_count = self.import_git_index()?;
-        let mapping = self.import_git_commits(&main_pb)?;
+        let file_count = self.import_git_index(&store)?;
+        let mapping = self.import_git_commits(&store, &main_pb)?;
         let commit_count = mapping.len();
 
         self.import_git_branches(&mapping)?;
@@ -354,13 +354,6 @@ impl SyncEngine {
     }
 
     /// Parse Git config to extract upstream tracking for a branch
-    ///
-    /// Git stores this as:
-    /// [branch "feature"]
-    ///     remote = origin
-    ///     merge = refs/heads/feature
-    ///
-    /// We convert this to just the branch name (e.g., "origin/feature" or "main")
     fn parse_git_branch_upstream(&self, git_config: &str, branch_name: &str) -> Option<String> {
         let section_header = format!("[branch \"{}\"]", branch_name);
 
@@ -575,7 +568,7 @@ impl SyncEngine {
         Ok(())
     }
 
-    fn import_git_index(&self) -> Result<(usize)> {
+    fn import_git_index(&self, store: &FsObjectStore) -> Result<(usize)> {
         let git_index_path = self.repo_path.join(".git/index");
 
         // Handle brand-new repo with no .git/index yet, return new empty Helix index
@@ -624,23 +617,31 @@ impl SyncEngine {
             None
         };
 
+        let thread_safe_repo = gix::open(&self.repo_path)
+            .context("Failed to open repository")?
+            .into_sync();
+
         // Build entries in parallel, updating the progress bar as we go
         let entries: Vec<Entry> = index_entries
             .into_par_iter()
             .map_init(
-                || (pb.clone(), &ignore_rules),
-                |(pb, ignore_rules), e| {
+                || {
+                    // This closure runs ONCE per worker thread
+                    let local_repo = thread_safe_repo.to_thread_local();
+                    (pb.clone(), &ignore_rules, local_repo)
+                },
+                |(pb, ignore_rules, local_repo), e| {
                     if let Some(ref p) = pb {
                         p.inc(1);
                     }
 
-                    // Check if ignored
                     let path = Path::new(&e.path);
                     if ignore_rules.should_ignore(path) {
                         return None;
                     }
 
-                    self.build_helix_entry_from_git_entry(&e, &head_tree).ok()
+                    self.build_helix_entry_from_git_entry(&e, &head_tree, local_repo, store)
+                        .ok()
                 },
             )
             .flatten()
@@ -661,6 +662,8 @@ impl SyncEngine {
         &self,
         git_index_entry: &crate::index::IndexEntry,
         head_tree: &HashMap<PathBuf, Vec<u8>>,
+        repo: &Repository,
+        store: &FsObjectStore,
     ) -> Result<Entry> {
         let entry_path = PathBuf::from(&git_index_entry.path);
         let full_entry_path = self.repo_path.join(&PathBuf::from(&git_index_entry.path));
@@ -668,14 +671,12 @@ impl SyncEngine {
         let mut flags = EntryFlags::TRACKED;
 
         // Git's index snapshot blob-hash
+        // the raw hash bytes of the blob that is stored in the git_index
         let git_index_entry_oid: &[u8; 20] = git_index_entry.oid.as_bytes();
-
-        //  read the blob bytes that the git index refers to, otherwise fallback to working tree.
-        //TODO: can move this up out of the helper so we don't open it every time
-        let repo = gix::open(&self.repo_path).context("Failed to open repositoy")?;
 
         let git_object_id: ObjectId = ObjectId::from(*git_index_entry_oid);
 
+        //  read the blob bytes that the git index refers to, otherwise fallback to working tree.
         let blob_content: Vec<u8> = match repo.find_object(git_object_id) {
             Ok(obj) => obj
                 .try_into_blob()
@@ -693,11 +694,10 @@ impl SyncEngine {
                 }
             }
         };
+
         // Helix stores its own hash (of the Git oid bytes)
         // let helix_entry_oid = hash::hash_bytes(git_entry_oid);
         // let blob_storage: BlobStorage = BlobStorage::create_blob_storage(&self.repo_path);
-
-        let store = FsObjectStore::new(&self.repo_path);
 
         // returns raw hashed byes
         let helix_oid: [u8; 32] = store.write_object(&ObjectType::Blob, &blob_content)?;
@@ -848,7 +848,11 @@ impl SyncEngine {
     }
 
     // TODO: parallelize the two different passes here: 1. to compute all committ hashes inparallel, 2. build final commits with correct parents in parallel
-    fn import_git_commits(&self, pb: &ProgressBar) -> Result<HashMap<Vec<u8>, [u8; 32]>> {
+    fn import_git_commits(
+        &self,
+        store: &FsObjectStore,
+        pb: &ProgressBar,
+    ) -> Result<HashMap<Vec<u8>, [u8; 32]>> {
         let repo = gix::open(&self.repo_path)?;
 
         let mut seen = HashSet::new();
@@ -917,7 +921,7 @@ impl SyncEngine {
             helix_commits.push(helix_commit);
         }
 
-        self.store_imported_commits(&helix_commits)?;
+        self.store_imported_commits(&store, &helix_commits)?;
 
         // Update HEAD to point to the current branch's commit
         if let Ok(mut head_ref) = repo.head() {
@@ -1081,9 +1085,11 @@ impl SyncEngine {
         Ok(tree_hash.into())
     }
 
-    fn store_imported_commits(&self, commits: &[Helix_Commit]) -> Result<()> {
-        let commit_storage = CommitStorage::for_repo(&self.repo_path);
-
+    fn store_imported_commits(
+        &self,
+        store: &FsObjectStore,
+        commits: &[Helix_Commit],
+    ) -> Result<()> {
         let pb = ProgressBar::new(commits.len() as u64);
         pb.set_style(
             ProgressStyle::with_template(
@@ -1094,10 +1100,9 @@ impl SyncEngine {
         );
 
         for commit in commits {
-            commit_storage.write(commit)?;
-            pb.inc(1);
+            let raw = commit.to_bytes();
+            store.write_object_with_hash(&ObjectType::Commit, &commit.commit_hash, &raw)?;
         }
-
         pb.finish_with_message("commits stored");
 
         Ok(())
@@ -1547,7 +1552,8 @@ mod tests {
         // No commits yet
         let syncer = SyncEngine::new(temp_dir.path());
         let main_pb = ProgressBar::new_spinner();
-        syncer.import_git_commits(&main_pb)?;
+        let store = FsObjectStore::new(temp_dir.path());
+        syncer.import_git_commits(&store, &main_pb)?;
         let commit_reader = CommitStorage::new(temp_dir.path());
 
         assert_eq!(
@@ -1573,7 +1579,8 @@ mod tests {
 
         // Import commits
         let syncer = SyncEngine::new(temp_dir.path());
-        syncer.import_git_commits(&main_pb)?;
+        let store = FsObjectStore::new(temp_dir.path());
+        syncer.import_git_commits(&store, &main_pb)?;
 
         let commit_reader = CommitStorage::for_repo(temp_dir.path());
 
@@ -1600,7 +1607,8 @@ mod tests {
     fn import_commits(repo_dir: &Path) -> Result<Vec<Helix_Commit>> {
         let syncer = SyncEngine::new(repo_dir);
         let main_pb = ProgressBar::new_spinner();
-        syncer.import_git_commits(&main_pb)?;
+        let store = FsObjectStore::new(repo_dir);
+        syncer.import_git_commits(&store, &main_pb)?;
         let commit_reader = CommitStorage::for_repo(repo_dir);
         let commits = &commit_reader.list_all()?;
 
@@ -1856,7 +1864,8 @@ mod tests {
 
         let engine = SyncEngine::new(repo);
         let main_pb = ProgressBar::new_spinner();
-        let git_to_helix = engine.import_git_commits(&main_pb)?;
+        let store = FsObjectStore::new(repo);
+        let git_to_helix = engine.import_git_commits(&store, &main_pb)?;
 
         // There should be an entry for HEAD
         let helix_hash_from_map = git_to_helix
@@ -1889,7 +1898,8 @@ mod tests {
 
         let engine = SyncEngine::new(repo);
         let main_pb = ProgressBar::new_spinner();
-        let git_to_helix = engine.import_git_commits(&main_pb)?;
+        let store = FsObjectStore::new(repo);
+        let git_to_helix = engine.import_git_commits(&store, &main_pb)?;
 
         // Find HEAD Git SHA
         let output = Command::new("git")

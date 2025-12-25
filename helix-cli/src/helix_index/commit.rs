@@ -39,7 +39,7 @@ impl Commit {
             .as_secs();
 
         let mut commit = Self {
-            commit_hash: [0u8; 32], // Temporary, will be computed
+            commit_hash: [0u8; 32],
             tree_hash,
             parents,
             author,
