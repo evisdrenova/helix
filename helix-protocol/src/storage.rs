@@ -72,28 +72,19 @@ impl FsObjectStore {
         }
 
         // Encode for storage
-        let on_disk: Vec<u8> = match ty {
-            ObjectType::Blob => zstd::encode_all(raw, 3).context("Failed to compress blob")?,
-            ObjectType::Tree | ObjectType::Commit => {
-                // TODO: this is just raw bytes, we should compress here
-                raw.to_vec()
-            }
-        };
+        let on_disk = zstd::encode_all(raw, 3).context("Failed to compress object")?;
 
         atomic_write(&path, &on_disk)
             .with_context(|| format!("write object ty={:?} {}", ty, hex::encode(hash)))?;
         Ok(())
     }
 
-    /// Read RAW bytes; decodes/decompresses based on object type.
+    /// Decompress objects on disk to get raw bytes
     pub fn read_object(&self, ty: &ObjectType, hash: &Hash) -> Result<Vec<u8>> {
         let path = self.obj_path(ty, hash);
         let data = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
 
-        let raw = match ty {
-            ObjectType::Blob => zstd::decode_all(&data[..]).context("Failed to decompress blob")?,
-            ObjectType::Tree | ObjectType::Commit => data,
-        };
+        let raw = zstd::decode_all(&data[..]).context("Failed to decompress object")?;
 
         // verify integrity at read time too.
         let computed = hash_bytes(&raw);
