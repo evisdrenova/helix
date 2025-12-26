@@ -24,7 +24,6 @@ use helix_protocol::hash::{hash_to_hex, hex_to_hash, Hash};
 use helix_protocol::storage::FsObjectStore;
 use std::fs;
 use std::path::Path;
-use std::time::Instant;
 
 pub struct CommitOptions {
     pub message: String,
@@ -48,23 +47,19 @@ impl Default for CommitOptions {
 
 /// Create a commit from staged files
 pub fn commit(repo_path: &Path, options: CommitOptions) -> Result<Hash> {
-    let start = Instant::now();
-    let store = FsObjectStore::new(repo_path);
-    let loader = CommitStore::new(repo_path, store)?;
+    let object_store = FsObjectStore::new(repo_path);
+    let commit_store = CommitStore::new(repo_path, object_store)?;
 
-    // Validate message
     if options.message.trim().is_empty() {
         anyhow::bail!("Commit message cannot be empty. Use -m <message>");
     }
 
-    // Load index
     let index = HelixIndexData::load_or_rebuild(repo_path)?;
 
     if options.verbose {
         println!("Loaded index (generation {})", index.generation());
     }
 
-    // Get staged entries
     let staged_entries: Vec<_> = index
         .entries()
         .iter()
@@ -107,7 +102,7 @@ pub fn commit(repo_path: &Path, options: CommitOptions) -> Result<Hash> {
     // Check if tree would be same as HEAD (no changes)
     if !options.allow_empty && !options.amend {
         if let Some(head_hash) = head_commit_hash {
-            let head_commit_obj = loader.read_commit(&head_hash)?;
+            let head_commit_obj = commit_store.read_commit(&head_hash)?;
 
             if tree_hash == head_commit_obj.tree_hash {
                 anyhow::bail!("No changes to commit. The tree is identical to HEAD.");
@@ -123,7 +118,7 @@ pub fn commit(repo_path: &Path, options: CommitOptions) -> Result<Hash> {
 
     let commit = if options.amend {
         let head_hash = head_commit_hash.unwrap();
-        let prev_commit = loader.read_commit(&head_hash)?;
+        let prev_commit = commit_store.read_commit(&head_hash)?;
 
         Commit::new(tree_hash, prev_commit.parents, author, options.message)
     } else if let Some(parent_hash) = head_commit_hash {
@@ -142,7 +137,7 @@ pub fn commit(repo_path: &Path, options: CommitOptions) -> Result<Hash> {
     let commit_hash = commit.get_hash();
 
     // Write to storage (returns the same hash)
-    loader
+    commit_store
         .write_commit(&commit)
         .context("Failed to write commit")?;
 
@@ -162,11 +157,6 @@ pub fn commit(repo_path: &Path, options: CommitOptions) -> Result<Hash> {
 
     // Clear staged flags in index
     clear_staged_flags(repo_path)?;
-
-    let elapsed = start.elapsed();
-    if options.verbose {
-        println!("Commit completed in {:?}", elapsed);
-    }
 
     // Print commit summary
     let short_hash = hash_to_hex(&commit_hash);
@@ -351,6 +341,7 @@ mod tests {
     use helix_protocol::storage::FsObjectStore;
     use std::path::PathBuf;
     use std::process::Command;
+    use std::time::Instant;
     use tempfile::TempDir;
 
     fn init_test_repo(path: &Path) -> Result<()> {
