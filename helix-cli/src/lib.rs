@@ -1,5 +1,5 @@
-pub mod add;
-pub mod branch;
+pub mod add_command;
+pub mod branch_command;
 pub mod branch_tui;
 pub mod commit_command;
 pub mod fsmonitor;
@@ -7,9 +7,9 @@ pub mod handshake;
 pub mod helix_index;
 pub mod ignore;
 pub mod index;
-pub mod init;
-pub mod pull;
-pub mod push;
+pub mod init_command;
+pub mod pull_command;
+pub mod push_command;
 
 use std::result;
 

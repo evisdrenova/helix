@@ -343,7 +343,7 @@ mod tests {
 
     use super::*;
     use crate::commit_command::{commit, CommitOptions};
-    use crate::init::init_helix_repo;
+    use crate::init_command::init_helix_repo;
     use tempfile::TempDir;
 
     fn init_test_repo(path: &Path) -> Result<()> {
@@ -364,7 +364,7 @@ email = "test@test.com"
     }
 
     fn make_initial_commit(repo_path: &Path) -> Result<Hash> {
-        use crate::add::{add, AddOptions};
+        use crate::add_command::{add, AddOptions};
 
         // Create and add a file
         fs::write(repo_path.join("test.txt"), "content")?;

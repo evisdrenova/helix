@@ -1,9 +1,9 @@
 use clap::{Parser, Subcommand};
 use helix_cli::{
-    add, branch, commit_command,
-    init::init_helix_repo,
-    pull::pull,
-    push::{self, push},
+    add_command, branch_command, commit_command,
+    init_command::init_helix_repo,
+    pull_command::pull,
+    push_command::{self, push},
 };
 use std::path::{Path, PathBuf};
 
@@ -145,7 +145,7 @@ async fn main() -> Result<()> {
         }) => {
             let repo_path = resolve_repo_path(path.as_deref())?;
 
-            let options = branch::BranchOptions {
+            let options = branch_command::BranchOptions {
                 delete,
                 rename,
                 force,
@@ -154,16 +154,16 @@ async fn main() -> Result<()> {
 
             // If no name and no flags, or explicit --list, show TUI
             if (name.is_none() && !delete && !rename) || list {
-                branch::run_branch_tui(Some(&repo_path))?;
+                branch_command::run_branch_tui(Some(&repo_path))?;
             } else if let Some(branch_name) = name {
                 // Handle specific branch operations
                 if delete {
                     // Delete branch
-                    branch::delete_branch(&repo_path, &branch_name, options)?;
+                    branch_command::delete_branch(&repo_path, &branch_name, options)?;
                 } else if rename {
                     // Rename branch
                     if let Some(new) = new_name {
-                        branch::rename_branch(&repo_path, &branch_name, &new, options)?;
+                        branch_command::rename_branch(&repo_path, &branch_name, &new, options)?;
                     } else {
                         eprintln!("Error: --rename requires two branch names");
                         eprintln!("Usage: helix branch --rename <old-name> <new-name>");
@@ -176,9 +176,9 @@ async fn main() -> Result<()> {
                         .exists();
 
                     if branch_exists {
-                        branch::switch_branch(&repo_path, &branch_name)?;
+                        branch_command::switch_branch(&repo_path, &branch_name)?;
                     } else {
-                        branch::create_branch(&repo_path, &branch_name, options)?;
+                        branch_command::create_branch(&repo_path, &branch_name, options)?;
                     }
                 }
             } else {
@@ -197,13 +197,13 @@ async fn main() -> Result<()> {
         }) => {
             let repo_path = resolve_repo_path(None)?;
 
-            let options = add::AddOptions {
+            let options = add_command::AddOptions {
                 verbose,
                 dry_run,
                 force,
             };
 
-            add::add(&repo_path, &paths, options)?;
+            add_command::add(&repo_path, &paths, options)?;
             return Ok(());
         }
         Some(Commands::Commit {
@@ -246,7 +246,7 @@ async fn main() -> Result<()> {
         }) => {
             let repo_path = resolve_repo_path(None)?;
 
-            let options = push::PushOptions {
+            let options = push_command::PushOptions {
                 verbose,
                 dry_run,
                 force,

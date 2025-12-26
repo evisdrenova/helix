@@ -59,8 +59,8 @@ impl App {
 
         let store = FsObjectStore::new(repo_path);
         let commit_storage = CommitStore::new(repo_path, store)?;
-        let current_branch = crate::branch::get_current_branch(repo_path).unwrap_or_default();
-        let branch_names = crate::branch::get_all_branches(repo_path)?;
+        let current_branch = crate::branch_command::get_current_branch(repo_path).unwrap_or_default();
+        let branch_names = crate::branch_command::get_all_branches(repo_path)?;
 
         let mut branches = Vec::new();
 
@@ -211,7 +211,7 @@ impl App {
     pub fn checkout_branch(&mut self) -> Result<()> {
         if let Some(branch) = self.selected_branch() {
             if !branch.is_current {
-                crate::branch::switch_branch(&self.repo_path, &branch.name)?;
+                crate::branch_command::switch_branch(&self.repo_path, &branch.name)?;
                 self.should_quit = true;
             }
         }
@@ -226,10 +226,10 @@ impl App {
             }
 
             let branch_name = branch.name.clone();
-            crate::branch::delete_branch(
+            crate::branch_command::delete_branch(
                 &self.repo_path,
                 &branch_name,
-                crate::branch::BranchOptions {
+                crate::branch_command::BranchOptions {
                     force: true,
                     ..Default::default()
                 },
@@ -247,10 +247,10 @@ impl App {
     }
 
     pub fn create_branch(&mut self, name: String) -> Result<()> {
-        crate::branch::create_branch(
+        crate::branch_command::create_branch(
             &self.repo_path,
             &name,
-            crate::branch::BranchOptions::default(),
+            crate::branch_command::BranchOptions::default(),
         )?;
 
         // Reload branches
@@ -261,11 +261,11 @@ impl App {
     pub fn rename_branch(&mut self, new_name: String) -> Result<()> {
         if let Some(branch) = self.selected_branch() {
             let old_name = branch.name.clone();
-            crate::branch::rename_branch(
+            crate::branch_command::rename_branch(
                 &self.repo_path,
                 &old_name,
                 &new_name,
-                crate::branch::BranchOptions::default(),
+                crate::branch_command::BranchOptions::default(),
             )?;
 
             // Reload branches

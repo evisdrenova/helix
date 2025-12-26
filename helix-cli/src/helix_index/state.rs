@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use ini::Ini;
 use std::path::Path;
 
-use crate::init::create_directory_structure;
+use crate::init_command::create_directory_structure;
 
 const SECTION_PREFIX: &str = "branch";
 

@@ -80,10 +80,9 @@ use std::{
     fs,
     io::{stdin, BufRead},
     path::Path,
-    time::Instant,
 };
 
-use crate::helix_index::{self, sync::SyncEngine, Header, Writer};
+use crate::helix_index::{sync::SyncEngine, Header, Writer};
 
 pub fn init_helix_repo(repo_path: &Path, auto: Option<String>) -> Result<()> {
     create_directory_structure(repo_path)?;
@@ -136,17 +135,10 @@ pub fn detect_git_with_reader<R: BufRead>(
 }
 
 fn import_from_git(repo_path: &Path) -> Result<()> {
-    let start = Instant::now();
-
     let sync = SyncEngine::new(repo_path);
     sync.import_from_git()
         .context("Failed to import Git index")?;
 
-    let elapsed = start.elapsed();
-    let reader = helix_index::Reader::new(repo_path);
-    let index_data = reader
-        .read()
-        .context("Failed to read newly created helix index")?;
     Ok(())
 }
 
@@ -314,7 +306,7 @@ mod tests {
             .current_dir(path)
             .output()?;
         let yes = "y";
-        crate::init::init_helix_repo(path, Some(yes.to_string()))?;
+        crate::init_command::init_helix_repo(path, Some(yes.to_string()))?;
 
         Ok(())
     }

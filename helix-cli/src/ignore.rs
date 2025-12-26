@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
-use crate::init::HelixConfig;
+use crate::init_command::HelixConfig;
 
 /// Ignore rules from multiple sources with clear precedence:
 /// 1. Built-in patterns (always apply)

@@ -9,7 +9,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::push::{read_remote_tracking, resolve_remote_and_ref, write_remote_tracking};
+use crate::push_command::{read_remote_tracking, resolve_remote_and_ref, write_remote_tracking};
 
 // update to use the pull_handshake fucntion similar to push_handshake
 pub async fn pull(repo_path: &PathBuf, remote_name: &str, branch: &str) -> Result<()> {

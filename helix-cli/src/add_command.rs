@@ -432,7 +432,7 @@ mod tests {
             .output()?;
 
         // Initialize helix
-        crate::init::init_helix_repo(path, None)?;
+        crate::init_command::init_helix_repo(path, None)?;
 
         Ok(())
     }

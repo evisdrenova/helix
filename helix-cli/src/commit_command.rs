@@ -18,7 +18,7 @@ use crate::helix_index::api::HelixIndexData;
 use crate::helix_index::commit::{Commit, CommitStore};
 use crate::helix_index::format::EntryFlags;
 use crate::helix_index::tree::TreeBuilder;
-use crate::init::HelixConfig;
+use crate::init_command::HelixConfig;
 use anyhow::{Context, Result};
 use helix_protocol::hash::{hash_to_hex, hex_to_hash, Hash};
 use helix_protocol::storage::FsObjectStore;
@@ -370,7 +370,7 @@ mod tests {
             .output()?;
 
         // Initialize helix
-        crate::init::init_helix_repo(path, None)?;
+        crate::init_command::init_helix_repo(path, None)?;
 
         // Set author in config
         let config_path = path.join("helix.toml");

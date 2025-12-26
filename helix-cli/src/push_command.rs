@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use tokio::task;
 
 use crate::handshake::push_handshake;
-use crate::init::HelixConfig;
+use crate::init_command::HelixConfig;
 
 pub struct PushOptions {
     pub verbose: bool,

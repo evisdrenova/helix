@@ -8,7 +8,7 @@ use tempfile::TempDir;
 
 fn init_test_repo(path: &Path) -> Result<()> {
     // Initialize pure Helix repo (no Git needed)
-    helix_cli::init::init_helix_repo(path, None)?;
+    helix_cli::init_command::init_helix_repo(path, None)?;
 
     // Set up author config
     let config_path = path.join("helix.toml");
@@ -34,7 +34,7 @@ fn test_helix_index_created_on_add() -> Result<()> {
     fs::write(temp_dir.path().join("file2.txt"), "content2")?;
 
     // Use helix add command
-    use helix_cli::add::{add, AddOptions};
+    use helix_cli::add_command::{add, AddOptions};
     use std::path::PathBuf;
 
     add(
@@ -67,7 +67,7 @@ fn test_stage_unstage_workflow() -> Result<()> {
     // Create and add file
     fs::write(temp_dir.path().join("file1.txt"), "content")?;
 
-    use helix_cli::add::{add, AddOptions};
+    use helix_cli::add_command::{add, AddOptions};
     use helix_cli::helix_index::api::HelixIndexData;
     use std::path::PathBuf;
 
@@ -113,7 +113,7 @@ fn test_index_persistence_and_reload() -> Result<()> {
     // Create and stage files
     fs::write(temp_dir.path().join("file1.txt"), "content")?;
 
-    use helix_cli::add::{add, AddOptions};
+    use helix_cli::add_command::{add, AddOptions};
     use helix_cli::helix_index::api::HelixIndexData;
     use std::path::PathBuf;
 
@@ -155,7 +155,7 @@ fn test_commit_workflow() -> Result<()> {
     // Create and stage file
     fs::write(temp_dir.path().join("file1.txt"), "content")?;
 
-    use helix_cli::add::{add, AddOptions};
+    use helix_cli::add_command::{add, AddOptions};
     use helix_cli::commit_command::{commit, CommitOptions};
     use helix_cli::helix_index::api::HelixIndexData;
     use std::path::PathBuf;
@@ -208,7 +208,7 @@ fn test_second_commit_workflow() -> Result<()> {
     let temp_dir = TempDir::new()?;
     init_test_repo(temp_dir.path())?;
 
-    use helix_cli::add::{add, AddOptions};
+    use helix_cli::add_command::{add, AddOptions};
     use helix_cli::commit_command::{commit, CommitOptions};
     use std::path::PathBuf;
 
@@ -276,7 +276,7 @@ fn test_blob_deduplication() -> Result<()> {
     fs::write(temp_dir.path().join("file1.txt"), "same content")?;
     fs::write(temp_dir.path().join("file2.txt"), "same content")?;
 
-    use helix_cli::add::{add, AddOptions};
+    use helix_cli::add_command::{add, AddOptions};
     use helix_cli::helix_index::api::HelixIndexData;
     use std::path::PathBuf;
 
@@ -337,7 +337,7 @@ fn test_stage_all_unstage_all() -> Result<()> {
     fs::write(temp_dir.path().join("file2.txt"), "content2")?;
     fs::write(temp_dir.path().join("file3.txt"), "content3")?;
 
-    use helix_cli::add::{add, AddOptions};
+    use helix_cli::add_command::{add, AddOptions};
     use helix_cli::helix_index::api::HelixIndexData;
     use std::path::PathBuf;
 
