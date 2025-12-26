@@ -65,7 +65,7 @@ This file is intentionally read-only with respect to Git: it never mutates
 under `.helix/` and `helix.toml`.
 */
 
-use super::commit::{Commit as Helix_Commit, CommitStorage};
+use super::commit::Commit as Helix_Commit;
 use super::format::{Entry, EntryFlags, Header};
 use super::reader::Reader;
 use super::state::set_branch_upstream;
@@ -1554,10 +1554,10 @@ mod tests {
         let main_pb = ProgressBar::new_spinner();
         let store = FsObjectStore::new(temp_dir.path());
         syncer.import_git_commits(&store, &main_pb)?;
-        let commit_reader = CommitStorage::new(temp_dir.path());
+        let commit_reader = CommitStore::new(temp_dir.path(), store)?;
 
         assert_eq!(
-            commit_reader.list_all()?.len(),
+            commit_reader.list_commits()?.len(),
             0,
             "Empty repo should have no commits"
         );
@@ -1582,10 +1582,10 @@ mod tests {
         let store = FsObjectStore::new(temp_dir.path());
         syncer.import_git_commits(&store, &main_pb)?;
 
-        let commit_reader = CommitStorage::for_repo(temp_dir.path());
+        let commit_reader = CommitStore::new(temp_dir.path(), store)?;
 
-        let commits = &commit_reader.list_all()?;
-        let first_commit = commit_reader.read(&commits[0])?;
+        let commits = &commit_reader.list_commits()?;
+        let first_commit = commit_reader.read_commit(&commits[0])?;
         assert_eq!(first_commit.message, "Initial commit\n");
         assert!(
             first_commit.parents.is_empty(),
@@ -1609,12 +1609,12 @@ mod tests {
         let main_pb = ProgressBar::new_spinner();
         let store = FsObjectStore::new(repo_dir);
         syncer.import_git_commits(&store, &main_pb)?;
-        let commit_reader = CommitStorage::for_repo(repo_dir);
-        let commits = &commit_reader.list_all()?;
+        let commit_reader = CommitStore::new(repo_dir, store)?;
+        let commits = &commit_reader.list_commits()?;
 
         let mut commits: Vec<_> = commits
             .iter()
-            .map(|hash| commit_reader.read(hash).unwrap())
+            .map(|hash| commit_reader.read_commit(hash).unwrap())
             .collect();
 
         commits.sort_by_key(|c| c.commit_time);
@@ -1873,10 +1873,10 @@ mod tests {
             .expect("git→helix map should contain HEAD commit");
 
         // And it should match the stored commit's hash
-        let commit_storage = CommitStorage::for_repo(repo);
-        let hashes = commit_storage.list_all()?;
+        let loader = CommitStore::new(repo, store)?;
+        let hashes = loader.list_commits()?;
         assert_eq!(hashes.len(), 1);
-        let stored_commit = commit_storage.read(&hashes[0])?;
+        let stored_commit = loader.read_commit(&hashes[0])?;
         assert_eq!(
             &stored_commit.commit_hash, helix_hash_from_map,
             "map value should match stored commit hash"
@@ -1992,6 +1992,7 @@ mod tests {
         Ok(map)
     }
 
+    use crate::helix_index::commit::CommitStore;
     use crate::helix_index::state::get_branch_upstream;
 
     #[test]

@@ -15,12 +15,13 @@
 // helix commit -m "Message" --allow-empty      # Empty commit
 
 use crate::helix_index::api::HelixIndexData;
-use crate::helix_index::commit::{Commit, CommitStorage};
+use crate::helix_index::commit::{Commit, CommitStore};
 use crate::helix_index::format::EntryFlags;
 use crate::helix_index::tree::TreeBuilder;
 use crate::init::HelixConfig;
 use anyhow::{Context, Result};
 use helix_protocol::hash::{hash_to_hex, hex_to_hash, Hash};
+use helix_protocol::storage::FsObjectStore;
 use std::fs;
 use std::path::Path;
 use std::time::Instant;
@@ -48,6 +49,8 @@ impl Default for CommitOptions {
 /// Create a commit from staged files
 pub fn commit(repo_path: &Path, options: CommitOptions) -> Result<Hash> {
     let start = Instant::now();
+    let store = FsObjectStore::new(repo_path);
+    let loader = CommitStore::new(repo_path, store)?;
 
     // Validate message
     if options.message.trim().is_empty() {
@@ -104,8 +107,7 @@ pub fn commit(repo_path: &Path, options: CommitOptions) -> Result<Hash> {
     // Check if tree would be same as HEAD (no changes)
     if !options.allow_empty && !options.amend {
         if let Some(head_hash) = head_commit_hash {
-            let commit_storage = CommitStorage::for_repo(repo_path);
-            let head_commit_obj = commit_storage.read(&head_hash)?;
+            let head_commit_obj = loader.read_commit(&head_hash)?;
 
             if tree_hash == head_commit_obj.tree_hash {
                 anyhow::bail!("No changes to commit. The tree is identical to HEAD.");
@@ -113,34 +115,22 @@ pub fn commit(repo_path: &Path, options: CommitOptions) -> Result<Hash> {
         }
     }
 
-    // Get author
     let author = if let Some(author) = options.author {
         author
     } else {
         get_author(repo_path)?
     };
 
-    // Create commit using the helix_index/commit.rs structure
     let commit = if options.amend {
-        // Amend previous commit
         let head_hash = head_commit_hash.unwrap();
-        let commit_storage = CommitStorage::for_repo(repo_path);
-        let prev_commit = commit_storage.read(&head_hash)?;
+        let prev_commit = loader.read_commit(&head_hash)?;
 
-        // ✅ Use Commit::new() with correct signature
-        Commit::new(
-            tree_hash,
-            prev_commit.parents, // Keep original parents
-            author,              // committer (same as author)
-            options.message,
-        )
+        Commit::new(tree_hash, prev_commit.parents, author, options.message)
     } else if let Some(parent_hash) = head_commit_hash {
         // Normal commit with parent
-        //  Use Commit::with_parent() helper
         Commit::with_parent(tree_hash, parent_hash, author, options.message)
     } else {
         // Initial commit
-        // ✅ Use Commit::initial() helper
         Commit::initial(tree_hash, author, options.message)
     };
 
@@ -149,14 +139,11 @@ pub fn commit(repo_path: &Path, options: CommitOptions) -> Result<Hash> {
         println!("Writing commit object...");
     }
 
-    let commit_storage = CommitStorage::for_repo(repo_path);
-
-    // ✅ The commit.hash is already computed by Commit::new()
-    let commit_hash = commit.hash();
+    let commit_hash = commit.get_hash();
 
     // Write to storage (returns the same hash)
-    commit_storage
-        .write(&commit)
+    loader
+        .write_commit(&commit)
         .context("Failed to write commit")?;
 
     if options.verbose {
@@ -441,12 +428,13 @@ mod tests {
         )?;
 
         // Verify commit exists
-        let commit_storage = CommitStorage::for_repo(repo_path);
-        let commit_obj = commit_storage.read(&commit_hash)?;
+        let store = FsObjectStore::new(temp_dir.path());
+        let commit_reader = CommitStore::new(temp_dir.path(), store)?;
+        let commit_obj = commit_reader.read_commit(&commit_hash)?;
 
         assert_eq!(commit_obj.message, "Initial commit");
         assert!(commit_obj.is_initial());
-        assert_eq!(commit_obj.hash(), commit_hash);
+        assert_eq!(commit_obj.get_hash(), commit_hash);
 
         // Verify HEAD points to commit
         let head_hash = read_head(repo_path)?;
@@ -483,8 +471,9 @@ mod tests {
         )?;
 
         // Verify second commit has first as parent
-        let commit_storage = CommitStorage::for_repo(repo_path);
-        let second_commit = commit_storage.read(&second_hash)?;
+        let store = FsObjectStore::new(temp_dir.path());
+        let commit_reader = CommitStore::new(temp_dir.path(), store)?;
+        let second_commit = commit_reader.read_commit(&second_hash)?;
 
         assert_eq!(second_commit.parents.len(), 1);
         assert_eq!(second_commit.parents[0], first_hash);
@@ -598,8 +587,9 @@ mod tests {
             },
         )?;
 
-        let commit_storage = CommitStorage::for_repo(repo_path);
-        let commit_obj = commit_storage.read(&commit_hash)?;
+        let store = FsObjectStore::new(temp_dir.path());
+        let commit_reader = CommitStore::new(temp_dir.path(), store)?;
+        let commit_obj = commit_reader.read_commit(&commit_hash)?;
 
         assert_eq!(commit_obj.message, "Empty commit");
 
@@ -640,8 +630,9 @@ mod tests {
             },
         )?;
 
-        let commit_storage = CommitStorage::for_repo(repo_path);
-        let commit_obj = commit_storage.read(&commit_hash)?;
+        let store = FsObjectStore::new(temp_dir.path());
+        let commit_reader = CommitStore::new(temp_dir.path(), store)?;
+        let commit_obj = commit_reader.read_commit(&commit_hash)?;
 
         assert_eq!(commit_obj.author, "Custom Author <custom@example.com>");
 

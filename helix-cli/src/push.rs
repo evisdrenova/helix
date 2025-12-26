@@ -57,8 +57,6 @@ pub async fn push(
         println!("  new_target = {}", hash_to_hex(&new_target));
     }
 
-    println!("checking if remote server is available..");
-
     push_handshake(
         &remote_url,
         &repo_path.file_name().unwrap_or_default().to_string_lossy(),
@@ -67,8 +65,6 @@ pub async fn push(
         old_target,
     )
     .await?;
-
-    println!("remote server is available, gathering files to send..");
 
     if options.dry_run {
         println!("(dry run) Would push from {} to {}", remote_name, branch);
@@ -130,8 +126,6 @@ pub async fn push(
 
     let status = resp.status();
     let bytes = resp.bytes().await?;
-
-    println!("as utf8 string: {}", String::from_utf8_lossy(&bytes));
 
     let mut cursor = Cursor::new(bytes.to_vec());
 

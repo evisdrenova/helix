@@ -4,14 +4,14 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use helix_protocol::hash;
+use helix_protocol::{hash, storage::FsObjectStore};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::Path;
 
 use super::ui;
-use crate::helix_index::commit::{Commit, CommitLoader, CommitStorage};
+use crate::helix_index::commit::{Commit, CommitStore};
 use crate::helix_index::state::get_branch_upstream;
 
 #[derive(Debug)]
@@ -32,7 +32,7 @@ pub struct App {
     pub should_quit: bool,
     pub repo_path: std::path::PathBuf,
     pub repo_name: String,
-    pub commit_storage: CommitStorage,
+    pub commit_storage: CommitStore,
     pub visible_height: usize,
     pub checkout_mode: bool,
     pub delete_mode: bool,
@@ -57,7 +57,8 @@ impl App {
             .unwrap_or("unknown")
             .to_string();
 
-        let commit_storage = CommitStorage::for_repo(repo_path);
+        let store = FsObjectStore::new(repo_path);
+        let commit_storage = CommitStore::new(repo_path, store)?;
         let current_branch = crate::branch::get_current_branch(repo_path).unwrap_or_default();
         let branch_names = crate::branch::get_all_branches(repo_path)?;
 
@@ -71,7 +72,7 @@ impl App {
             let (last_commit_hash, last_commit, commit_count) =
                 if let Ok(hash_hex) = std::fs::read_to_string(&branch_ref_path) {
                     if let Ok(commit_hash) = hash::hex_to_hash(hash_hex.trim()) {
-                        if let Ok(commit) = commit_storage.read(&commit_hash) {
+                        if let Ok(commit) = commit_storage.read_commit(&commit_hash) {
                             let count = count_commits(&commit_storage, &commit_hash);
                             (Some(commit_hash), Some(commit), count)
                         } else {
@@ -179,9 +180,9 @@ impl App {
 
         // Only load if we haven't already cached this branch's commits.
         if !self.branch_commit_lists.contains_key(&branch_name) {
-            let loader = CommitLoader::new(&self.repo_path)?;
-            // You said you'll wire this up – assume it exists:
-            let commits = loader.load_commits_for_branch(&branch_name, 200)?;
+            let commits = self
+                .commit_storage
+                .load_commits_for_branch(&branch_name, 200)?;
             self.branch_commit_lists.insert(branch_name, commits);
         }
 
@@ -520,7 +521,7 @@ impl App {
     }
 }
 
-fn count_commits(storage: &CommitStorage, start_hash: &[u8; 32]) -> usize {
+fn count_commits(storage: &CommitStore, start_hash: &[u8; 32]) -> usize {
     let mut count = 0;
     let mut to_visit = vec![*start_hash];
     let mut seen = HashSet::new();
@@ -532,7 +533,7 @@ fn count_commits(storage: &CommitStorage, start_hash: &[u8; 32]) -> usize {
 
         count += 1;
 
-        if let Ok(commit) = storage.read(&hash) {
+        if let Ok(commit) = storage.read_commit(&hash) {
             for parent in &commit.parents {
                 to_visit.push(*parent);
             }

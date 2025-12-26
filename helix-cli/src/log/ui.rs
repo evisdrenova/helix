@@ -198,7 +198,7 @@ fn create_timeline_item(commit: &Commit, is_selected: bool) -> ListItem {
         Span::raw("   "),
         Span::styled(&commit.author, Style::default().fg(author_color)),
         Span::raw(" · "),
-        Span::styled(commit.short_hash(), Style::default().fg(Color::Green)),
+        Span::styled(commit.get_short_hash(), Style::default().fg(Color::Green)),
     ]);
 
     let max_len = 45;
@@ -298,7 +298,7 @@ fn format_commit_details(commit: &Commit) -> Text<'static> {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
-        Span::styled(commit.short_hash(), Style::default().fg(Color::Green)),
+        Span::styled(commit.get_short_hash(), Style::default().fg(Color::Green)),
         Span::raw(" ("),
         Span::styled(
             hash_to_hex(&commit.commit_hash),

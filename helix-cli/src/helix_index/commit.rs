@@ -1,19 +1,8 @@
-// Commit objects - Immutable snapshots with metadata
-// defines the commits structure that we store in the ./helix folder
-
-// PURE HELIX COMMITS:
-// - BLAKE3 hashes (not SHA-1)
-// - Zstd compression (not zlib)
-// - Tree reference (root tree hash)
-// - Parent commit(s) for history
-// - Author/committer metadata
-// - Commit message
-//
-// Storage: .helix/objects/commits/{BLAKE3_HASH}
-
 use anyhow::{Context, Result};
+use chrono::DateTime;
 use helix_protocol::hash::{hash_bytes, hash_to_hex, hex_to_hash, Hash};
-use rayon::prelude::*;
+use helix_protocol::message::ObjectType;
+use helix_protocol::storage::FsObjectStore;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -21,8 +10,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Commit - represents a snapshot in history
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Commit {
-    pub commit_hash: Hash,  // Commit hash
-    pub tree_hash: Hash,    // Root tree hash
+    pub commit_hash: Hash,  // hash of the entire commit objects
+    pub tree_hash: Hash,    // hash of the entire root tree
     pub parents: Vec<Hash>, // Parent commit hash(es) - empty for initial commit, 1 for normal, 2+ for merge
     pub author: String,     // Author name and email
     pub author_time: u64,   // Author timestamp (seconds since Unix epoch)
@@ -53,7 +42,7 @@ impl Commit {
         commit
     }
 
-    /// Compute hash from commit content (for internal use)
+    /// Compute hash from commit content
     pub fn compute_hash(&self) -> Hash {
         let bytes = self.to_bytes_without_hash();
         hash_bytes(&bytes)
@@ -76,6 +65,7 @@ impl Commit {
 
         // Author length (2 bytes)
         bytes.extend_from_slice(&(self.author.len() as u16).to_le_bytes());
+
         // Author (variable)
         bytes.extend_from_slice(self.author.as_bytes());
 
@@ -120,12 +110,12 @@ impl Commit {
     }
 
     /// Get commit hash (already computed)
-    pub fn hash(&self) -> Hash {
+    pub fn get_hash(&self) -> Hash {
         self.commit_hash
     }
 
     /// Get short hash (first 8 hex characters)
-    pub fn short_hash(&self) -> String {
+    pub fn get_short_hash(&self) -> String {
         let hex = hash_to_hex(&self.commit_hash);
         hex[..8].to_string()
     }
@@ -281,240 +271,97 @@ impl Commit {
     }
 }
 
-/// Format Unix timestamp as UTC in RFC3339 format
-/// Format Unix timestamp for display
+/// Format Unix timestamp as a human-readable UTC string
 pub fn format_timestamp(timestamp: u64) -> String {
-    use std::time::{Duration, UNIX_EPOCH};
+    let datetime = DateTime::from_timestamp(timestamp as i64, 0).unwrap_or_default();
 
-    let duration = Duration::from_secs(timestamp);
-    let datetime = UNIX_EPOCH + duration;
-
-    // Simple formatting (in production, use chrono)
-    format!("{:?}", datetime)
+    datetime.format("%m/%d/%y %H:%M:%S").to_string()
 }
 
-/// Commit storage - stores commits in .helix/objects/commits/
-pub struct CommitStorage {
-    commits_dir: PathBuf,
-}
-
-impl CommitStorage {
-    pub fn new(helix_dir: &Path) -> Self {
-        Self {
-            commits_dir: helix_dir.join("objects").join("commits"),
-        }
-    }
-
-    pub fn for_repo(repo_path: &Path) -> Self {
-        Self::new(&repo_path.join(".helix"))
-    }
-
-    /// Write commit to storage (with compression)
-    pub fn write(&self, commit: &Commit) -> Result<Hash> {
-        // Ensure directory exists
-        fs::create_dir_all(&self.commits_dir).context("Failed to create commits directory")?;
-
-        // Serialize commit
-        let commit_bytes = commit.to_bytes();
-
-        // Compress with Zstd
-        let compressed =
-            zstd::encode_all(&commit_bytes[..], 3).context("Failed to compress commit")?;
-
-        // Compute hash
-        let hash = hash_bytes(&commit_bytes);
-
-        // Write to storage (atomic)
-        let commit_path = self.commit_path(&hash);
-        if commit_path.exists() {
-            // Already stored (deduplication)
-            return Ok(hash);
-        }
-
-        let temp_path = commit_path.with_extension("tmp");
-        fs::write(&temp_path, &compressed)
-            .with_context(|| format!("Failed to write commit to {:?}", temp_path))?;
-        fs::rename(temp_path, &commit_path).context("Failed to rename commit file")?;
-
-        Ok(hash)
-    }
-
-    /// Read commit from storage
-    pub fn read(&self, hash: &Hash) -> Result<Commit> {
-        let commit_path = self.commit_path(hash);
-
-        if !commit_path.exists() {
-            anyhow::bail!("Commit not found: {:?}", hash);
-        }
-
-        // Read compressed data
-        let compressed = fs::read(&commit_path)
-            .with_context(|| format!("Failed to read commit from {:?}", commit_path))?;
-
-        // Decompress
-        let commit_bytes =
-            zstd::decode_all(&compressed[..]).context("Failed to decompress commit")?;
-
-        // Deserialize
-        Commit::from_bytes(&commit_bytes)
-    }
-
-    /// Check if commit exists
-    pub fn exists(&self, hash: &Hash) -> bool {
-        self.commit_path(hash).exists()
-    }
-
-    /// Delete commit
-    pub fn delete(&self, hash: &Hash) -> Result<()> {
-        let commit_path = self.commit_path(hash);
-        if commit_path.exists() {
-            fs::remove_file(&commit_path)
-                .with_context(|| format!("Failed to delete commit {:?}", commit_path))?;
-        }
-        Ok(())
-    }
-
-    /// List all commits
-    pub fn list_all(&self) -> Result<Vec<Hash>> {
-        if !self.commits_dir.exists() {
-            println!("the commit path does not exist");
-            return Ok(Vec::new());
-        }
-
-        let mut hashes = Vec::new();
-
-        for entry in fs::read_dir(&self.commits_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-
-            if path.is_file() {
-                if let Some(filename) = path.file_name() {
-                    if let Some(filename_str) = filename.to_str() {
-                        if filename_str.len() == 64 {
-                            // BLAKE3 hash in hex
-                            if let Ok(hash) = hex_to_hash(filename_str) {
-                                hashes.push(hash);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(hashes)
-    }
-
-    fn commit_path(&self, hash: &Hash) -> PathBuf {
-        let hex = hash_to_hex(hash);
-        self.commits_dir.join(hex)
-    }
-
-    /// Write multiple commits in parallel (batch operation)
-    pub fn write_batch(&self, commits: &[Commit]) -> Result<Vec<Hash>> {
-        // Ensure directory exists
-        fs::create_dir_all(&self.commits_dir).context("Failed to create commits directory")?;
-
-        // Write all commits in parallel
-        commits
-            .par_iter()
-            .map(|commit| self.write(commit))
-            .collect()
-    }
-
-    /// Read multiple commits in parallel (batch operation)
-    pub fn read_batch(&self, hashes: &[Hash]) -> Result<Vec<Commit>> {
-        hashes.par_iter().map(|hash| self.read(hash)).collect()
-    }
-
-    /// Check if multiple commits exist in parallel
-    pub fn exists_batch(&self, hashes: &[Hash]) -> Vec<bool> {
-        hashes.par_iter().map(|hash| self.exists(hash)).collect()
-    }
-}
-
-/// Batch commit operations helper
-pub struct CommitBatch<'a> {
-    storage: &'a CommitStorage,
-}
-
-impl<'a> CommitBatch<'a> {
-    pub fn new(storage: &'a CommitStorage) -> Self {
-        Self { storage }
-    }
-
-    /// Write all commits (parallel)
-    pub fn write_all(&self, commits: &[Commit]) -> Result<Vec<Hash>> {
-        self.storage.write_batch(commits)
-    }
-
-    /// Read all commits (parallel)
-    pub fn read_all(&self, hashes: &[Hash]) -> Result<Vec<Commit>> {
-        self.storage.read_batch(hashes)
-    }
-
-    /// Check existence of all commits (parallel)
-    pub fn exists_all(&self, hashes: &[Hash]) -> Vec<bool> {
-        self.storage.exists_batch(hashes)
-    }
-}
-
-/// Load commits from Helix repository
-pub struct CommitLoader {
+pub struct CommitStore {
     repo_path: PathBuf,
-    storage: CommitStorage,
+    objects: FsObjectStore,
 }
 
-impl CommitLoader {
-    pub fn new(repo_path: &Path) -> Result<Self> {
+// A wrapper around the FsObjectStore with specific methods for reading and writing commits to the store
+impl CommitStore {
+    pub fn new(repo_path: &Path, objects: FsObjectStore) -> Result<Self> {
         let helix_dir = repo_path.join(".helix");
         if !helix_dir.exists() {
             anyhow::bail!("Not a Helix repository (no .helix directory found)");
         }
 
-        let storage = CommitStorage::for_repo(repo_path);
-
         Ok(Self {
             repo_path: repo_path.to_path_buf(),
-            storage,
+            objects,
         })
+    }
+
+    /// Write a commit to storage
+    pub fn write_commit(&self, commit: &Commit) -> Result<Hash> {
+        let bytes = commit.to_bytes();
+        self.objects.write_object(&ObjectType::Commit, &bytes)
+    }
+
+    /// Read a commit from storage
+    pub fn read_commit(&self, hash: &Hash) -> Result<Commit> {
+        let bytes = self.objects.read_object(&ObjectType::Commit, hash)?;
+        Commit::from_bytes(&bytes)
+    }
+
+    /// Check if commit exists
+    pub fn commit_exists(&self, hash: &Hash) -> bool {
+        self.objects.has_object(&ObjectType::Commit, hash)
+    }
+
+    /// List all commit hashes
+    pub fn list_commits(&self) -> Result<Vec<Hash>> {
+        self.objects.list_object_hashes(&ObjectType::Commit)
+    }
+
+    /// Write multiple commits in parallel
+    pub fn write_commits_batch(&self, commits: &[Commit]) -> Result<Vec<Hash>> {
+        let bytes: Vec<Vec<u8>> = commits.iter().map(|c| c.to_bytes()).collect();
+        self.objects
+            .write_objects_batch(&ObjectType::Commit, &bytes)
+    }
+
+    /// Read multiple commits in parallel
+    pub fn read_commits_batch(&self, hashes: &[Hash]) -> Result<Vec<Commit>> {
+        let bytes = self
+            .objects
+            .read_objects_batch(&ObjectType::Commit, hashes)?;
+        bytes.iter().map(|b| Commit::from_bytes(b)).collect()
     }
 
     /// Load commits starting from HEAD
     pub fn load_commits(&self, limit: usize) -> Result<Vec<Commit>> {
         let mut commits = Vec::new();
 
-        // Read HEAD
         let head_hash = match self.read_head() {
             Ok(hash) => hash,
-            Err(_) => {
-                // No commits yet
-                return Ok(commits);
-            }
+            Err(_) => return Ok(commits),
         };
 
-        // Walk commit history
         let mut current_hash = head_hash;
         let mut visited = std::collections::HashSet::new();
 
         while commits.len() < limit {
-            // Prevent infinite loops
             if !visited.insert(current_hash) {
                 break;
             }
 
-            // Load commit
-            let commit = match self.storage.read(&current_hash) {
+            let commit = match self.read_commit(&current_hash) {
                 Ok(c) => c,
                 Err(_) => break,
             };
 
-            // Move to parent
             if commit.is_initial() {
                 commits.push(commit);
                 break;
             }
 
-            let next_hash = commit.parents[0]; // Follow first parent
+            let next_hash = commit.parents[0];
             commits.push(commit);
             current_hash = next_hash;
         }
@@ -608,10 +455,10 @@ impl CommitLoader {
 
         while commits.len() < limit {
             if !visited.insert(current_hash) {
-                break; // cycle guard
+                break;
             }
 
-            let commit = match self.storage.read(&current_hash) {
+            let commit = match self.read_commit(&current_hash) {
                 Ok(c) => c,
                 Err(_) => break,
             };
@@ -623,7 +470,6 @@ impl CommitLoader {
                 break;
             }
 
-            // follow first parent only for the “mainline” view
             current_hash = commits.last().unwrap().parents[0];
         }
 
@@ -637,7 +483,7 @@ impl CommitLoader {
         None
     }
 
-    /// Checkout a commit (placeholder)
+    /// TODO:Checkout a commit
     pub fn checkout_commit(&self, commit_hash: &Hash, branch_name: Option<&str>) -> Result<()> {
         // TODO: Implement checkout
         // For now, just update HEAD
@@ -675,6 +521,16 @@ impl CommitLoader {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    fn setup_test_repo(temp_dir: &TempDir) -> Result<(FsObjectStore, CommitStore)> {
+        // Create .helix directory so CommitStore doesn't fail
+        let helix_dir = temp_dir.path().join(".helix");
+        fs::create_dir_all(&helix_dir)?;
+
+        let objects = FsObjectStore::new(temp_dir.path());
+        let loader = CommitStore::new(temp_dir.path(), objects.clone())?;
+        Ok((objects, loader))
+    }
 
     #[test]
     fn test_commit_serialization() {
@@ -738,13 +594,13 @@ mod tests {
 
         let commit2 = commit1.clone();
 
-        assert_eq!(commit1.hash(), commit2.hash());
+        assert_eq!(commit1.get_hash(), commit2.get_hash());
     }
 
     #[test]
     fn test_commit_storage_write_read() -> Result<()> {
         let temp_dir = TempDir::new()?;
-        let storage = CommitStorage::new(temp_dir.path());
+        let (_, loader) = setup_test_repo(&temp_dir)?;
 
         let commit = Commit::initial(
             [1u8; 32],
@@ -752,8 +608,8 @@ mod tests {
             "Initial commit".to_string(),
         );
 
-        let hash = storage.write(&commit)?;
-        let read_commit = storage.read(&hash)?;
+        let hash = loader.write_commit(&commit)?;
+        let read_commit = loader.read_commit(&hash)?;
 
         assert_eq!(read_commit.tree_hash, commit.tree_hash);
         assert_eq!(read_commit.message, commit.message);
@@ -764,7 +620,7 @@ mod tests {
     #[test]
     fn test_commit_storage_deduplication() -> Result<()> {
         let temp_dir = TempDir::new()?;
-        let storage = CommitStorage::new(temp_dir.path());
+        let (_, loader) = setup_test_repo(&temp_dir)?;
 
         let commit = Commit::initial(
             [1u8; 32],
@@ -772,12 +628,12 @@ mod tests {
             "Initial commit".to_string(),
         );
 
-        let hash1 = storage.write(&commit)?;
-        let hash2 = storage.write(&commit)?;
+        let hash1 = loader.write_commit(&commit)?;
+        let hash2 = loader.write_commit(&commit)?;
 
         assert_eq!(hash1, hash2);
 
-        let all_commits = storage.list_all()?;
+        let all_commits = loader.list_commits()?;
         assert_eq!(all_commits.len(), 1);
 
         Ok(())
@@ -786,7 +642,7 @@ mod tests {
     #[test]
     fn test_commit_storage_exists() -> Result<()> {
         let temp_dir = TempDir::new()?;
-        let storage = CommitStorage::new(temp_dir.path());
+        let (_, loader) = setup_test_repo(&temp_dir)?;
 
         let commit = Commit::initial(
             [1u8; 32],
@@ -794,30 +650,10 @@ mod tests {
             "Initial commit".to_string(),
         );
 
-        let hash = storage.write(&commit)?;
+        let hash = loader.write_commit(&commit)?;
 
-        assert!(storage.exists(&hash));
-        assert!(!storage.exists(&[255u8; 32]));
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_commit_storage_delete() -> Result<()> {
-        let temp_dir = TempDir::new()?;
-        let storage = CommitStorage::new(temp_dir.path());
-
-        let commit = Commit::initial(
-            [1u8; 32],
-            "John Doe <john@example.com>".to_string(),
-            "Initial commit".to_string(),
-        );
-
-        let hash = storage.write(&commit)?;
-        assert!(storage.exists(&hash));
-
-        storage.delete(&hash)?;
-        assert!(!storage.exists(&hash));
+        assert!(loader.commit_exists(&hash));
+        assert!(!loader.commit_exists(&[255u8; 32]));
 
         Ok(())
     }
@@ -825,8 +661,7 @@ mod tests {
     #[test]
     fn test_commit_batch_operations() -> Result<()> {
         let temp_dir = TempDir::new()?;
-        let storage = CommitStorage::new(temp_dir.path());
-        let batch = CommitBatch::new(&storage);
+        let (_, loader) = setup_test_repo(&temp_dir)?;
 
         // Create commits
         let commits: Vec<Commit> = (0..10)
@@ -840,15 +675,11 @@ mod tests {
             .collect();
 
         // Write all
-        let hashes = batch.write_all(&commits)?;
+        let hashes = loader.write_commits_batch(&commits)?;
         assert_eq!(hashes.len(), 10);
 
-        // Check existence
-        let exists = batch.exists_all(&hashes);
-        assert!(exists.iter().all(|&e| e));
-
         // Read all
-        let read_commits = batch.read_all(&hashes)?;
+        let read_commits = loader.read_commits_batch(&hashes)?;
         assert_eq!(read_commits.len(), 10);
 
         // Verify content

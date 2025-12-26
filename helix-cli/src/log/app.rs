@@ -4,8 +4,8 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use helix_cli::helix_index::commit::{Commit, CommitLoader};
-use helix_protocol::hash::Hash;
+use helix_cli::helix_index::commit::{Commit, CommitStore};
+use helix_protocol::{hash::Hash, storage::FsObjectStore};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
 use std::path::Path;
@@ -20,7 +20,7 @@ pub struct App {
     pub current_branch_name: String,
     pub should_quit: bool,
     pub split_ratio: f32,
-    pub loader: CommitLoader,
+    pub loader: CommitStore,
     pub total_loaded: usize,
     pub repo_name: String,
     pub remote_branch: Option<String>,
@@ -38,7 +38,8 @@ pub struct App {
 
 impl App {
     pub fn new(repo_path: &Path) -> Result<Self> {
-        let loader = CommitLoader::new(repo_path)?;
+        let store = FsObjectStore::new(repo_path);
+        let loader = CommitStore::new(repo_path, store)?;
         let current_branch_name = loader.get_current_branch_name()?;
 
         let commits = loader.load_commits(50)?;
@@ -377,7 +378,7 @@ impl App {
                         KeyCode::Char('c') => {
                             if let Some(commit) = self.get_selected_commit() {
                                 let hash = commit.commit_hash;
-                                let short_hash = commit.short_hash();
+                                let short_hash = commit.get_short_hash();
                                 self.branch_name_mode = true;
                                 self.pending_checkout_hash = Some(hash);
                                 self.branch_name_input = format!("checkout-{}", short_hash);

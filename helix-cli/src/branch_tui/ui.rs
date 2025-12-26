@@ -345,7 +345,7 @@ fn draw_branch_commit_list(f: &mut Frame, area: Rect, branch: &super::app::Branc
                 .iter()
                 .enumerate()
                 .map(|(idx, c)| CommitListEntry {
-                    short_hash: c.short_hash(),
+                    short_hash: c.get_short_hash(),
                     summary: c.summary().to_string(),
                     author: c.author.clone(),
                     timestamp: c.commit_time,

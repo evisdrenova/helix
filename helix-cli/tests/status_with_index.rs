@@ -1,4 +1,5 @@
 use anyhow::Result;
+use helix_cli::helix_index::commit::CommitStore;
 use helix_protocol::message::ObjectType;
 use helix_protocol::storage::FsObjectStore;
 use std::fs;
@@ -182,9 +183,9 @@ fn test_commit_workflow() -> Result<()> {
     )?;
 
     // Verify commit was created
-    use helix_cli::helix_index::commit::CommitStorage;
-    let storage = CommitStorage::for_repo(temp_dir.path());
-    let commit_obj = storage.read(&commit_hash)?;
+    let store = FsObjectStore::new(temp_dir.path());
+    let storage = CommitStore::new(temp_dir.path(), store)?;
+    let commit_obj = storage.read_commit(&commit_hash)?;
 
     assert_eq!(commit_obj.message, "Initial commit");
     assert!(commit_obj.is_initial()); // No parents
@@ -209,7 +210,6 @@ fn test_second_commit_workflow() -> Result<()> {
 
     use helix_cli::add::{add, AddOptions};
     use helix_cli::commit::{commit, CommitOptions};
-    use helix_cli::helix_index::commit::CommitStorage;
     use std::path::PathBuf;
 
     // First commit
@@ -251,13 +251,14 @@ fn test_second_commit_workflow() -> Result<()> {
     )?;
 
     // Verify commit chain
-    let storage = CommitStorage::for_repo(temp_dir.path());
+    let store = FsObjectStore::new(temp_dir.path());
+    let storage = CommitStore::new(temp_dir.path(), store)?;
 
-    let commit1 = storage.read(&commit1_hash)?;
+    let commit1 = storage.read_commit(&commit1_hash)?;
     assert!(commit1.is_initial());
     assert_eq!(commit1.message, "First commit");
 
-    let commit2 = storage.read(&commit2_hash)?;
+    let commit2 = storage.read_commit(&commit2_hash)?;
     assert!(!commit2.is_initial());
     assert_eq!(commit2.parents.len(), 1);
     assert_eq!(commit2.parents[0], commit1_hash);
