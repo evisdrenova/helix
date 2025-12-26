@@ -156,7 +156,7 @@ fn test_commit_workflow() -> Result<()> {
     fs::write(temp_dir.path().join("file1.txt"), "content")?;
 
     use helix_cli::add::{add, AddOptions};
-    use helix_cli::commit::{commit, CommitOptions};
+    use helix_cli::commit_command::{commit, CommitOptions};
     use helix_cli::helix_index::api::HelixIndexData;
     use std::path::PathBuf;
 
@@ -209,7 +209,7 @@ fn test_second_commit_workflow() -> Result<()> {
     init_test_repo(temp_dir.path())?;
 
     use helix_cli::add::{add, AddOptions};
-    use helix_cli::commit::{commit, CommitOptions};
+    use helix_cli::commit_command::{commit, CommitOptions};
     use std::path::PathBuf;
 
     // First commit

@@ -1,6 +1,6 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use helix_cli::add::{add, AddOptions};
-use helix_cli::commit::{commit, CommitOptions};
+use helix_cli::commit_command::{commit, CommitOptions};
 use helix_cli::helix_index::api::HelixIndexData;
 use helix_cli::helix_index::tree::TreeBuilder;
 use helix_cli::helix_index::Reader;

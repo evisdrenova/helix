@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use helix_cli::{
-    add, branch, commit,
+    add, branch, commit_command,
     init::init_helix_repo,
     pull::pull,
     push::{self, push},
@@ -217,7 +217,7 @@ async fn main() -> Result<()> {
 
             if let Some(msg) = message {
                 // Commit with message
-                let options = commit::CommitOptions {
+                let options = commit_command::CommitOptions {
                     message: msg,
                     author,
                     allow_empty,
@@ -225,10 +225,10 @@ async fn main() -> Result<()> {
                     verbose,
                 };
 
-                commit::commit(&repo_path, options)?;
+                commit_command::commit(&repo_path, options)?;
             } else {
                 // No message provided - show what would be committed
-                commit::show_staged(&repo_path)?;
+                commit_command::show_staged(&repo_path)?;
                 eprintln!();
                 eprintln!("Aborting commit due to empty commit message.");
                 eprintln!("Use 'helix commit -m <message>' to commit.");

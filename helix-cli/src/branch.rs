@@ -342,7 +342,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::commit::{commit, CommitOptions};
+    use crate::commit_command::{commit, CommitOptions};
     use crate::init::init_helix_repo;
     use tempfile::TempDir;
 
