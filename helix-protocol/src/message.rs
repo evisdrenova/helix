@@ -26,6 +26,7 @@ pub enum RpcMessage {
 
     PullRequest(PullRequest),
     PullObject(PullObject),
+    PullResponse(PullResponse),
     PullDone,
     PullAck(PullAck),
 
@@ -81,6 +82,11 @@ pub struct PullObject {
     pub object_type: ObjectType,
     pub hash: Hash,
     pub data: Vec<u8>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PullResponse {
+    pub remote_head: Option<Hash>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

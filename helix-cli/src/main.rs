@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use helix_cli::{
     add_command, branch_command, commit_command,
     init_command::init_helix_repo,
-    pull_command::pull,
+    pull_command::{self, pull},
     push_command::{self, push},
 };
 use std::path::{Path, PathBuf};
@@ -110,6 +110,12 @@ enum Commands {
         remote: String,
         /// Branch name (e.g., "main")
         branch: String,
+        /// Show verbose output
+        #[arg(short, long)]
+        verbose: bool,
+        /// Dry run (show what would be pushed)
+        #[arg(short = 'n', long)]
+        dry_run: bool,
     },
 }
 
@@ -255,10 +261,17 @@ async fn main() -> Result<()> {
             push(&repo_path, &remote, &branch, options).await?;
             return Ok(());
         }
-        Some(Commands::Pull { remote, branch }) => {
+        Some(Commands::Pull {
+            remote,
+            branch,
+            verbose,
+            dry_run,
+        }) => {
             let repo_path = resolve_repo_path(None)?;
 
-            pull(&repo_path, &remote, &branch).await?;
+            let options = pull_command::PullOptions { verbose, dry_run };
+
+            pull(&repo_path, &remote, &branch, options).await?;
             return Ok(());
         }
         None => {
