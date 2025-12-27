@@ -10,8 +10,6 @@ pub async fn push_handler(
     State(state): State<Arc<AppState>>,
     body: axum::body::Bytes,
 ) -> impl IntoResponse {
-    println!(">>> /rpc/push called, body size = {}", body.len());
-
     let mut cursor = Cursor::new(body.to_vec());
 
     let mut out_buf = Vec::<u8>::new();

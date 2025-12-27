@@ -111,7 +111,7 @@ pub async fn pull(
 
     let mut cursor = Cursor::new(bytes.to_vec());
 
-    // Process the response: HelloAck, then FetchObjects, then FetchDone, then FetchAck
+    // Process the response: HelloAck, then PullObjects, then PullDone, then PullAck
     // Skip HelloAck
     match read_message(&mut cursor)? {
         RpcMessage::PullAck(_) => {
@@ -184,12 +184,11 @@ pub async fn pull(
         }
     }
 
-    // Read FetchAck
     let new_remote_head = match read_message(&mut cursor) {
         Ok(RpcMessage::PullAck(ack)) => {
             if options.verbose {
                 println!(
-                    "FetchAck: {} objects sent, new head: {}",
+                    "PullAck: {} objects sent, new head: {}",
                     ack.sent_objects,
                     hash_to_hex(&ack.new_remote_head)
                 );

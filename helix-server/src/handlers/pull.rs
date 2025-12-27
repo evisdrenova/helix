@@ -13,20 +13,20 @@ pub async fn pull_handler(
     let mut cursor = Cursor::new(body.to_vec());
     let mut buf = Vec::<u8>::new();
 
-    let fetch_req = match handle_handshake(
+    let pull_req = match handle_handshake(
         &mut cursor,
         &mut buf,
         |m| match m {
             RpcMessage::PullRequest(req) => Some(req),
             _ => None,
         },
-        "FetchRequest",
+        "PullRequest",
     ) {
         Ok(req) => req,
         Err(response) => return response,
     };
 
-    let ref_name = fetch_req.ref_name;
+    let ref_name = pull_req.ref_name;
 
     let remote_head = match state.refs.get_ref(&ref_name) {
         Ok(Some(v)) => v,

@@ -4,7 +4,9 @@
 use crate::handlers::utils::respond_err;
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
-use helix_protocol::message::{read_message, write_message, PushResponse, RpcMessage};
+use helix_protocol::message::{
+    read_message, write_message, PullRequest, PullResponse, PushResponse, RpcMessage,
+};
 use helix_server::app_state::AppState;
 use std::io::Cursor;
 use std::sync::Arc;
@@ -41,7 +43,28 @@ pub async fn handshake_handler(
 
             Ok(out)
         }
-        // handle push request here here
+        RpcMessage::PullRequest(PullRequest {
+            ref_name,
+            last_known_remote: _,
+            ..
+        }) => {
+            let mut out = Vec::new();
+
+            // For now we just return the current remote head.
+            // Later you can use last_known_remote to decide if the client is already up-to-date,
+            // or to send "need these objects" hints.
+            let remote_head = state
+                .refs
+                .get_ref(&ref_name)
+                .map_err(|e| respond_err(500, format!("get_ref failed: {e}")))?;
+
+            let reply = RpcMessage::PullResponse(PullResponse { remote_head });
+
+            write_message(&mut out, &reply)
+                .map_err(|e| respond_err(500, format!("Failed to write PullResponse: {e}")))?;
+
+            Ok(out)
+        }
         other => Err(respond_err(400, format!("Unexpected message: {:?}", other))),
     }
 }
