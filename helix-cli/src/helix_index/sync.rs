@@ -84,6 +84,7 @@ use helix_protocol::message::ObjectType;
 use helix_protocol::storage::FsObjectStore;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
+use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -434,9 +435,8 @@ impl SyncEngine {
 
         let mut config: HelixConfig = if helix_toml_path.exists() {
             let content = fs::read_to_string(&helix_toml_path)?;
-            toml::from_str(&content).map_err(|e| {
-            anyhow::anyhow!("Failed to parse helix.toml. To avoid data loss, remotes will not be updated: {}", e)
-        })?
+            toml::from_str(&content)
+                .map_err(|e| anyhow::anyhow!("Failed to parse helix.toml: {}", e))?
         } else {
             HelixConfig {
                 user: None,
@@ -449,6 +449,26 @@ impl SyncEngine {
             map: HashMap::new(),
         });
 
+        // Regex to capture the host and path from SSH-style URLs
+        // Handles: git@github.com:user/repo.git AND ssh://git@github.com/user/repo.git
+        let ssh_re = Regex::new(r"^(?:ssh://)?git@(?P<host>[^:/]+)[:/](?P<path>.+)$").unwrap();
+
+        let mut format_url = |url: String| -> String {
+            // 1. Convert SSH to HTTPS if applicable
+            let processed_url = if let Some(caps) = ssh_re.captures(&url) {
+                format!("https://{}/{}", &caps["host"], &caps["path"])
+            } else {
+                url
+            };
+
+            // 2. Ensure https:// prefix and remove http://
+            if processed_url.starts_with("https://") {
+                processed_url
+            } else {
+                format!("https://{}", processed_url.trim_start_matches("http://"))
+            }
+        };
+
         let mut imported_count = 0;
         for remote_name in &remote_names {
             let name_str = remote_name.as_ref();
@@ -457,21 +477,24 @@ impl SyncEngine {
                 _ => continue,
             };
 
+            // Process Pull
             if let Some(pull_url) = remote.url(gix::remote::Direction::Fetch) {
-                remotes_table.map.insert(
-                    format!("{}_pull", name_str),
-                    pull_url.to_bstring().to_string(),
-                );
+                let url_str = pull_url.to_bstring().to_string();
+                remotes_table
+                    .map
+                    .insert(format!("{}_pull", name_str), format_url(url_str));
             }
 
+            // Process Push
             let push_url = remote
                 .url(gix::remote::Direction::Push)
                 .or_else(|| remote.url(gix::remote::Direction::Fetch));
 
             if let Some(url) = push_url {
+                let url_str = url.to_bstring().to_string();
                 remotes_table
                     .map
-                    .insert(format!("{}_push", name_str), url.to_bstring().to_string());
+                    .insert(format!("{}_push", name_str), format_url(url_str));
                 imported_count += 1;
             }
         }
@@ -965,9 +988,8 @@ impl SyncEngine {
     fn build_helix_tree_from_recorder(
         &self,
         recorder: gix::traverse::tree::Recorder,
-        repo: &gix::Repository, // ← ADD THIS PARAMETER
+        repo: &gix::Repository,
     ) -> Result<Hash> {
-        // let blob_storage = BlobStorage::create_blob_storage(&self.repo_path);
         let blob_storage = FsObjectStore::new(&self.repo_path);
 
         // Convert gix records to Helix Entry format

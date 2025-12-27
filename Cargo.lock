@@ -1984,6 +1984,7 @@ dependencies = [
  "notify",
  "ratatui",
  "rayon",
+ "regex",
  "reqwest",
  "rust-ini",
  "serde",
