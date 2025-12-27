@@ -73,6 +73,7 @@ use super::tree::TreeBuilder;
 use super::writer::Writer;
 use crate::ignore::IgnoreRules;
 use crate::index::GitIndex;
+use crate::init_command::{HelixConfig, IgnoreSection, RemotesTable};
 use anyhow::{Context, Result};
 use console::style;
 use gix::revision::walk::Sorting;
@@ -417,14 +418,12 @@ impl SyncEngine {
         Ok(())
     }
 
-    fn import_git_remotes(&self) -> Result<(usize)> {
+    fn import_git_remotes(&self) -> Result<usize> {
         let repo = gix::open(&self.repo_path)?;
-
-        // Get remote names
         let remote_names: Vec<_> = repo
             .remote_names()
             .into_iter()
-            .filter_map(|name_result| Some(name_result))
+            .filter_map(|n| Some(n))
             .collect();
 
         if remote_names.is_empty() {
@@ -433,101 +432,56 @@ impl SyncEngine {
 
         let helix_toml_path = self.repo_path.join("helix.toml");
 
-        // Read existing file
-        let mut content = if helix_toml_path.exists() {
-            fs::read_to_string(&helix_toml_path)?
+        let mut config: HelixConfig = if helix_toml_path.exists() {
+            let content = fs::read_to_string(&helix_toml_path)?;
+            toml::from_str(&content).map_err(|e| {
+            anyhow::anyhow!("Failed to parse helix.toml. To avoid data loss, remotes will not be updated: {}", e)
+        })?
         } else {
-            return Ok(0); // If no helix.toml, skip
+            HelixConfig {
+                user: None,
+                remotes: None,
+                ignore: IgnoreSection::default(),
+            }
         };
 
-        // Build remote entries
-        let mut remote_lines = Vec::new();
+        let remotes_table = config.remotes.get_or_insert_with(|| RemotesTable {
+            map: HashMap::new(),
+        });
 
+        let mut imported_count = 0;
         for remote_name in &remote_names {
-            let remote_name_str = remote_name.as_ref();
-
-            // Find the remote in the Git config
-            let remote = match repo.find_remote(remote_name_str) {
+            let name_str = remote_name.as_ref();
+            let remote = match repo.find_remote(name_str) {
                 Ok(r) => r,
-                Err(e) => {
-                    eprintln!(
-                        "Warning: Could not find remote '{}': {}",
-                        remote_name_str, e
-                    );
-                    continue;
-                }
+                _ => continue,
             };
 
-            // Get fetch URL (for pull)
-            if let Some(fetch_url) = remote.url(gix::remote::Direction::Fetch) {
-                remote_lines.push(format!("{}_pull = \"{}\"", remote_name_str, fetch_url));
+            if let Some(pull_url) = remote.url(gix::remote::Direction::Fetch) {
+                remotes_table.map.insert(
+                    format!("{}_pull", name_str),
+                    pull_url.to_bstring().to_string(),
+                );
             }
 
-            // Get push URL
-            if let Some(push_url) = remote.url(gix::remote::Direction::Push) {
-                remote_lines.push(format!("{}_push = \"{}\"", remote_name_str, push_url));
-            } else if let Some(fetch_url) = remote.url(gix::remote::Direction::Fetch) {
-                // If no explicit push URL, use fetch URL
-                remote_lines.push(format!("{}_push = \"{}\"", remote_name_str, fetch_url));
+            let push_url = remote
+                .url(gix::remote::Direction::Push)
+                .or_else(|| remote.url(gix::remote::Direction::Fetch));
+
+            if let Some(url) = push_url {
+                remotes_table
+                    .map
+                    .insert(format!("{}_push", name_str), url.to_bstring().to_string());
+                imported_count += 1;
             }
         }
 
-        if remote_lines.is_empty() {
-            return Ok(0);
+        if imported_count > 0 {
+            let updated_content = toml::to_string_pretty(&config)?;
+            fs::write(&helix_toml_path, updated_content)?;
         }
 
-        // Find the [remotes] section
-        if let Some(remotes_start) = content.find("[remotes]") {
-            // Find the end of the [remotes] line
-            let section_header_end = remotes_start + "[remotes]".len();
-
-            // Find where content after [remotes] starts (skip to next line)
-            let content_start = content[section_header_end..]
-                .find('\n')
-                .map(|pos| section_header_end + pos + 1)
-                .unwrap_or(section_header_end);
-
-            // Find the next section (starts with '[')
-            let remaining = &content[content_start..];
-            let next_section_offset = remaining
-                .lines()
-                .enumerate()
-                .find(|(_, line)| line.trim_start().starts_with('['))
-                .map(|(idx, _)| {
-                    // Calculate byte offset to the start of that line
-                    remaining
-                        .lines()
-                        .take(idx)
-                        .map(|l| l.len() + 1) // +1 for newline
-                        .sum::<usize>()
-                });
-
-            let next_section_pos = if let Some(offset) = next_section_offset {
-                content_start + offset
-            } else {
-                content.len()
-            };
-
-            // Build the new content
-            let before_section = &content[..section_header_end];
-            let after_section = &content[next_section_pos..];
-
-            // Combine: before + newline + our remotes + newline + after
-            content = format!(
-                "{}\n{}\n\n{}",
-                before_section,
-                remote_lines.join("\n"),
-                after_section.trim_start()
-            );
-        } else {
-            // [remotes] section doesn't exist, append it
-            content.push_str(&format!("\n[remotes]\n{}\n", remote_lines.join("\n")));
-        }
-
-        // Write back
-        fs::write(&helix_toml_path, content)?;
-
-        Ok(remote_names.len())
+        Ok(imported_count)
     }
 
     fn import_git_tags(&self, git_hash_to_helix_hash: &HashMap<Vec<u8>, [u8; 32]>) -> Result<()> {
@@ -568,7 +522,7 @@ impl SyncEngine {
         Ok(())
     }
 
-    fn import_git_index(&self, store: &FsObjectStore) -> Result<(usize)> {
+    fn import_git_index(&self, store: &FsObjectStore) -> Result<usize> {
         let git_index_path = self.repo_path.join(".git/index");
 
         // Handle brand-new repo with no .git/index yet, return new empty Helix index
@@ -908,7 +862,7 @@ impl SyncEngine {
         // Build Helix commits in oldest to newest order
         let mut helix_commits: Vec<Helix_Commit> = Vec::with_capacity(collected_git_commits.len());
 
-        for (i, (git_id_bytes, git_commit)) in collected_git_commits.into_iter().enumerate() {
+        for (_i, (git_id_bytes, git_commit)) in collected_git_commits.into_iter().enumerate() {
             let helix_commit = self.build_helix_commit_from_git_commit(
                 &git_commit,
                 &repo,

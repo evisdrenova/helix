@@ -410,7 +410,6 @@ fn collect_files_from_directory(dir: &Path, repo_root: &Path) -> Result<Vec<Path
 mod tests {
     use super::*;
     use crate::helix_index::{EntryFlags, Reader};
-    use git2::Object;
     use std::fs;
     use std::process::Command;
     use tempfile::TempDir;

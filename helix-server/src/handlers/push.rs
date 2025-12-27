@@ -82,7 +82,6 @@ pub async fn push_handler(
         return respond_err(500, format!("Failed to update ref: {e}"));
     }
 
-    // Write PushAck to `out`
     let ack = RpcMessage::PushAck(PushAck { received_objects });
     if let Err(e) = write_message(&mut out_buf, &ack) {
         return respond_err(500, format!("Failed to encode PushAck: {e}"));
