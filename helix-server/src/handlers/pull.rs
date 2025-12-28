@@ -15,8 +15,6 @@ pub async fn pull_handler(
     let mut cursor = Cursor::new(body.to_vec());
     let mut buf = Vec::<u8>::new();
 
-    println!("incoming pull request");
-
     let pull_req = match handle_handshake(
         &mut cursor,
         &mut buf,
@@ -61,9 +59,9 @@ pub async fn pull_handler(
     if pull_req.last_known_remote == Some(remote_head) {
         let ack = RpcMessage::PullAck(PullAck {
             sent_objects: 0,
-            new_remote_head: [0u8; 32],
-            up_to_date: false,
-            ref_not_found: true,
+            new_remote_head: remote_head,
+            up_to_date: true,
+            ref_not_found: false,
         });
         if let Err(e) = write_message(&mut buf, &ack) {
             return respond_err(500, format!("Failed to encode PullAck: {e}"));
