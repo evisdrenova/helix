@@ -93,6 +93,7 @@ pub struct PullResponse {
 pub struct PullAck {
     pub sent_objects: u64,
     pub new_remote_head: Hash,
+    pub up_to_date: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -2,9 +2,9 @@ use anyhow::{bail, Context, Result};
 use helix_protocol::hash::hash_to_hex;
 use helix_protocol::message::{read_message, write_message, Hello, PullRequest, RpcMessage};
 use helix_protocol::storage::FsObjectStore;
-use std::{fs, io::Cursor, path::PathBuf};
+use rayon::prelude::*;
+use std::{fs, io::Cursor, path::Path};
 
-use crate::handshake::pull_handshake;
 use crate::push_command::{read_remote_tracking, resolve_remote_and_ref, write_remote_tracking};
 
 pub struct PullOptions {
@@ -22,7 +22,7 @@ impl Default for PullOptions {
 }
 
 pub async fn pull(
-    repo_path: &PathBuf,
+    repo_path: &Path,
     remote_name: &str,
     branch: &str,
     options: PullOptions,
@@ -32,8 +32,6 @@ pub async fn pull(
     }
 
     let (remote_url, ref_name) = resolve_remote_and_ref(repo_path, remote_name, branch)?;
-
-    // What we last knew about the remote (if anything)
     let last_known_remote = read_remote_tracking(repo_path, remote_name, branch).ok();
 
     if options.verbose {
@@ -47,37 +45,18 @@ pub async fn pull(
         );
     }
 
-    // Handshake to see what the server has
-    let remote_head = pull_handshake(
-        &remote_url,
-        &repo_path.file_name().unwrap_or_default().to_string_lossy(),
-        &ref_name,
-        last_known_remote,
-    )
-    .await?;
-
-    // Check if we're already up to date
-    if let Some(remote_hash) = remote_head {
-        if last_known_remote == Some(remote_hash) {
-            println!("Already up to date.");
-            return Ok(());
-        }
-    } else {
-        println!("Remote branch {} does not exist.", branch);
-        return Ok(());
-    }
-
     if options.dry_run {
-        println!("(dry run) Would pull from {} to {}", remote_name, branch);
+        println!("(dry run) Would pull from {}/{}", remote_name, branch);
         return Ok(());
     }
 
+    // Build request
     let mut buf = Vec::new();
 
     write_message(
         &mut buf,
         &RpcMessage::Hello(Hello {
-            client_version: "helix-cli-mvp".into(),
+            client_version: "helix-cli".into(),
         }),
     )?;
 
@@ -90,105 +69,97 @@ pub async fn pull(
                 .to_string_lossy()
                 .into_owned(),
             ref_name: ref_name.clone(),
-            last_known_remote: last_known_remote,
+            last_known_remote,
         }),
     )?;
 
+    // Send request
     let client = reqwest::Client::new();
     let resp = client
         .post(format!("{remote_url}/rpc/pull"))
         .body(buf)
         .send()
         .await
-        .with_context(|| "Connection to server lost during data transfer.")?;
+        .with_context(|| "Connection to server lost")?;
 
     let status = resp.status();
-    let bytes = resp.bytes().await?;
-
     if !status.is_success() {
-        bail!("Server returned error status: {}", status);
+        bail!("Server returned error: {}", status);
     }
 
+    let bytes = resp.bytes().await?;
     let mut cursor = Cursor::new(bytes.to_vec());
 
-    // Process the response: HelloAck, then PullObjects, then PullDone, then PullAck
-    // Skip HelloAck
-    match read_message(&mut cursor)? {
-        RpcMessage::PullAck(_) => {
-            if options.verbose {
-                println!("Received HelloAck from server");
-            }
-        }
-        RpcMessage::Error(err) => {
-            bail!("Remote error {}: {}", err.code, err.message);
-        }
-        other => {
-            bail!("Expected HelloAck, got {:?}", other);
-        }
-    }
-
+    // Collect objects for parallel writes
     let store = FsObjectStore::new(repo_path);
-    let mut received_objects = 0u64;
+    let mut objects_to_write = Vec::new();
 
     loop {
         match read_message(&mut cursor) {
             Ok(RpcMessage::PullObject(obj)) => {
                 // Verify hash
-                let computed_hash = blake3::hash(&obj.data);
-                if computed_hash.as_bytes() != &obj.hash {
+                let computed = blake3::hash(&obj.data);
+                if computed.as_bytes() != &obj.hash {
                     bail!(
-                        "Hash mismatch for received object: expected {}, got {}",
+                        "Hash mismatch: expected {}, got {}",
                         hash_to_hex(&obj.hash),
-                        hex::encode(computed_hash.as_bytes())
+                        hex::encode(computed.as_bytes())
                     );
                 }
 
-                // Write object to local store
-                if !store.has_object(&obj.object_type, &obj.hash) {
-                    store
-                        .write_object_with_hash(&obj.object_type, &obj.hash, &obj.data)
-                        .with_context(|| {
-                            format!(
-                                "Failed to write {:?} object {}",
-                                obj.object_type,
-                                hash_to_hex(&obj.hash)
-                            )
-                        })?;
-                }
+                objects_to_write.push(obj);
 
-                received_objects += 1;
-
-                if options.verbose {
-                    println!(
-                        "  Received {:?}: {}",
-                        obj.object_type,
-                        &hash_to_hex(&obj.hash)[..8]
-                    );
+                if options.verbose && objects_to_write.len() % 100 == 0 {
+                    println!("  Received {} objects...", objects_to_write.len());
                 }
             }
             Ok(RpcMessage::PullDone) => {
                 if options.verbose {
-                    println!("Received FetchDone");
+                    println!("Received PullDone");
                 }
                 break;
             }
+            Ok(RpcMessage::PullAck(ack)) => {
+                if ack.up_to_date {
+                    println!("Already up to date.");
+                    return Ok(());
+                }
+                // Otherwise unexpected before PullDone
+                bail!("Unexpected PullAck before PullDone");
+            }
             Ok(RpcMessage::Error(err)) => {
-                bail!("Remote error during fetch: {} - {}", err.code, err.message);
+                bail!("Server error: {} - {}", err.code, err.message);
             }
             Ok(other) => {
-                bail!("Unexpected message during fetch: {:?}", other);
+                bail!("Unexpected message: {:?}", other);
             }
             Err(e) => {
-                bail!("Error reading message during fetch: {}", e);
+                bail!("Error reading message: {}", e);
             }
         }
     }
 
+    // Write objects in parallel
+    let object_count = objects_to_write.len();
+    if options.verbose {
+        println!("Writing {} objects to store...", object_count);
+    }
+
+    objects_to_write
+        .par_iter()
+        .try_for_each(|obj| -> Result<()> {
+            if !store.has_object(&obj.object_type, &obj.hash) {
+                store.write_object_with_hash(&obj.object_type, &obj.hash, &obj.data)?;
+            }
+            Ok(())
+        })?;
+
+    // Read final PullAck
     let new_remote_head = match read_message(&mut cursor) {
         Ok(RpcMessage::PullAck(ack)) => {
             if options.verbose {
                 println!(
-                    "PullAck: {} objects sent, new head: {}",
+                    "PullAck: {} objects, new head: {}",
                     ack.sent_objects,
                     hash_to_hex(&ack.new_remote_head)
                 );
@@ -196,20 +167,19 @@ pub async fn pull(
             ack.new_remote_head
         }
         Ok(RpcMessage::Error(err)) => {
-            bail!("Remote error in FetchAck: {} - {}", err.code, err.message);
+            bail!("Server error: {} - {}", err.code, err.message);
         }
         Ok(other) => {
-            bail!("Expected FetchAck, got {:?}", other);
+            bail!("Expected PullAck, got {:?}", other);
         }
         Err(e) => {
-            bail!("Error reading FetchAck: {}", e);
+            bail!("Error reading PullAck: {}", e);
         }
     };
 
-    // Update remote tracking ref
+    // Update refs
     write_remote_tracking(repo_path, remote_name, branch, new_remote_head)?;
 
-    // Update local branch ref to point to the new head
     let local_ref_path = repo_path.join(".helix").join(&ref_name);
     if let Some(parent) = local_ref_path.parent() {
         fs::create_dir_all(parent)?;
@@ -218,10 +188,10 @@ pub async fn pull(
 
     println!(
         "Pulled {} objects from {}/{}",
-        received_objects, remote_name, branch
+        object_count, remote_name, branch
     );
     println!(
-        "Updated {} to {}",
+        "Updated {} -> {}",
         ref_name,
         &hash_to_hex(&new_remote_head)[..8]
     );
