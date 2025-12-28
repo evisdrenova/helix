@@ -21,7 +21,7 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/rpc/handshake", post(handshake_handler))
         .route("/rpc/push", post(push_handler))
-        .route("/rpc/fetch", post(pull_handler))
+        .route("/rpc/pull", post(pull_handler))
         .with_state(state);
 
     let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();

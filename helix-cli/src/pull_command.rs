@@ -122,14 +122,15 @@ pub async fn pull(
                 break;
             }
             Ok(RpcMessage::PullAck(ack)) => {
-                // Server sends PullAck directly for up-to-date or empty cases
-                if ack.up_to_date {
-                    println!("Already up to date.");
+                if ack.ref_not_found {
+                    println!(
+                        "Remote branch '{}' does not exist on '{}'.",
+                        branch, remote_name
+                    );
                     return Ok(());
                 }
-                // If sent_objects is 0 but not up_to_date, branch might not exist
-                if ack.sent_objects == 0 {
-                    println!("Remote branch {} has no commits.", branch);
+                if ack.up_to_date {
+                    println!("Already up to date.");
                     return Ok(());
                 }
                 bail!("Unexpected PullAck before PullDone");

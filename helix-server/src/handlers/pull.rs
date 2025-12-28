@@ -15,6 +15,8 @@ pub async fn pull_handler(
     let mut cursor = Cursor::new(body.to_vec());
     let mut buf = Vec::<u8>::new();
 
+    println!("incoming pull request");
+
     let pull_req = match handle_handshake(
         &mut cursor,
         &mut buf,
@@ -34,7 +36,21 @@ pub async fn pull_handler(
     let remote_head = match state.refs.get_ref(ref_name) {
         Ok(Some(v)) => v,
         Ok(None) => {
-            return respond_err(404, format!("Unknown ref {ref_name}"));
+            // Ref doesn't exist - return PullAck with ref_not_found flag
+            let ack = RpcMessage::PullAck(PullAck {
+                sent_objects: 0,
+                new_remote_head: [0u8; 32],
+                up_to_date: false,
+                ref_not_found: true,
+            });
+            if let Err(e) = write_message(&mut buf, &ack) {
+                return respond_err(500, format!("Failed to encode PullAck: {e}"));
+            }
+            return axum::response::Response::builder()
+                .status(200)
+                .header("Content-Type", "application/octet-stream")
+                .body(axum::body::Body::from(buf))
+                .unwrap();
         }
         Err(e) => {
             return respond_err(500, format!("Failed to read ref: {e}"));
@@ -45,8 +61,9 @@ pub async fn pull_handler(
     if pull_req.last_known_remote == Some(remote_head) {
         let ack = RpcMessage::PullAck(PullAck {
             sent_objects: 0,
-            new_remote_head: remote_head,
-            up_to_date: true,
+            new_remote_head: [0u8; 32],
+            up_to_date: false,
+            ref_not_found: true,
         });
         if let Err(e) = write_message(&mut buf, &ack) {
             return respond_err(500, format!("Failed to encode PullAck: {e}"));
@@ -97,6 +114,7 @@ pub async fn pull_handler(
         sent_objects: objects_to_send.len() as u64,
         new_remote_head: remote_head,
         up_to_date: false,
+        ref_not_found: false,
     });
     if let Err(e) = write_message(&mut buf, &ack) {
         return respond_err(500, format!("Failed to encode PullAck: {e}"));

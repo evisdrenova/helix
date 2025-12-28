@@ -94,6 +94,7 @@ pub struct PullAck {
     pub sent_objects: u64,
     pub new_remote_head: Hash,
     pub up_to_date: bool,
+    pub ref_not_found: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
