@@ -50,7 +50,7 @@ pub async fn pull(
         return Ok(());
     }
 
-    // Build request
+    // Build pull request
     let mut buf = Vec::new();
 
     write_message(
@@ -80,7 +80,9 @@ pub async fn pull(
         .body(buf)
         .send()
         .await
-        .with_context(|| "Connection to server lost")?;
+        .with_context(|| {
+            format!("Remote server at {remote_url} is unreachable. Is the Helix server running?")
+        })?;
 
     let status = resp.status();
     if !status.is_success() {
@@ -120,11 +122,16 @@ pub async fn pull(
                 break;
             }
             Ok(RpcMessage::PullAck(ack)) => {
+                // Server sends PullAck directly for up-to-date or empty cases
                 if ack.up_to_date {
                     println!("Already up to date.");
                     return Ok(());
                 }
-                // Otherwise unexpected before PullDone
+                // If sent_objects is 0 but not up_to_date, branch might not exist
+                if ack.sent_objects == 0 {
+                    println!("Remote branch {} has no commits.", branch);
+                    return Ok(());
+                }
                 bail!("Unexpected PullAck before PullDone");
             }
             Ok(RpcMessage::Error(err)) => {
