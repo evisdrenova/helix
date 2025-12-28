@@ -214,7 +214,7 @@ impl FsRefStore {
     }
 
     fn ref_path(&self, name: &str) -> PathBuf {
-        self.root.join(".helix").join("refs").join(name)
+        self.root.join(".helix").join(name)
     }
 
     pub fn get_ref(&self, name: &str) -> Result<Option<Hash>> {
@@ -222,7 +222,7 @@ impl FsRefStore {
         if !path.exists() {
             return Ok(None);
         }
-        let s = fs::read_to_string(path)?;
+        let s = fs::read_to_string(&path)?;
         let s = s.trim();
         let bytes = hex::decode(s)?;
         let mut hash = [0u8; 32];
@@ -235,7 +235,7 @@ impl FsRefStore {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(path, hex::encode(new))?;
+        fs::write(&path, hex::encode(new))?;
         Ok(())
     }
 }
