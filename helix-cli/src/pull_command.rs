@@ -5,6 +5,7 @@ use helix_protocol::storage::FsObjectStore;
 use rayon::prelude::*;
 use std::{fs, io::Cursor, path::Path};
 
+use crate::checkout::checkout_tree;
 use crate::push_command::{read_remote_tracking, resolve_remote_and_ref, write_remote_tracking};
 
 pub struct PullOptions {
@@ -185,7 +186,6 @@ pub async fn pull(
         }
     };
 
-    // Update refs
     write_remote_tracking(repo_path, remote_name, branch, new_remote_head)?;
 
     let local_ref_path = repo_path.join(".helix").join(&ref_name);
@@ -194,13 +194,20 @@ pub async fn pull(
     }
     fs::write(&local_ref_path, hash_to_hex(&new_remote_head) + "\n")?;
 
+    // Checkout the tree to working directory
+    let checkout_opts = crate::checkout::CheckoutOptions {
+        verbose: options.verbose,
+        force: true, // Overwrite files on pull
+    };
+    let files_checked_out = checkout_tree(repo_path, &new_remote_head, &checkout_opts)?;
+
     println!(
         "Pulled {} objects from {}/{}",
         object_count, remote_name, branch
     );
     println!(
-        "Updated {} -> {}",
-        ref_name,
+        "Checked out {} files at {}",
+        files_checked_out,
         &hash_to_hex(&new_remote_head)[..8]
     );
 
