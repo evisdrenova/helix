@@ -15,21 +15,18 @@
 
 use anyhow::{Context, Result};
 use helix_protocol::hash::{hash_bytes, hash_to_hex, hex_to_hash, Hash};
+use helix_protocol::message::ObjectType;
+use helix_protocol::storage::FsObjectStore;
 use rayon::prelude::*;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Tree entry type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryType {
-    /// Regular file (File)
     File = 0,
-    /// Executable file (File with exec bit)
     FileExecutable = 1,
-    /// Subdirectory (tree)
     Tree = 2,
-    /// Symbolic link
     Symlink = 3,
 }
 
@@ -44,7 +41,6 @@ impl EntryType {
                 Self::File
             }
         } else {
-            // Default to File for unknown types
             Self::File
         }
     }
@@ -59,19 +55,14 @@ impl EntryType {
     }
 }
 
-/// Tree entry - represents a file or subdirectory
+/// Tree entry represents a file or subdirectory
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TreeEntry {
-    /// Entry name (just the filename, not full path)
-    pub name: String,
-    /// Entry type (File, tree, etc.)
-    pub entry_type: EntryType,
-    /// Object hash (BLAKE3)
-    pub oid: Hash,
-    /// File mode (Unix permissions)
-    pub mode: u32,
-    /// File size (0 for trees)
-    pub size: u64,
+    pub name: String,          // Entry name (just the filename, not full path)
+    pub entry_type: EntryType, // Entry type (File, tree, etc.)
+    pub oid: Hash,             // Object hash
+    pub mode: u32,             // File mode (Unix permissions)
+    pub size: u64,             // File size (0 for trees)
 }
 
 impl TreeEntry {
@@ -184,7 +175,7 @@ impl PartialOrd for TreeEntry {
     }
 }
 
-/// Tree - represents a directory snapshot
+/// Tree represents a directory snapshot
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tree {
     /// Entries in this tree (sorted by name)
@@ -274,296 +265,72 @@ impl Default for Tree {
 }
 
 /// Tree storage - stores trees in .helix/objects/trees/
-pub struct TreeStorage {
-    trees_dir: PathBuf,
+pub struct TreeStore {
+    objects: FsObjectStore,
 }
 
-impl TreeStorage {
-    pub fn new(helix_dir: &Path) -> Self {
-        Self {
-            trees_dir: helix_dir.join("objects").join("trees"),
-        }
+impl TreeStore {
+    pub fn new(objects: FsObjectStore) -> Self {
+        Self { objects }
     }
 
     pub fn for_repo(repo_path: &Path) -> Self {
-        Self::new(&repo_path.join(".helix"))
+        Self {
+            objects: FsObjectStore::new(repo_path),
+        }
     }
 
-    /// Write tree to storage (with compression)
+    /// Write tree to storage
     pub fn write(&self, tree: &Tree) -> Result<Hash> {
-        // Ensure directory exists
-        fs::create_dir_all(&self.trees_dir).context("Failed to create trees directory")?;
-
-        // Serialize tree
-        let tree_bytes = tree.to_bytes();
-
-        // Compress with Zstd
-        let compressed = zstd::encode_all(&tree_bytes[..], 3).context("Failed to compress tree")?;
-
-        // Compute hash
-        let hash = hash_bytes(&tree_bytes);
-
-        // Write to storage (atomic)
-        let tree_path = self.tree_path(&hash);
-        if tree_path.exists() {
-            // Already stored (deduplication)
-            return Ok(hash);
-        }
-
-        let temp_path = tree_path.with_extension("tmp");
-        fs::write(&temp_path, &compressed)
-            .with_context(|| format!("Failed to write tree to {:?}", temp_path))?;
-        fs::rename(temp_path, &tree_path).context("Failed to rename tree file")?;
-
-        Ok(hash)
+        let bytes = tree.to_bytes();
+        self.objects.write_object(&ObjectType::Tree, &bytes)
     }
 
     /// Read tree from storage
     pub fn read(&self, hash: &Hash) -> Result<Tree> {
-        let tree_path = self.tree_path(hash);
-
-        if !tree_path.exists() {
-            anyhow::bail!("Tree not found: {:?}", hash);
-        }
-
-        // Read compressed data
-        let compressed = fs::read(&tree_path)
-            .with_context(|| format!("Failed to read tree from {:?}", tree_path))?;
-
-        // Decompress
-        let tree_bytes = zstd::decode_all(&compressed[..]).context("Failed to decompress tree")?;
-
-        // Deserialize
-        Tree::from_bytes(&tree_bytes)
+        let bytes = self.objects.read_object(&ObjectType::Tree, hash)?;
+        Tree::from_bytes(&bytes)
     }
 
     /// Check if tree exists
     pub fn exists(&self, hash: &Hash) -> bool {
-        self.tree_path(hash).exists()
+        self.objects.has_object(&ObjectType::Tree, hash)
     }
 
-    /// Delete tree
-    pub fn delete(&self, hash: &Hash) -> Result<()> {
-        let tree_path = self.tree_path(hash);
-        if tree_path.exists() {
-            fs::remove_file(&tree_path)
-                .with_context(|| format!("Failed to delete tree {:?}", tree_path))?;
-        }
-        Ok(())
-    }
-
-    /// List all trees
-    /// TODO: can prob parallelize this
+    /// List all tree hashes
     pub fn list_all(&self) -> Result<Vec<Hash>> {
-        if !self.trees_dir.exists() {
-            return Ok(Vec::new());
-        }
-
-        let mut hashes = Vec::new();
-
-        for entry in fs::read_dir(&self.trees_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-
-            if path.is_file() {
-                if let Some(filename) = path.file_name() {
-                    if let Some(filename_str) = filename.to_str() {
-                        if filename_str.len() == 64 {
-                            // BLAKE3 hash in hex
-                            if let Ok(hash) = hex_to_hash(filename_str) {
-                                hashes.push(hash);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(hashes)
+        self.objects.list_object_hashes(&ObjectType::Tree)
     }
 
-    fn tree_path(&self, hash: &Hash) -> PathBuf {
-        let hex = hash_to_hex(hash);
-        self.trees_dir.join(hex)
-    }
-
-    /// Write multiple trees in parallel (batch operation)
+    /// Write multiple trees in parallel
     pub fn write_batch(&self, trees: &[Tree]) -> Result<Vec<Hash>> {
-        // Ensure directory exists
-        fs::create_dir_all(&self.trees_dir).context("Failed to create trees directory")?;
-
-        // Write all trees in parallel
-        trees.par_iter().map(|tree| self.write(tree)).collect()
+        let bytes: Vec<Vec<u8>> = trees.iter().map(|t| t.to_bytes()).collect();
+        self.objects.write_objects_batch(&ObjectType::Tree, &bytes)
     }
 
-    /// Read multiple trees in parallel (batch operation)
+    /// Read multiple trees in parallel
     pub fn read_batch(&self, hashes: &[Hash]) -> Result<Vec<Tree>> {
-        hashes.par_iter().map(|hash| self.read(hash)).collect()
+        let bytes = self.objects.read_objects_batch(&ObjectType::Tree, hashes)?;
+        bytes.iter().map(|b| Tree::from_bytes(b)).collect()
     }
 
     /// Check if multiple trees exist in parallel
     pub fn exists_batch(&self, hashes: &[Hash]) -> Vec<bool> {
-        hashes.par_iter().map(|hash| self.exists(hash)).collect()
-    }
-
-    /// Delete multiple trees in parallel
-    pub fn delete_batch(&self, hashes: &[Hash]) -> Result<()> {
-        let results: Vec<Result<()>> = hashes.par_iter().map(|hash| self.delete(hash)).collect();
-
-        // Check if any deletes failed
-        for result in results {
-            result?;
-        }
-
-        Ok(())
-    }
-}
-
-/// Batch tree operations helper
-pub struct TreeBatch<'a> {
-    storage: &'a TreeStorage,
-}
-
-impl<'a> TreeBatch<'a> {
-    pub fn new(storage: &'a TreeStorage) -> Self {
-        Self { storage }
-    }
-
-    /// Write all trees (parallel)
-    pub fn write_all(&self, trees: &[Tree]) -> Result<Vec<Hash>> {
-        self.storage.write_batch(trees)
-    }
-
-    /// Read all trees (parallel)
-    pub fn read_all(&self, hashes: &[Hash]) -> Result<Vec<Tree>> {
-        self.storage.read_batch(hashes)
-    }
-
-    /// Check existence of all trees (parallel)
-    pub fn exists_all(&self, hashes: &[Hash]) -> Vec<bool> {
-        self.storage.exists_batch(hashes)
-    }
-
-    /// Delete all trees (parallel)
-    pub fn delete_all(&self, hashes: &[Hash]) -> Result<()> {
-        self.storage.delete_batch(hashes)
+        self.objects.has_objects_batch(&ObjectType::Tree, hashes)
     }
 }
 
 /// Tree builder - constructs trees from index entries
 pub struct TreeBuilder {
-    storage: TreeStorage,
+    store: TreeStore,
 }
 
 impl TreeBuilder {
     pub fn new(repo_path: &Path) -> Self {
         Self {
-            storage: TreeStorage::for_repo(repo_path),
+            store: TreeStore::for_repo(repo_path),
         }
     }
-
-    // /// Build tree from entries (parallel)
-    // pub fn build_from_entries(
-    //     &self,
-    //     entries: &[crate::helix_index::format::Entry],
-    // ) -> Result<Hash> {
-    //     // Group entries by directory (parallel)
-    //     use std::sync::{Arc, Mutex};
-
-    //     let dir_entries: Arc<Mutex<BTreeMap<PathBuf, Vec<&crate::helix_index::format::Entry>>>> =
-    //         Arc::new(Mutex::new(BTreeMap::new()));
-
-    //     entries.par_iter().for_each(|entry| {
-    //         let parent = entry.path.parent().unwrap_or(Path::new(""));
-    //         let mut map = dir_entries.lock().unwrap();
-    //         map.entry(parent.to_path_buf())
-    //             .or_insert_with(Vec::new)
-    //             .push(entry);
-    //     });
-
-    //     let dir_entries = Arc::try_unwrap(dir_entries).unwrap().into_inner().unwrap();
-
-    //     // Build trees bottom-up with parallel writes per level
-    //     let mut tree_hashes: BTreeMap<PathBuf, Hash> = BTreeMap::new();
-
-    //     // Sort directories by depth (deepest first)
-    //     let mut dirs: Vec<_> = dir_entries.keys().cloned().collect();
-    //     dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
-
-    //     // Group directories by depth for parallel processing
-    //     let mut depth_groups: Vec<Vec<PathBuf>> = Vec::new();
-    //     let mut current_depth = None;
-    //     let mut current_group = Vec::new();
-
-    //     for dir in dirs {
-    //         let depth = dir.components().count();
-    //         if current_depth != Some(depth) {
-    //             if !current_group.is_empty() {
-    //                 depth_groups.push(std::mem::take(&mut current_group));
-    //             }
-    //             current_depth = Some(depth);
-    //         }
-    //         current_group.push(dir);
-    //     }
-    //     if !current_group.is_empty() {
-    //         depth_groups.push(current_group);
-    //     }
-
-    //     // Process each depth level in parallel
-    //     for depth_dirs in depth_groups {
-    //         let tree_hashes_ref = &tree_hashes;
-
-    //         // Build all trees at this depth in parallel
-    //         let results: Vec<(PathBuf, Hash)> = depth_dirs
-    //             .par_iter()
-    //             .map(|dir| {
-    //                 let dir_entries = dir_entries.get(dir).unwrap();
-    //                 let mut tree = Tree::new();
-
-    //                 // Add file entries
-    //                 for entry in dir_entries {
-    //                     let name = entry
-    //                         .path
-    //                         .file_name()
-    //                         .unwrap()
-    //                         .to_string_lossy()
-    //                         .to_string();
-
-    //                     tree.add_entry(TreeEntry::new_file(
-    //                         name,
-    //                         entry.oid,
-    //                         entry.file_mode,
-    //                         entry.size,
-    //                     ));
-    //                 }
-
-    //                 // Add subdirectory entries (trees from previous depth levels)
-    //                 for (subdir, subdir_hash) in tree_hashes_ref {
-    //                     if subdir.parent() == Some(dir) {
-    //                         let name = subdir.file_name().unwrap().to_string_lossy().to_string();
-    //                         tree.add_entry(TreeEntry::new_tree(name, *subdir_hash));
-    //                     }
-    //                 }
-
-    //                 // Sort and store tree
-    //                 tree.sort();
-    //                 let tree_hash = self.storage.write(&tree).unwrap();
-    //                 (dir.clone(), tree_hash)
-    //             })
-    //             .collect();
-
-    //         // Add results to tree_hashes
-    //         for (dir, hash) in results {
-    //             tree_hashes.insert(dir, hash);
-    //         }
-    //     }
-
-    //     // Return root tree hash
-    //     tree_hashes
-    //         .get(Path::new(""))
-    //         .copied()
-    //         .ok_or_else(|| anyhow::anyhow!("No root tree created"))
-    // }
 
     /// Build tree from entries (parallel)
     pub fn build_from_entries(
@@ -573,7 +340,7 @@ impl TreeBuilder {
         // Handle empty entries case
         if entries.is_empty() {
             let empty_tree = Tree::new();
-            return self.storage.write(&empty_tree);
+            return self.store.write(&empty_tree);
         }
 
         // Group entries by directory (parallel)
@@ -672,7 +439,7 @@ impl TreeBuilder {
 
                     // Sort and store tree
                     tree.sort();
-                    let tree_hash = self.storage.write(&tree).unwrap();
+                    let tree_hash = self.store.write(&tree).unwrap();
                     (dir.clone(), tree_hash)
                 })
                 .collect();
@@ -696,6 +463,12 @@ mod tests {
     use super::*;
     use crate::helix_index::format::Entry;
     use tempfile::TempDir;
+
+    fn setup_test_repo(temp_dir: &TempDir) -> Result<TreeStore> {
+        let helix_dir = temp_dir.path().join(".helix");
+        std::fs::create_dir_all(&helix_dir)?;
+        Ok(TreeStore::for_repo(temp_dir.path()))
+    }
 
     #[test]
     fn test_entry_type_from_mode() {
@@ -785,9 +558,9 @@ mod tests {
     }
 
     #[test]
-    fn test_tree_storage_write_read() -> Result<()> {
+    fn test_tree_store_write_read() -> Result<()> {
         let temp_dir = TempDir::new()?;
-        let storage = TreeStorage::new(temp_dir.path());
+        let store = setup_test_repo(&temp_dir)?;
 
         let mut tree = Tree::new();
         tree.add_entry(TreeEntry::new_file(
@@ -798,8 +571,8 @@ mod tests {
         ));
         tree.sort();
 
-        let hash = storage.write(&tree)?;
-        let read_tree = storage.read(&hash)?;
+        let hash = store.write(&tree)?;
+        let read_tree = store.read(&hash)?;
 
         assert_eq!(read_tree, tree);
 
@@ -807,9 +580,9 @@ mod tests {
     }
 
     #[test]
-    fn test_tree_storage_deduplication() -> Result<()> {
+    fn test_tree_store_deduplication() -> Result<()> {
         let temp_dir = TempDir::new()?;
-        let storage = TreeStorage::new(temp_dir.path());
+        let store = setup_test_repo(&temp_dir)?;
 
         let mut tree = Tree::new();
         tree.add_entry(TreeEntry::new_file(
@@ -819,44 +592,27 @@ mod tests {
             100,
         ));
 
-        let hash1 = storage.write(&tree)?;
-        let hash2 = storage.write(&tree)?;
+        let hash1 = store.write(&tree)?;
+        let hash2 = store.write(&tree)?;
 
         assert_eq!(hash1, hash2);
 
-        let all_trees = storage.list_all()?;
+        let all_trees = store.list_all()?;
         assert_eq!(all_trees.len(), 1);
 
         Ok(())
     }
 
     #[test]
-    fn test_tree_storage_exists() -> Result<()> {
+    fn test_tree_store_exists() -> Result<()> {
         let temp_dir = TempDir::new()?;
-        let storage = TreeStorage::new(temp_dir.path());
+        let store = setup_test_repo(&temp_dir)?;
 
         let tree = Tree::new();
-        let hash = storage.write(&tree)?;
+        let hash = store.write(&tree)?;
 
-        assert!(storage.exists(&hash));
-        assert!(!storage.exists(&[255u8; 32]));
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_tree_storage_delete() -> Result<()> {
-        let temp_dir = TempDir::new()?;
-        let storage = TreeStorage::new(temp_dir.path());
-
-        let tree = Tree::new();
-        let hash = storage.write(&tree)?;
-
-        assert!(storage.exists(&hash));
-
-        storage.delete(&hash)?;
-
-        assert!(!storage.exists(&hash));
+        assert!(store.exists(&hash));
+        assert!(!store.exists(&[255u8; 32]));
 
         Ok(())
     }
@@ -864,6 +620,7 @@ mod tests {
     #[test]
     fn test_tree_builder_simple() -> Result<()> {
         let temp_dir = TempDir::new()?;
+        std::fs::create_dir_all(temp_dir.path().join(".helix"))?;
         let builder = TreeBuilder::new(temp_dir.path());
 
         let entries = vec![
@@ -893,11 +650,9 @@ mod tests {
 
         let root_hash = builder.build_from_entries(&entries)?;
 
-        // Tree should exist
-        assert!(builder.storage.exists(&root_hash));
+        assert!(builder.store.exists(&root_hash));
 
-        // Should contain both files
-        let tree = builder.storage.read(&root_hash)?;
+        let tree = builder.store.read(&root_hash)?;
         assert_eq!(tree.entries.len(), 2);
 
         Ok(())
@@ -906,6 +661,7 @@ mod tests {
     #[test]
     fn test_tree_builder_nested() -> Result<()> {
         let temp_dir = TempDir::new()?;
+        std::fs::create_dir_all(temp_dir.path().join(".helix"))?;
         let builder = TreeBuilder::new(temp_dir.path());
 
         let entries = vec![
@@ -935,21 +691,16 @@ mod tests {
 
         let root_hash = builder.build_from_entries(&entries)?;
 
-        // Root tree should exist
-        let root_tree = builder.storage.read(&root_hash)?;
-
-        // Should contain file + dir
+        let root_tree = builder.store.read(&root_hash)?;
         assert_eq!(root_tree.entries.len(), 2);
 
-        // One should be a tree
         let dir_entry = root_tree
             .entries
             .iter()
             .find(|e| e.entry_type == EntryType::Tree)
             .unwrap();
 
-        // Dir tree should exist and contain the nested file
-        let dir_tree = builder.storage.read(&dir_entry.oid)?;
+        let dir_tree = builder.store.read(&dir_entry.oid)?;
         assert_eq!(dir_tree.entries.len(), 1);
         assert_eq!(dir_tree.entries[0].name, "nested.txt");
 
