@@ -13,13 +13,12 @@
 // - Entries are sorted by name for deterministic hashing
 // - Trees are immutable once created
 
-use anyhow::{Context, Result};
-use helix_protocol::hash::{hash_bytes, hash_to_hex, hex_to_hash, Hash};
+use anyhow::Result;
+use helix_protocol::hash::{hash_bytes, Hash};
 use helix_protocol::message::ObjectType;
 use helix_protocol::storage::FsObjectStore;
 use rayon::prelude::*;
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

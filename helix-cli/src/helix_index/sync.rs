@@ -1685,8 +1685,7 @@ mod tests {
             "Tree hash should be computed"
         );
 
-        use crate::helix_index::tree::TreeStorage;
-        let tree_storage = TreeStorage::for_repo(temp_dir.path());
+        let tree_storage = TreeStore::for_repo(temp_dir.path());
         let tree_hash_array: [u8; 32] = tree_hash.into();
         let root_tree = tree_storage.read(&tree_hash_array)?;
 
@@ -1970,6 +1969,7 @@ mod tests {
 
     use crate::helix_index::commit::CommitStore;
     use crate::helix_index::state::get_branch_upstream;
+    use crate::helix_index::tree::TreeStore;
 
     #[test]
     fn test_import_git_branches_sets_default_upstream_for_feature() -> Result<()> {
