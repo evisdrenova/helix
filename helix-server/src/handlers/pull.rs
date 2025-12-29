@@ -1,5 +1,6 @@
 use crate::handlers::utils::{handle_handshake, respond_err};
 use axum::{extract::State, response::IntoResponse};
+use helix_protocol::commit::{parse_commit_for_walk, CommitData};
 use helix_protocol::hash::Hash;
 use helix_protocol::message::{write_message, ObjectType, PullAck, PullObject, RpcMessage};
 use helix_protocol::storage::FsObjectStore;
@@ -164,45 +165,6 @@ fn walk_commits_between(
     }
 
     Ok(result)
-}
-
-struct CommitData {
-    hash: Hash,
-    tree_hash: Hash,
-    bytes: Vec<u8>,
-}
-
-/// Parse commit bytes to extract tree_hash and parents for traversal.
-/// Matches your Commit::to_bytes format.
-fn parse_commit_for_walk(bytes: &[u8]) -> anyhow::Result<(Hash, Vec<Hash>)> {
-    if bytes.len() < 36 {
-        anyhow::bail!("Commit too short: {} bytes", bytes.len());
-    }
-
-    let mut offset = 0;
-
-    // Tree hash (32 bytes)
-    let mut tree_hash = [0u8; 32];
-    tree_hash.copy_from_slice(&bytes[offset..offset + 32]);
-    offset += 32;
-
-    // Parent count (4 bytes)
-    let parent_count = u32::from_le_bytes(bytes[offset..offset + 4].try_into()?) as usize;
-    offset += 4;
-
-    // Parent hashes (32 bytes each)
-    let mut parents = Vec::with_capacity(parent_count);
-    for _ in 0..parent_count {
-        if offset + 32 > bytes.len() {
-            anyhow::bail!("Commit truncated reading parents");
-        }
-        let mut parent = [0u8; 32];
-        parent.copy_from_slice(&bytes[offset..offset + 32]);
-        parents.push(parent);
-        offset += 32;
-    }
-
-    Ok((tree_hash, parents))
 }
 
 /// Collect all objects needed: commits, trees, and blobs
