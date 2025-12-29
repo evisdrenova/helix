@@ -16,7 +16,7 @@ pub async fn push_handshake(
     write_message(
         &mut buf,
         &RpcMessage::Hello(Hello {
-            client_version: "helix-cli-mvp".into(),
+            client_version: "helix-cli".into(),
         }),
     )?;
 

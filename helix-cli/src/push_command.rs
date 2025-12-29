@@ -4,6 +4,7 @@ use helix_protocol::message::{
     read_message, write_message, Hello, ObjectType, PushObject, PushRequest, RpcMessage,
 };
 use helix_protocol::storage::FsObjectStore;
+use std::collections::{HashSet, VecDeque};
 use std::fs;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
@@ -57,7 +58,7 @@ pub async fn push(
         println!("  new_target = {}", hash_to_hex(&new_target));
     }
 
-    push_handshake(
+    let server_head = push_handshake(
         &remote_url,
         &repo_path.file_name().unwrap_or_default().to_string_lossy(),
         &ref_name,
@@ -74,8 +75,14 @@ pub async fn push(
     // Compute objects to send (MVP: send everything we have)
     // TODO: update this only send teh difference between the remote and local by walking from new_target back to old_target
     // TODO: as we create the objects, we should write them to the buffer at the same time instead of doing it in sequence
-    let objects =
-        compute_push_frontier(repo_path, new_target, old_target.unwrap_or([0u8; 32])).await?;
+    let store = FsObjectStore::new(repo_path);
+    let objects = compute_objects_to_push(&store, new_target, server_head)?;
+
+    if objects.is_empty() {
+        println!("Everything up to date.");
+        return Ok(());
+    }
+
     if options.verbose {
         println!("Sending {} objects...", objects.len());
     }
@@ -85,7 +92,7 @@ pub async fn push(
     write_message(
         &mut buf,
         &RpcMessage::Hello(Hello {
-            client_version: "helix-cli-mvp".into(),
+            client_version: "helix-cli".into(),
         }),
     )?;
 
@@ -103,6 +110,7 @@ pub async fn push(
         }),
     )?;
 
+    // write objects to the buf to send to the server
     for (object_type, hash, data) in objects {
         write_message(
             &mut buf,
@@ -152,6 +160,228 @@ pub async fn push(
     }
 }
 
+/// Compute objects to push by walking from new_target back to server_head.
+/// Only sends commits, trees, and blobs that the server doesn't have.
+fn compute_objects_to_push(
+    store: &FsObjectStore,
+    new_target: Hash,
+    server_head: Option<Hash>,
+) -> Result<Vec<(ObjectType, Hash, Vec<u8>)>> {
+    // Walk commits from new_target back to server_head
+    let missing_commits = walk_commits_between(store, new_target, server_head)?;
+
+    if missing_commits.is_empty() {
+        return Ok(vec![]);
+    }
+
+    // Collect all objects from those commits
+    collect_objects_from_commits(store, &missing_commits)
+}
+
+/// Walk from `from` (new_target) backwards until we hit `to` (server_head) or run out of parents.
+fn walk_commits_between(
+    store: &FsObjectStore,
+    from: Hash,
+    to: Option<Hash>,
+) -> Result<Vec<CommitData>> {
+    let mut result = Vec::new();
+    let mut queue = VecDeque::new();
+    let mut seen = HashSet::new();
+
+    queue.push_back(from);
+
+    while let Some(hash) = queue.pop_front() {
+        // Stop if we've reached what server already has
+        if to == Some(hash) {
+            continue;
+        }
+
+        if !seen.insert(hash) {
+            continue;
+        }
+
+        // Read commit bytes
+        let commit_bytes = match store.read_object(&ObjectType::Commit, &hash) {
+            Ok(bytes) => bytes,
+            Err(_) => continue, // Skip if we can't read it
+        };
+
+        let (tree_hash, parents) = parse_commit_for_walk(&commit_bytes)?;
+
+        // Queue parents
+        for parent in &parents {
+            queue.push_back(*parent);
+        }
+
+        result.push(CommitData {
+            hash,
+            tree_hash,
+            bytes: commit_bytes,
+        });
+    }
+
+    Ok(result)
+}
+
+struct CommitData {
+    hash: Hash,
+    tree_hash: Hash,
+    bytes: Vec<u8>,
+}
+
+/// Parse commit bytes to extract tree_hash and parents for traversal.
+fn parse_commit_for_walk(bytes: &[u8]) -> Result<(Hash, Vec<Hash>)> {
+    if bytes.len() < 36 {
+        bail!("Commit too short: {} bytes", bytes.len());
+    }
+
+    let mut offset = 0;
+
+    // Tree hash (32 bytes)
+    let mut tree_hash = [0u8; 32];
+    tree_hash.copy_from_slice(&bytes[offset..offset + 32]);
+    offset += 32;
+
+    // Parent count (4 bytes)
+    let parent_count = u32::from_le_bytes(bytes[offset..offset + 4].try_into()?) as usize;
+    offset += 4;
+
+    // Parent hashes (32 bytes each)
+    let mut parents = Vec::with_capacity(parent_count);
+    for _ in 0..parent_count {
+        if offset + 32 > bytes.len() {
+            bail!("Commit truncated reading parents");
+        }
+        let mut parent = [0u8; 32];
+        parent.copy_from_slice(&bytes[offset..offset + 32]);
+        parents.push(parent);
+        offset += 32;
+    }
+
+    Ok((tree_hash, parents))
+}
+
+/// Collect all objects needed: commits, trees, and blobs
+fn collect_objects_from_commits(
+    store: &FsObjectStore,
+    commits: &[CommitData],
+) -> Result<Vec<(ObjectType, Hash, Vec<u8>)>> {
+    let mut objects = Vec::new();
+    let mut seen_trees = HashSet::new();
+    let mut seen_blobs = HashSet::new();
+
+    // Add commits first
+    for commit in commits {
+        objects.push((ObjectType::Commit, commit.hash, commit.bytes.clone()));
+    }
+
+    // Collect trees and blobs from each commit's tree
+    for commit in commits {
+        collect_tree_recursive(
+            store,
+            commit.tree_hash,
+            &mut seen_trees,
+            &mut seen_blobs,
+            &mut objects,
+        )?;
+    }
+
+    Ok(objects)
+}
+
+/// Recursively collect a tree and all its blobs/subtrees.
+fn collect_tree_recursive(
+    store: &FsObjectStore,
+    tree_hash: Hash,
+    seen_trees: &mut HashSet<Hash>,
+    seen_blobs: &mut HashSet<Hash>,
+    objects: &mut Vec<(ObjectType, Hash, Vec<u8>)>,
+) -> Result<()> {
+    if !seen_trees.insert(tree_hash) {
+        return Ok(()); // Already processed
+    }
+
+    let tree_bytes = store.read_object(&ObjectType::Tree, &tree_hash)?;
+    objects.push((ObjectType::Tree, tree_hash, tree_bytes.clone()));
+
+    // Parse tree entries
+    let entries = parse_tree_entries(&tree_bytes)?;
+
+    for (entry_kind, hash) in entries {
+        match entry_kind {
+            EntryKind::File => {
+                if seen_blobs.insert(hash) {
+                    let blob_bytes = store.read_object(&ObjectType::Blob, &hash)?;
+                    objects.push((ObjectType::Blob, hash, blob_bytes));
+                }
+            }
+            EntryKind::Tree => {
+                collect_tree_recursive(store, hash, seen_trees, seen_blobs, objects)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy)]
+enum EntryKind {
+    File,
+    Tree,
+}
+
+/// Parse tree entries from tree bytes.
+/// Format per entry: type(1) + mode(4) + size(8) + name_len(2) + name(var) + oid(32)
+fn parse_tree_entries(bytes: &[u8]) -> Result<Vec<(EntryKind, Hash)>> {
+    if bytes.len() < 4 {
+        bail!("Tree too short");
+    }
+
+    let entry_count = u32::from_le_bytes(bytes[0..4].try_into()?) as usize;
+    let mut offset = 4;
+    let mut entries = Vec::with_capacity(entry_count);
+
+    for _ in 0..entry_count {
+        if offset + 15 > bytes.len() {
+            bail!("Tree entry header truncated");
+        }
+
+        // Type (1 byte): 0=File, 1=FileExecutable, 2=Tree, 3=Symlink
+        let entry_type_byte = bytes[offset];
+        let entry_kind = if entry_type_byte == 2 {
+            EntryKind::Tree
+        } else {
+            EntryKind::File // File, FileExecutable, Symlink all point to blobs
+        };
+        offset += 1;
+
+        // Mode (4 bytes) - skip
+        offset += 4;
+
+        // Size (8 bytes) - skip
+        offset += 8;
+
+        // Name length (2 bytes)
+        let name_len = u16::from_le_bytes(bytes[offset..offset + 2].try_into()?) as usize;
+        offset += 2;
+
+        // Name (variable) - skip
+        offset += name_len;
+
+        // OID (32 bytes)
+        if offset + 32 > bytes.len() {
+            bail!("Tree entry OID truncated");
+        }
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&bytes[offset..offset + 32]);
+        offset += 32;
+
+        entries.push((entry_kind, hash));
+    }
+
+    Ok(entries)
+}
+
 /// Resolve remote URL and ref name from helix.toml
 pub fn resolve_remote_and_ref(
     repo_path: &Path,
@@ -161,7 +391,7 @@ pub fn resolve_remote_and_ref(
     let config_path = repo_path.join("helix.toml");
 
     if !config_path.exists() {
-        bail!("Missing helix.toml in repo rootm run `Helix init` to initialize a repo");
+        bail!("Missing helix.toml in repo root. Run `helix init` to initialize a repo");
     }
 
     let config_text = fs::read_to_string(&config_path)
@@ -178,7 +408,7 @@ pub fn resolve_remote_and_ref(
 
     let remote_url = remotes.map.get(&push_key).cloned().ok_or_else(|| {
         anyhow::anyhow!(
-            "Remote '{}' not found. Expected keys '{}' in [remotes] table.",
+            "Remote '{}' not found. Expected key '{}' in [remotes] table.",
             remote_name,
             push_key,
         )
@@ -190,10 +420,6 @@ pub fn resolve_remote_and_ref(
 }
 
 /// Read a local Helix ref from .helix/refs/<...>
-/// hash file contents -> 32 raw bytes [0u8, 32]
-/// convert to 64 hex bytes and save to disk
-/// read hex bytes as strings to memory
-/// convert 64 hex bytes back to 32 byte hash string to compare
 fn read_local_ref(repo_path: &Path, ref_name: &str) -> Result<Hash> {
     let ref_path = repo_path.join(".helix").join(ref_name);
 
@@ -242,92 +468,4 @@ pub fn write_remote_tracking(
     fs::write(&full, hex + "\n").with_context(|| format!("Failed to write {}", full.display()))?;
 
     Ok(())
-}
-
-async fn compute_push_frontier(
-    repo_path: &Path,
-    _new_target: Hash,
-    _old_target: Hash,
-) -> Result<Vec<(ObjectType, Hash, Vec<u8>)>> {
-    // NOTE: this is the *shared* store; it knows how to decode blobs (zstd) and validate hashes.
-    let store = FsObjectStore::new(repo_path);
-
-    let commits_fut = load_objects_from_dir(store.clone(), repo_path, ObjectType::Commit);
-    let trees_fut = load_objects_from_dir(store.clone(), repo_path, ObjectType::Tree);
-    let blobs_fut = load_objects_from_dir(store.clone(), repo_path, ObjectType::Blob);
-
-    let (commits, trees, blobs) = tokio::try_join!(commits_fut, trees_fut, blobs_fut)?;
-
-    let mut out = commits;
-    out.extend(trees);
-    out.extend(blobs);
-
-    Ok(out)
-}
-/// Enumerate object ids from `.helix/objects/<subdir>/` and read *raw* bytes via FsObjectStore.
-async fn load_objects_from_dir(
-    store: FsObjectStore,
-    repo_path: &Path,
-    obj_type: ObjectType,
-) -> Result<Vec<(ObjectType, Hash, Vec<u8>)>> {
-    let dir = objects_subdir(repo_path, &obj_type);
-
-    if !dir.exists() {
-        return Ok(vec![]);
-    }
-
-    // Offload enumeration + sync reads/decompression to blocking pool.
-    task::spawn_blocking(move || -> Result<Vec<(ObjectType, Hash, Vec<u8>)>> {
-        let mut results = Vec::new();
-
-        for entry in
-            std::fs::read_dir(&dir).with_context(|| format!("read_dir {}", dir.display()))?
-        {
-            let entry = entry?;
-            if !entry.file_type()?.is_file() {
-                continue;
-            }
-
-            let path = entry.path();
-            let file_name = path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .context("object filename is not utf8")?;
-
-            // Filenames are the oid hex (32 bytes)
-            let bytes = hex::decode(file_name)
-                .with_context(|| format!("failed to decode object filename as hex: {file_name}"))?;
-            if bytes.len() != 32 {
-                // skip temp files or anything unexpected
-                continue;
-            }
-            let mut hash = [0u8; 32];
-            hash.copy_from_slice(&bytes);
-
-            // IMPORTANT: read_object returns RAW bytes (and verifies BLAKE3(raw) == hash)
-            let raw = store.read_object(&obj_type, &hash).with_context(|| {
-                format!(
-                    "read_object ty={:?} hash={} path={}",
-                    obj_type,
-                    file_name,
-                    path.display()
-                )
-            })?;
-
-            results.push((obj_type.clone(), hash, raw));
-        }
-
-        Ok(results)
-    })
-    .await
-    .context("join spawn_blocking(load_objects_from_dir)")?
-}
-
-fn objects_subdir(repo_path: &Path, ty: &ObjectType) -> PathBuf {
-    let subdir = match ty {
-        ObjectType::Blob => "blobs",
-        ObjectType::Tree => "trees",
-        ObjectType::Commit => "commits",
-    };
-    repo_path.join(".helix").join("objects").join(subdir)
 }
