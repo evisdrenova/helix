@@ -1,4 +1,5 @@
 use anyhow::{bail, Context, Result};
+use helix_protocol::commit::{read_remote_tracking, write_remote_tracking};
 use helix_protocol::hash::hash_to_hex;
 use helix_protocol::message::{read_message, write_message, Hello, PullRequest, RpcMessage};
 use helix_protocol::storage::FsObjectStore;
@@ -6,7 +7,7 @@ use rayon::prelude::*;
 use std::{fs, io::Cursor, path::Path};
 
 use crate::checkout::checkout_tree;
-use crate::push_command::{read_remote_tracking, resolve_remote_and_ref, write_remote_tracking};
+use crate::push_command::resolve_remote_and_ref;
 
 pub struct PullOptions {
     pub verbose: bool,

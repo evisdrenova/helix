@@ -1,8 +1,15 @@
-use std::collections::{HashSet, VecDeque};
+use std::{
+    collections::{HashSet, VecDeque},
+    fs,
+    path::Path,
+};
 
-use anyhow::{bail, Result};
-
-use crate::{hash::Hash, message::ObjectType, storage::FsObjectStore};
+use crate::{
+    hash::{hash_to_hex, hex_to_hash, Hash},
+    message::ObjectType,
+    storage::FsObjectStore,
+};
+use anyhow::{bail, Context, Result};
 
 pub struct CommitData {
     pub hash: Hash,
@@ -202,4 +209,73 @@ pub fn walk_commits_between(
     }
 
     Ok(result)
+}
+
+/// Compute objects to push by walking from new_target back to server_head.
+/// Only sends commits, trees, and blobs that the server doesn't have.
+pub fn compute_objects_to_push(
+    store: &FsObjectStore,
+    new_target: Hash,
+    server_head: Option<Hash>,
+) -> Result<Vec<(ObjectType, Hash, Vec<u8>)>> {
+    // Walk commits from new_target back to server_head
+    let missing_commits = walk_commits_between(store, new_target, server_head)?;
+
+    if missing_commits.is_empty() {
+        return Ok(vec![]);
+    }
+
+    // Collect all objects from those commits
+    collect_objects_from_commits(store, &missing_commits)
+}
+
+/// Read a local Helix ref from .helix/refs/<...>
+pub fn read_local_ref(repo_path: &Path, ref_name: &str) -> Result<Hash> {
+    let ref_path = repo_path.join(".helix").join(ref_name);
+
+    let hex_contents = fs::read_to_string(&ref_path)
+        .with_context(|| format!("Failed to read ref {} ({})", ref_name, ref_path.display()))?;
+
+    hex_to_hash(hex_contents.trim())
+}
+
+/// Read remote-tracking ref: .helix/refs/remotes/<remote>/<branch>
+pub fn read_remote_tracking(repo_path: &Path, remote: &str, branch: &str) -> Result<Hash> {
+    let path = repo_path
+        .join(".helix")
+        .join("refs")
+        .join("remotes")
+        .join(remote)
+        .join(branch);
+
+    if !path.exists() {
+        bail!("Remote-tracking ref does not exist: {}", path.display());
+    }
+
+    let hex_contents = fs::read_to_string(&path)
+        .with_context(|| format!("Failed to read remote-tracking ref {}", path.display()))?;
+
+    hex_to_hash(hex_contents.trim())
+}
+
+/// Write remote-tracking ref: .helix/refs/remotes/<remote>/<branch>
+pub fn write_remote_tracking(
+    repo_path: &Path,
+    remote: &str,
+    branch: &str,
+    target: Hash,
+) -> Result<()> {
+    let path = repo_path
+        .join(".helix")
+        .join("refs")
+        .join("remotes")
+        .join(remote);
+
+    fs::create_dir_all(&path).with_context(|| format!("Failed to create {}", path.display()))?;
+
+    let full = path.join(branch);
+    let hex = hash_to_hex(&target);
+    fs::write(&full, hex + "\n").with_context(|| format!("Failed to write {}", full.display()))?;
+
+    Ok(())
 }
