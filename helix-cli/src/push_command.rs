@@ -73,8 +73,7 @@ pub async fn push(
         return Ok(());
     }
 
-    // Compute objects to send (MVP: send everything we have)
-    // TODO: update this only send teh difference between the remote and local by walking from new_target back to old_target
+    // Compute objects to send to server
     // TODO: as we create the objects, we should write them to the buffer at the same time instead of doing it in sequence
     let store = FsObjectStore::new(repo_path);
     let objects = compute_objects_to_push(&store, new_target, server_head)?;

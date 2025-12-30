@@ -14,7 +14,8 @@ use anyhow::{bail, Context, Result};
 pub struct CommitData {
     pub hash: Hash,
     pub tree_hash: Hash,
-    pub bytes: Vec<u8>,
+    pub raw_bytes: Vec<u8>,        // Raw bytes (for parsing)
+    pub compressed_bytes: Vec<u8>, // Compressed bytes (for sending over wire)
 }
 
 /// Parse commit bytes to extract tree_hash and parents for traversal.
@@ -60,7 +61,11 @@ pub fn collect_objects_from_commits(
 
     // Add commits first
     for commit in commits {
-        objects.push((ObjectType::Commit, commit.hash, commit.bytes.clone()));
+        objects.push((
+            ObjectType::Commit,
+            commit.hash,
+            commit.compressed_bytes.clone(),
+        ));
     }
 
     // Collect trees and blobs from each commit's tree
@@ -95,18 +100,20 @@ pub fn collect_tree_recursive(
         return Ok(()); // Already processed
     }
 
-    let tree_bytes = store.read_object(&ObjectType::Tree, &tree_hash)?;
-    objects.push((ObjectType::Tree, tree_hash, tree_bytes.clone()));
+    let compressed = store.read_object_compressed(&ObjectType::Tree, &tree_hash)?;
+    let raw = zstd::decode_all(&compressed[..]).context("Failed to decompress tree for parsing")?;
 
-    // Parse tree entries
-    let entries = parse_tree_entries(&tree_bytes)?;
+    objects.push((ObjectType::Tree, tree_hash, compressed));
+
+    // Parse tree entries from raw bytes
+    let entries = parse_tree_entries(&raw)?;
 
     for (entry_kind, hash) in entries {
         match entry_kind {
             EntryKind::File => {
                 if seen_blobs.insert(hash) {
-                    let blob_bytes = store.read_object(&ObjectType::Blob, &hash)?;
-                    objects.push((ObjectType::Blob, hash, blob_bytes));
+                    let blob_compressed = store.read_object_compressed(&ObjectType::Blob, &hash)?;
+                    objects.push((ObjectType::Blob, hash, blob_compressed));
                 }
             }
             EntryKind::Tree => {
@@ -192,9 +199,12 @@ pub fn walk_commits_between(
             continue;
         }
 
-        // Read commit bytes
-        let commit_bytes = store.read_object(&ObjectType::Commit, &hash)?;
-        let (tree_hash, parents) = parse_commit_for_walk(&commit_bytes)?;
+        // Read both compressed (for sending) and raw (for parsing)
+        let compressed_bytes = store.read_object_compressed(&ObjectType::Commit, &hash)?;
+        let raw_bytes =
+            zstd::decode_all(&compressed_bytes[..]).context("Failed to decompress commit")?;
+
+        let (tree_hash, parents) = parse_commit_for_walk(&raw_bytes)?;
 
         // Queue parents
         for parent in &parents {
@@ -204,7 +214,8 @@ pub fn walk_commits_between(
         result.push(CommitData {
             hash,
             tree_hash,
-            bytes: commit_bytes,
+            raw_bytes,
+            compressed_bytes,
         });
     }
 
@@ -225,7 +236,7 @@ pub fn compute_objects_to_push(
         return Ok(vec![]);
     }
 
-    // Collect all objects from those commits
+    // Collect all objects from those commits (returns compressed bytes)
     collect_objects_from_commits(store, &missing_commits)
 }
 

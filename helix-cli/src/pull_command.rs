@@ -101,8 +101,12 @@ pub async fn pull(
     loop {
         match read_message(&mut cursor) {
             Ok(RpcMessage::PullObject(obj)) => {
-                // Verify hash
-                let computed = blake3::hash(&obj.data);
+                // Data is zstd-compressed from server
+                // Decompress to verify hash
+                let raw = zstd::decode_all(&obj.data[..])
+                    .context("Failed to decompress object for hash verification")?;
+
+                let computed = blake3::hash(&raw);
                 if computed.as_bytes() != &obj.hash {
                     bail!(
                         "Hash mismatch: expected {}, got {}",
@@ -149,7 +153,7 @@ pub async fn pull(
         }
     }
 
-    // Write objects in parallel
+    // Write objects in parallel (store compressed bytes directly)
     let object_count = objects_to_write.len();
     if options.verbose {
         println!("Writing {} objects to store...", object_count);
@@ -159,7 +163,8 @@ pub async fn pull(
         .par_iter()
         .try_for_each(|obj| -> Result<()> {
             if !store.has_object(&obj.object_type, &obj.hash) {
-                store.write_object_with_hash(&obj.object_type, &obj.hash, &obj.data)?;
+                // Write compressed bytes directly - no recompression needed
+                store.write_object_compressed_with_hash(&obj.object_type, &obj.hash, &obj.data)?;
             }
             Ok(())
         })?;
@@ -198,7 +203,7 @@ pub async fn pull(
     // Checkout the tree to working directory
     let checkout_opts = crate::checkout::CheckoutOptions {
         verbose: options.verbose,
-        force: true, // Overwrite files on pull
+        force: true,
     };
     let files_checked_out = checkout_tree(repo_path, &new_remote_head, &checkout_opts)?;
 
