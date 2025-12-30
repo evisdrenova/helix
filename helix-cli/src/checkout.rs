@@ -6,9 +6,11 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
+use crate::helix_index::tree::{EntryType, Tree};
+
 pub struct CheckoutOptions {
     pub verbose: bool,
-    pub force: bool, // Overwrite existing files
+    pub force: bool,
 }
 
 impl Default for CheckoutOptions {
@@ -58,10 +60,10 @@ fn checkout_tree_recursive(
         .read_object(&ObjectType::Tree, tree_hash)
         .with_context(|| format!("Failed to read tree {}", hash_to_hex(tree_hash)))?;
 
-    let entries = parse_tree_entries(&tree_bytes)?;
+    let tree = Tree::from_bytes(&tree_bytes)?;
     let mut files_written = 0;
 
-    for entry in entries {
+    for entry in tree.entries {
         let entry_path = relative_path.join(&entry.name);
         let full_path = repo_path.join(&entry_path);
 
@@ -73,13 +75,13 @@ fn checkout_tree_recursive(
                 })?;
 
                 files_written +=
-                    checkout_tree_recursive(store, repo_path, &entry.hash, &entry_path, options)?;
+                    checkout_tree_recursive(store, repo_path, &entry.oid, &entry_path, options)?;
             }
             EntryType::File | EntryType::FileExecutable => {
                 // Read blob and write to file
                 let blob_bytes = store
-                    .read_object(&ObjectType::Blob, &entry.hash)
-                    .with_context(|| format!("Failed to read blob {}", hash_to_hex(&entry.hash)))?;
+                    .read_object(&ObjectType::Blob, &entry.oid)
+                    .with_context(|| format!("Failed to read blob {}", hash_to_hex(&entry.oid)))?;
 
                 // Create parent directory if needed
                 if let Some(parent) = full_path.parent() {
@@ -108,7 +110,7 @@ fn checkout_tree_recursive(
                     println!(
                         "  {} ({})",
                         entry_path.display(),
-                        &hash_to_hex(&entry.hash)[..8]
+                        &hash_to_hex(&entry.oid)[..8]
                     );
                 }
 
@@ -117,9 +119,9 @@ fn checkout_tree_recursive(
             EntryType::Symlink => {
                 // Read blob as symlink target
                 let target_bytes = store
-                    .read_object(&ObjectType::Blob, &entry.hash)
+                    .read_object(&ObjectType::Blob, &entry.oid)
                     .with_context(|| {
-                        format!("Failed to read symlink blob {}", hash_to_hex(&entry.hash))
+                        format!("Failed to read symlink blob {}", hash_to_hex(&entry.oid))
                     })?;
 
                 let target =
@@ -169,80 +171,4 @@ fn parse_tree_hash_from_commit(bytes: &[u8]) -> Result<Hash> {
     let mut hash = [0u8; 32];
     hash.copy_from_slice(&bytes[0..32]);
     Ok(hash)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EntryType {
-    File,
-    FileExecutable,
-    Tree,
-    Symlink,
-}
-
-struct TreeEntry {
-    name: String,
-    entry_type: EntryType,
-    hash: Hash,
-}
-
-/// Parse tree entries from tree bytes
-/// Format per entry: type(1) + mode(4) + size(8) + name_len(2) + name(var) + oid(32)
-fn parse_tree_entries(bytes: &[u8]) -> Result<Vec<TreeEntry>> {
-    if bytes.len() < 4 {
-        bail!("Tree too short");
-    }
-
-    let entry_count = u32::from_le_bytes(bytes[0..4].try_into()?) as usize;
-    let mut offset = 4;
-    let mut entries = Vec::with_capacity(entry_count);
-
-    for _ in 0..entry_count {
-        if offset + 15 > bytes.len() {
-            bail!("Tree entry header truncated");
-        }
-
-        // Type (1 byte): 0=File, 1=FileExecutable, 2=Tree, 3=Symlink
-        let entry_type = match bytes[offset] {
-            0 => EntryType::File,
-            1 => EntryType::FileExecutable,
-            2 => EntryType::Tree,
-            3 => EntryType::Symlink,
-            t => bail!("Unknown entry type: {}", t),
-        };
-        offset += 1;
-
-        // Mode (4 bytes) - skip
-        offset += 4;
-
-        // Size (8 bytes) - skip
-        offset += 8;
-
-        // Name length (2 bytes)
-        let name_len = u16::from_le_bytes(bytes[offset..offset + 2].try_into()?) as usize;
-        offset += 2;
-
-        // Name
-        if offset + name_len > bytes.len() {
-            bail!("Tree entry name truncated");
-        }
-        let name = String::from_utf8(bytes[offset..offset + name_len].to_vec())
-            .context("Invalid UTF-8 in entry name")?;
-        offset += name_len;
-
-        // OID (32 bytes)
-        if offset + 32 > bytes.len() {
-            bail!("Tree entry OID truncated");
-        }
-        let mut hash = [0u8; 32];
-        hash.copy_from_slice(&bytes[offset..offset + 32]);
-        offset += 32;
-
-        entries.push(TreeEntry {
-            name,
-            entry_type,
-            hash,
-        });
-    }
-
-    Ok(entries)
 }
