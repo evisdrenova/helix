@@ -40,6 +40,17 @@ pub fn add(repo_path: &Path, paths: &[PathBuf], options: AddOptions) -> Result<(
     // Load helix index
     let mut index = HelixIndexData::load_or_rebuild(repo_path)?;
 
+    println!("DEBUG: Index has {} entries", index.entries().len());
+    for entry in index.entries().iter().take(10) {
+        println!(
+            "  {} -> flags: {:?}, STAGED={}, TRACKED={}",
+            entry.path.display(),
+            entry.flags,
+            entry.flags.contains(EntryFlags::STAGED),
+            entry.flags.contains(EntryFlags::TRACKED)
+        );
+    }
+
     if options.verbose {
         println!("Loaded index (generation {})", index.generation());
     }
@@ -48,14 +59,32 @@ pub fn add(repo_path: &Path, paths: &[PathBuf], options: AddOptions) -> Result<(
     let files_to_add = resolve_files_to_add(repo_path, &index, paths, &options)?;
 
     if files_to_add.is_empty() {
-        if options.verbose {
-            println!("No files to add (everything up-to-date)");
+        // Check if there are already staged files
+        let staged_count = index.get_staged().len();
+
+        println!("staged count {}", staged_count);
+
+        if staged_count > 0 {
+            if options.verbose {
+                println!(
+                    "No new files to add ({} files already staged)",
+                    staged_count
+                );
+            } else {
+                println!(
+                    "No new files to add ({} already staged, ready to commit)",
+                    staged_count
+                );
+            }
         } else {
-            println!("No files to add");
+            if options.verbose {
+                println!("No files to add (everything up-to-date)");
+            } else {
+                println!("No files to add");
+            }
         }
         return Ok(());
     }
-
     if options.verbose {
         println!("Staging {} files...", files_to_add.len());
         for file in &files_to_add {
@@ -147,6 +176,7 @@ fn resolve_files_to_add(
 
     Ok(files_to_add)
 }
+
 fn should_add_file(
     relative_path: &Path,
     full_path: &Path,

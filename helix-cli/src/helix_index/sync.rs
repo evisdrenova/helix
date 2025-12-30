@@ -558,14 +558,14 @@ impl SyncEngine {
         }
 
         let reader = Reader::new(&self.repo_path);
-        let current_generation = if reader.exists() {
+        let (current_generation, current_entry_count) = if reader.exists() {
             reader
                 .read()
                 .ok()
-                .map(|data| data.header.generation)
-                .unwrap_or(0)
+                .map(|data| (data.header.generation, data.entries.len())) // Get entry count too
+                .unwrap_or((0, 0))
         } else {
-            0
+            (0, 0)
         };
 
         let git_index = GitIndex::open(&self.repo_path)?;
@@ -598,7 +598,13 @@ impl SyncEngine {
             .context("Failed to open repository")?
             .into_sync();
 
-        let is_first_import = current_generation == 0;
+        // i really don't like this but it handles an edge case but we should update this
+        let is_first_import = current_entry_count == 0;
+
+        println!(
+            "DEBUG import_git_index: current_generation={}, is_first_import={}",
+            current_generation, is_first_import
+        );
 
         // Build entries in parallel, updating the progress bar as we go
         let entries: Vec<Entry> = index_entries
