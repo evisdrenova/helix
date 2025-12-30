@@ -19,6 +19,7 @@ pub struct FsObjectStore {
 }
 
 impl FsObjectStore {
+    /// Creates a new ObjectStore for Commits, Blobs and Trees.
     pub fn new(repo_root: impl AsRef<Path>) -> Self {
         let repo_root = repo_root.as_ref().to_path_buf();
         let base = repo_root.join(".helix").join("objects");
@@ -28,8 +29,8 @@ impl FsObjectStore {
         let _ = fs::create_dir_all(base.join("blobs"));
         Self { repo_root }
     }
-
-    fn obj_path(&self, ty: &ObjectType, hash: &Hash) -> PathBuf {
+    /// Given an ObjectType, returns the directory path where those objects are stored.
+    fn get_obj_path(&self, ty: &ObjectType, hash: &Hash) -> PathBuf {
         let subdir = match ty {
             ObjectType::Blob => "blobs",
             ObjectType::Tree => "trees",
@@ -42,18 +43,19 @@ impl FsObjectStore {
             .join(hex::encode(hash))
     }
 
+    /// Checks if a hash exists given an ObjectType. For example, given a Blob Hash, checks if the Hash exists within the .helix/objects/blobs/{} path.
     pub fn has_object(&self, ty: &ObjectType, hash: &Hash) -> bool {
-        self.obj_path(ty, hash).exists()
+        self.get_obj_path(ty, hash).exists()
     }
 
-    /// Canonical API: write RAW bytes, compute hash, store encoded appropriately.
+    /// Writes object bytes to disk and returns Hash of bytes.
     pub fn write_object(&self, ty: &ObjectType, raw: &[u8]) -> Result<Hash> {
         let hash = hash_bytes(raw);
         self.write_object_with_hash(ty, &hash, raw)?;
         Ok(hash)
     }
 
-    /// Write RAW bytes for a claimed hash. Validates hash == BLAKE3(raw).
+    /// Write RAW bytes for a claimed hash. Validates hash == Hash(raw).
     pub fn write_object_with_hash(&self, ty: &ObjectType, hash: &Hash, raw: &[u8]) -> Result<()> {
         let computed = hash_bytes(raw);
         anyhow::ensure!(
@@ -64,7 +66,7 @@ impl FsObjectStore {
             hex::encode(computed),
         );
 
-        let path = self.obj_path(ty, hash);
+        let path = self.get_obj_path(ty, hash);
         if path.exists() {
             return Ok(());
         }
@@ -80,14 +82,14 @@ impl FsObjectStore {
         Ok(())
     }
 
-    /// Decompress objects on disk to get raw bytes
+    /// Read objects from disk by decompressing objects to get raw bytes
     pub fn read_object(&self, ty: &ObjectType, hash: &Hash) -> Result<Vec<u8>> {
-        let path = self.obj_path(ty, hash);
+        let path = self.get_obj_path(ty, hash);
         let data = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
 
         let raw = zstd::decode_all(&data[..]).context("Failed to decompress object")?;
 
-        // verify integrity at read time too.
+        // verify integrity at read time too
         let computed = hash_bytes(&raw);
         anyhow::ensure!(
             &computed == hash,
@@ -100,6 +102,49 @@ impl FsObjectStore {
         Ok(raw)
     }
 
+    /// Read compressed bytes directly from disk. Does not decompress bytes. Mainly used for transfer between client and server.
+    pub fn read_object_compressed(&self, ty: &ObjectType, hash: &Hash) -> Result<Vec<u8>> {
+        let path = self.get_obj_path(ty, hash);
+        fs::read(&path).with_context(|| format!("read compressed {}", path.display()))
+    }
+
+    /// Write pre-compressed  bytes directly to disk.
+    /// Decompresses only to verify hash == BLAKE3(raw), then stores compressed bytes as-is.
+    /// Used to write object to disk after receiving from network to avoid recompression.
+    pub fn write_object_compressed_with_hash(
+        &self,
+        ty: &ObjectType,
+        hash: &Hash,
+        compressed: &[u8],
+    ) -> Result<()> {
+        // Decompress to verify hash
+        let raw =
+            zstd::decode_all(compressed).context("Failed to decompress for hash verification")?;
+
+        let computed = hash_bytes(&raw);
+        anyhow::ensure!(
+            &computed == hash,
+            "object hash mismatch: ty={:?} claimed={} computed={}",
+            ty,
+            hex::encode(hash),
+            hex::encode(computed),
+        );
+
+        let path = self.get_obj_path(ty, hash);
+        if path.exists() {
+            return Ok(());
+        }
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        // Store compressed bytes directly
+        atomic_write(&path, compressed)
+            .with_context(|| format!("write object ty={:?} {}", ty, hex::encode(hash)))?;
+        Ok(())
+    }
+
+    /// List all object hashes on disk for a given ObjectType
     pub fn list_object_hashes(&self, ty: &ObjectType) -> Result<Vec<Hash>> {
         let dir = self
             .repo_root
@@ -116,6 +161,7 @@ impl FsObjectStore {
         }
 
         let mut out = Vec::new();
+
         for entry in fs::read_dir(&dir).with_context(|| format!("read_dir {}", dir.display()))? {
             let entry = entry?;
             if !entry.file_type()?.is_file() {
@@ -145,6 +191,7 @@ impl FsObjectStore {
         Ok(out)
     }
 
+    /// Write objects to disk in batch mode. This uses rayon for parallelization.
     pub fn write_objects_batch(&self, ty: &ObjectType, objects: &[Vec<u8>]) -> Result<Vec<Hash>> {
         objects
             .par_iter()
@@ -158,6 +205,29 @@ impl FsObjectStore {
             .par_iter()
             .map(|hash| self.read_object(ty, hash))
             .collect()
+    }
+
+    /// Read multiple objects in parallel (returns compressed bytes for network transfer)
+    pub fn read_objects_compressed_batch(
+        &self,
+        ty: &ObjectType,
+        hashes: &[Hash],
+    ) -> Result<Vec<Vec<u8>>> {
+        hashes
+            .par_iter()
+            .map(|hash| self.read_object_compressed(ty, hash))
+            .collect()
+    }
+
+    /// Write multiple pre-compressed objects in parallel
+    pub fn write_objects_compressed_batch(
+        &self,
+        ty: &ObjectType,
+        objects: &[(Hash, Vec<u8>)],
+    ) -> Result<()> {
+        objects.par_iter().try_for_each(|(hash, compressed)| {
+            self.write_object_compressed_with_hash(ty, hash, compressed)
+        })
     }
 
     /// Check existence of multiple objects in parallel
