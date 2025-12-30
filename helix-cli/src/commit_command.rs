@@ -99,13 +99,20 @@ pub fn commit(repo_path: &Path, options: CommitOptions) -> Result<Hash> {
         println!("Created tree: {}", hash_to_hex(&tree_hash)[..8].to_string());
     }
 
-    // Check if tree would be same as HEAD (no changes)
+    // Check if tree built from index entries would be same as HEAD commit (no changes)
     if !options.allow_empty && !options.amend {
         if let Some(head_hash) = head_commit_hash {
             let head_commit_obj = commit_store.read_commit(&head_hash)?;
 
             if tree_hash == head_commit_obj.tree_hash {
-                anyhow::bail!("No changes to commit. The tree is identical to HEAD.");
+                // Allow if this is the first native commit after import
+                if has_native_commits(repo_path) {
+                    anyhow::bail!("No changes to commit. The tree is identical to HEAD.");
+                }
+
+                if options.verbose {
+                    println!("Creating first native Helix commit after import.");
+                }
             }
         }
     }
@@ -168,6 +175,10 @@ pub fn commit(repo_path: &Path, options: CommitOptions) -> Result<Hash> {
     } else {
         println!("[{}] {}", short_hash, commit.summary());
         println!("{} files changed", staged_entries.len());
+    }
+
+    if !has_native_commits(repo_path) {
+        mark_native_commit_exists(repo_path)?;
     }
 
     Ok(commit_hash)
@@ -331,6 +342,22 @@ pub fn show_staged(repo_path: &Path) -> Result<()> {
     println!();
     println!("{} files staged", num_entries);
 
+    Ok(())
+}
+
+// hate this but im tired and want to move on TODO
+/// Check if any native Helix commits have been created (vs only imported commits)
+fn has_native_commits(repo_path: &Path) -> bool {
+    repo_path
+        .join(".helix")
+        .join("native-commit-exists")
+        .exists()
+}
+
+/// Mark that a native Helix commit has been created
+fn mark_native_commit_exists(repo_path: &Path) -> Result<()> {
+    let path = repo_path.join(".helix").join("native-commit-exists");
+    fs::write(&path, "1")?;
     Ok(())
 }
 
