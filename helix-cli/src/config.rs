@@ -5,7 +5,7 @@ use std::fs;
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "lowercase")]
 pub enum MessageLevel {
-    Quiet,   // one-line subject only 
+    Quiet,   // one-line subject only
     Normal,  // subject + short body
     Verbose, // subject + detailed body
 }

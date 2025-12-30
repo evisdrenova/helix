@@ -1,13 +1,8 @@
 use crate::handlers::utils::{handle_handshake, respond_err};
 use axum::{extract::State, response::IntoResponse};
-use helix_protocol::commit::{
-    collect_objects_from_commits, parse_commit_for_walk, walk_commits_between, CommitData,
-};
-use helix_protocol::hash::Hash;
-use helix_protocol::message::{write_message, ObjectType, PullAck, PullObject, RpcMessage};
-use helix_protocol::storage::FsObjectStore;
+use helix_protocol::commit::{collect_objects_from_commits, walk_commits_between};
+use helix_protocol::message::{write_message, PullAck, PullObject, RpcMessage};
 use helix_server::app_state::AppState;
-use std::collections::{HashSet, VecDeque};
 use std::io::Cursor;
 use std::sync::Arc;
 
