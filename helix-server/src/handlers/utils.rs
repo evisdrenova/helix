@@ -4,12 +4,11 @@ use std::io::Cursor;
 
 pub fn handle_handshake<T>(
     cursor: &mut Cursor<Vec<u8>>,
-    out: &mut Vec<u8>,
     expect: fn(RpcMessage) -> Option<T>,
     expected_name: &'static str,
 ) -> Result<T, Response<Body>> {
     match read_message(&mut *cursor) {
-        Ok(RpcMessage::Hello(_)) => {} // handle version matches and stuff here
+        Ok(RpcMessage::Hello(_)) => {} // TODO: handle version matches and stuff here
         _ => return Err(respond_err(400, "Missing Hello".into())),
     };
 

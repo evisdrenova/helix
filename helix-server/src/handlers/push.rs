@@ -10,11 +10,9 @@ pub async fn push_handler(
     body: axum::body::Bytes,
 ) -> impl IntoResponse {
     let mut cursor = Cursor::new(body.to_vec());
-    let mut out_buf = Vec::<u8>::new();
 
     let push_req = match handle_handshake(
         &mut cursor,
-        &mut out_buf,
         |m| match m {
             RpcMessage::PushRequest(req) => Some(req),
             _ => None,
@@ -69,6 +67,7 @@ pub async fn push_handler(
     }
 
     let ack = RpcMessage::PushAck(PushAck { received_objects });
+    let mut out_buf = Vec::<u8>::new();
     if let Err(e) = write_message(&mut out_buf, &ack) {
         return respond_err(500, format!("Failed to encode PushAck: {e}"));
     }

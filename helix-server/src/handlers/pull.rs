@@ -15,7 +15,6 @@ pub async fn pull_handler(
 
     let pull_req = match handle_handshake(
         &mut cursor,
-        &mut buf,
         |m| match m {
             RpcMessage::PullRequest(req) => Some(req),
             _ => None,

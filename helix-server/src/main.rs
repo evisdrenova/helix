@@ -10,7 +10,7 @@ use crate::handlers::{handshake::handshake_handler, pull::pull_handler, push::pu
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // For MVP: single root dir for one repo, e.g. env var or CLI arg later
+    // TODO: single root dir for one repo, update to support multiple
     let repo_root = std::env::var("HELIX_REPO_ROOT").unwrap_or_else(|_| ".".to_string());
 
     let objects = FsObjectStore::new(&repo_root);

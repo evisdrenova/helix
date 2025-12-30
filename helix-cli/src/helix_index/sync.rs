@@ -453,7 +453,7 @@ impl SyncEngine {
         // Handles: git@github.com:user/repo.git AND ssh://git@github.com/user/repo.git
         let ssh_re = Regex::new(r"^(?:ssh://)?git@(?P<host>[^:/]+)[:/](?P<path>.+)$").unwrap();
 
-        let mut format_url = |url: String| -> String {
+        let format_url = |url: String| -> String {
             // 1. Convert SSH to HTTPS if applicable
             let processed_url = if let Some(caps) = ssh_re.captures(&url) {
                 format!("https://{}/{}", &caps["host"], &caps["path"])

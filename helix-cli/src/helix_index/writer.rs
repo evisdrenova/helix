@@ -8,7 +8,7 @@ Helix uses a two-tier index architecture with different durability guarantees:
 │ • Written with fsync() for full durability             │
 │ • ACID guarantees - no data loss on crash              │
 │ • Updated on: add, remove, commit, merge, etc.         │
-│ • Slower writes (~10x) but required for correctness    │
+│ • Slower writes  but required for correctness    │
 └─────────────────────────────────────────────────────────┘
                           │
                           │ derives from
@@ -16,7 +16,7 @@ Helix uses a two-tier index architecture with different durability guarantees:
 ┌─────────────────────────────────────────────────────────┐
 │ CACHED INDEX (memory-mapped, read-only)                 │
 │ • Optimized for fast reads (mmap + hash map)           │
-│ • Written with flush() only (10x faster)               │
+│ • Written with flush() only             │
 │ • Can be rebuilt from canonical if corrupted           │
 │ • Updated on: lazy refresh when canonical changes      │
 │ • Used for: status, diff, search, etc.                 │
