@@ -1,6 +1,7 @@
 // Sandbox management for Helix
 
 use anyhow::{bail, Context, Result};
+use console::style;
 use helix_protocol::message::ObjectType;
 use helix_protocol::storage::{FsObjectStore, FsRefStore};
 use serde::{Deserialize, Serialize};
@@ -296,7 +297,7 @@ pub fn create_sandbox(repo_path: &Path, name: &str, options: CreateOptions) -> R
     }
 
     // create a branch for the sandbox with the name as the branch_name
-    let branch_name = format!("sandbox/{}", name);
+    let branch_name = format!("sandboxes/{}", name);
     let ref_name = format!("refs/heads/{}", branch_name);
     let refs = FsRefStore::new(repo_path);
 
@@ -307,29 +308,97 @@ pub fn create_sandbox(repo_path: &Path, name: &str, options: CreateOptions) -> R
     manifest.branch = Some(branch_name.clone());
     manifest.save(&sandbox_root)?;
 
-    if options.verbose {
-        println!(
-            "Created sandbox '{}' with {} files (base: {})",
-            name,
-            files_count,
-            &manifest.base_commit[..8]
-        );
-    } else {
-        println!("Created sandbox '{}' ({} files)", name, files_count);
-    }
-    println!(
-        "Created sandbox '{}' ({} files)\n  workdir: {}\n  branch:  {}",
+    activate_sandbox(
+        repo_path,
         name,
-        files_count,
-        workdir.display(),
-        branch_name
-    );
+        &manifest,
+        &workdir,
+        true,
+        Some(files_count),
+    )?;
 
     Ok(Sandbox {
         manifest,
         root: sandbox_root,
         workdir,
     })
+}
+
+fn activate_sandbox(
+    repo_path: &Path,
+    name: &str,
+    manifest: &SandboxManifest,
+    workdir: &Path,
+    created: bool,
+    files_count: Option<u64>,
+) -> Result<()> {
+    // Update HEAD to point to sandbox branch
+    if let Some(ref branch_name) = manifest.branch {
+        let head_path = repo_path.join(".helix").join("HEAD");
+        fs::write(&head_path, format!("ref: refs/heads/{}\n", branch_name))?;
+    }
+
+    // Optional: record the currently active sandbox (handy for other commands)
+    let active_path = repo_path.join(".helix").join("ACTIVE_SANDBOX");
+    let _ = fs::write(
+        &active_path,
+        format!("name={}\nworkdir={}\n", name, workdir.display()),
+    );
+
+    println!();
+    println!("  {}", style("Sandbox").bold());
+    println!(
+        "  {}",
+        style("────────────────────────────────────────────").dim()
+    );
+
+    if created {
+        let files_suffix = files_count
+            .map(|n| format!(" ({} files)", n))
+            .unwrap_or_default();
+
+        println!(
+            "  {} Created and switched to sandbox {}{}",
+            style("✓").green(),
+            style(name).yellow().bold(),
+            style(files_suffix).dim()
+        );
+    } else {
+        println!(
+            "  {} Switched to sandbox {}",
+            style("✓").green(),
+            style(name).yellow().bold()
+        );
+    }
+
+    println!(
+        "  {} Branch:  {}",
+        style("•").cyan(),
+        style(manifest.branch.as_deref().unwrap_or("(none)")).dim()
+    );
+    println!(
+        "  {} Workdir: {}",
+        style("•").cyan(),
+        style(workdir.display()).dim()
+    );
+
+    println!();
+    println!("  {}", style("Next steps:").underlined());
+    println!(
+        "    {}      - open the sandbox workdir",
+        style(format!("cd {}", workdir.display())).cyan()
+    );
+    println!(
+        "    {}      - run helix commands inside the sandbox",
+        style("helix status / helix commit").cyan()
+    );
+    println!(
+        "    {}      - record changes from the sandbox",
+        style("helix commit -m \"message\"").cyan()
+    );
+    println!();
+
+    Ok(())
 }
 
 /// builds the index entries from commit
@@ -448,29 +517,8 @@ pub fn switch_sandbox(repo_path: &Path, name: &str) -> Result<()> {
     let manifest = SandboxManifest::load(&sandbox_root)?;
     let workdir = sandbox_root.join("workdir");
 
-    // Update HEAD to point to sandbox branch
-    if let Some(ref branch_name) = manifest.branch {
-        let head_path = repo_path.join(".helix").join("HEAD");
-        fs::write(&head_path, format!("ref: refs/heads/{}\n", branch_name))?;
-    }
-
-    println!("Switched to sandbox '{}'", name);
-    println!();
-    println!(
-        "  branch:  {}",
-        manifest.branch.as_deref().unwrap_or("(none)")
-    );
-    println!("  workdir: {}", workdir.display());
-    println!();
-    println!("To work in this sandbox:");
-    println!("  cd {}", workdir.display());
-    println!();
-    println!("Then use regular helix commands:");
-    println!("  helix status");
-    println!("  helix add <files>");
-    println!("  helix commit -m \"message\"");
-
-    Ok(())
+    // Just activate it (update HEAD + UI)
+    activate_sandbox(repo_path, name, &manifest, &workdir, false, None)
 }
 
 /// Validate sandbox name (no special characters, slashes, etc.), (alphanumeric, hyphens, underscores only)

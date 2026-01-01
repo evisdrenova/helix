@@ -59,7 +59,9 @@ impl App {
 
         let store = FsObjectStore::new(repo_path);
         let commit_storage = CommitStore::new(repo_path, store)?;
-        let current_branch = crate::branch_command::get_current_branch(repo_path).unwrap_or_default();
+        let current_branch =
+            crate::branch_command::get_current_branch(repo_path).unwrap_or_default();
+
         let branch_names = crate::branch_command::get_all_branches(repo_path)?;
 
         let mut branches = Vec::new();
@@ -67,7 +69,13 @@ impl App {
         for branch_name in branch_names {
             let is_current = branch_name == current_branch;
 
-            let branch_ref_path = repo_path.join(".helix/refs/heads").join(&branch_name);
+            // Determine the ref path based on branch type
+            let branch_ref_path = if branch_name.starts_with("sandboxes/") {
+                let sandbox_name = branch_name.strip_prefix("sandboxes/").unwrap();
+                repo_path.join(".helix/refs/sandboxes").join(sandbox_name)
+            } else {
+                repo_path.join(".helix/refs/heads").join(&branch_name)
+            };
 
             let (last_commit_hash, last_commit, commit_count) =
                 if let Ok(hash_hex) = std::fs::read_to_string(&branch_ref_path) {

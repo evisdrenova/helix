@@ -221,24 +221,35 @@ pub fn get_current_branch(repo_path: &Path) -> Result<String> {
         Ok("(detached HEAD)".to_string())
     }
 }
-
-/// Get all branch names
 pub fn get_all_branches(repo_path: &Path) -> Result<Vec<String>> {
-    let refs_dir = repo_path.join(".helix/refs/heads");
-
-    if !refs_dir.exists() {
-        return Ok(vec![]);
-    }
-
     let mut branches = Vec::new();
 
-    for entry in fs::read_dir(refs_dir)? {
-        let entry = entry?;
-        let path = entry.path();
+    // Regular branches from refs/heads
+    let heads_dir = repo_path.join(".helix/refs/heads");
+    if heads_dir.exists() {
+        for entry in fs::read_dir(&heads_dir)? {
+            let entry = entry?;
+            let path = entry.path();
 
-        if path.is_file() {
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                branches.push(name.to_string());
+            if path.is_file() {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    branches.push(name.to_string());
+                }
+            }
+        }
+    }
+
+    // Sandbox branches from refs/sandboxes (prefixed with "sandboxes/")
+    let sandboxes_dir = repo_path.join(".helix/refs/heads/sandboxes");
+    if sandboxes_dir.exists() {
+        for entry in fs::read_dir(&sandboxes_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if path.is_file() {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    branches.push(format!("sandboxes/{}", name));
+                }
             }
         }
     }
