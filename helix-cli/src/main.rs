@@ -4,7 +4,7 @@ use helix_cli::{
     init_command::init_helix_repo,
     pull_command::{self, pull},
     push_command::{self, push},
-    sandbox::{self, CreateOptions},
+    sandbox_command::{self, CreateOptions},
 };
 use std::path::{Path, PathBuf};
 
@@ -332,15 +332,15 @@ async fn main() -> Result<()> {
                         verbose,
                     };
 
-                    sandbox::create_sandbox(&repo_path, &name, options)?;
+                    sandbox_command::create_sandbox(&repo_path, &name, options)?;
                 }
                 SandboxCommands::List { verbose } => {
-                    let options = sandbox::ListOptions { verbose };
-                    sandbox::list_sandboxes(&repo_path, options)?;
+                    // let options = sandbox_command::ListOptions { verbose };
+                    // sandbox_command::list_sandboxes(&repo_path, options)?;
                 }
                 SandboxCommands::Status { name, verbose } => {
-                    let options = sandbox::StatusOptions { verbose };
-                    sandbox::sandbox_status(&repo_path, &name, options)?;
+                    // let options = sandbox_command::StatusOptions { verbose };
+                    // sandbox_command::sandbox_status(&repo_path, &name, options)?;
                 }
                 SandboxCommands::Commit {
                     name,
@@ -348,31 +348,31 @@ async fn main() -> Result<()> {
                     author,
                     verbose,
                 } => {
-                    let options = sandbox::CommitOptions {
-                        message,
-                        author,
-                        verbose,
-                    };
-                    sandbox::commit_sandbox(&repo_path, &name, options)?;
+                    // let options = sandbox_command::CommitOptions {
+                    //     message,
+                    //     author,
+                    //     verbose,
+                    // };
+                    // sandbox_command::commit_sandbox(&repo_path, &name, options)?;
                 }
                 SandboxCommands::Merge {
                     name,
                     into,
                     verbose,
                 } => {
-                    let options = sandbox::MergeOptions {
-                        into_branch: into,
-                        verbose,
-                    };
-                    sandbox::merge_sandbox(&repo_path, &name, options)?;
+                    // let options = sandbox_command::MergeOptions {
+                    //     into_branch: into,
+                    //     verbose,
+                    // };
+                    // sandbox_command::merge_sandbox(&repo_path, &name, options)?;
                 }
                 SandboxCommands::Destroy {
                     name,
                     force,
                     verbose,
                 } => {
-                    let options = sandbox::DestroyOptions { force, verbose };
-                    sandbox::destroy_sandbox(&repo_path, &name, options)?;
+                    // let options = sandbox_command::DestroyOptions { force, verbose };
+                    // sandbox_command::destroy_sandbox(&repo_path, &name, options)?;
                 }
             }
         }
