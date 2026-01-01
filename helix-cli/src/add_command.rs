@@ -341,7 +341,7 @@ fn stage_files(
 }
 
 /// Get file mode (Unix permissions)
-fn get_file_mode(metadata: &fs::Metadata) -> u32 {
+pub fn get_file_mode(metadata: &fs::Metadata) -> u32 {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

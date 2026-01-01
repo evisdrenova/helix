@@ -16,7 +16,12 @@ Binary file format for helix.idx V1.0
 */
 
 use helix_protocol::hash::Hash;
-use std::{path::PathBuf, str::Utf8Error};
+use std::{
+    path::{Path, PathBuf},
+    str::Utf8Error,
+};
+
+use crate::add_command::get_file_mode;
 
 pub const MAGIC: [u8; 4] = *b"HLIX";
 pub const VERSION: u32 = 1;
@@ -296,6 +301,36 @@ impl Entry {
             merge_conflict_stage,
             reserved,
         })
+    }
+
+    pub fn from_blob(path: PathBuf, oid: Hash, workdir: &Path) -> Self {
+        let full_path = workdir.join(&path);
+
+        let (size, mtime_sec, file_mode) = full_path
+            .metadata()
+            .ok()
+            .map(|m| {
+                let mtime = m
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                (m.len(), mtime, get_file_mode(&m))
+            })
+            .unwrap_or((0, 0, 0o100644));
+
+        Self {
+            path,
+            oid,
+            flags: EntryFlags::TRACKED,
+            size,
+            mtime_sec,
+            mtime_nsec: 0,
+            file_mode,
+            merge_conflict_stage: 0,
+            reserved: [0u8; 33],
+        }
     }
 }
 

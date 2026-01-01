@@ -1,7 +1,6 @@
 // Sandbox management for Helix
 
 use anyhow::{bail, Context, Result};
-use clap::builder::PathBufValueParser;
 use helix_protocol::message::ObjectType;
 use helix_protocol::storage::{FsObjectStore, FsRefStore};
 use serde::{Deserialize, Serialize};
@@ -11,10 +10,11 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
+use crate::add_command::get_file_mode;
 use crate::checkout::{checkout_tree_to_path, CheckoutOptions};
 use crate::helix_index::commit::{read_head, Commit};
 use crate::helix_index::tree::{TreeBuilder, TreeStore};
-use crate::helix_index::{Entry, EntryFlags};
+use crate::helix_index::{Entry, EntryFlags, Header, Writer};
 use crate::sandbox_tui;
 use helix_protocol::hash::{hash_bytes, hash_to_hex, hex_to_hash, Hash};
 
@@ -167,6 +167,44 @@ impl RepoContext {
     }
 }
 
+fn detect_sandbox_from_path(path: &Path) -> Option<(PathBuf, PathBuf)> {
+    for ancestor in path.ancestors() {
+        // Check if this looks like a sandbox workdir
+        if ancestor.file_name().and_then(|n| n.to_str()) == Some("workdir") {
+            let potential_sandbox_root = ancestor.parent()?;
+
+            // Verify it's a sandbox by checking for manifest.toml AND .helix dir
+            if potential_sandbox_root.join("manifest.toml").exists()
+                && potential_sandbox_root.join(".helix").is_dir()
+            {
+                // Find repo root (go up from .helix/sandboxes/<name>)
+                let sandboxes_dir = potential_sandbox_root.parent()?;
+                let helix_dir = sandboxes_dir.parent()?;
+                let repo_root = helix_dir.parent()?;
+
+                return Some((
+                    potential_sandbox_root.to_path_buf(),
+                    repo_root.to_path_buf(),
+                ));
+            }
+        }
+    }
+    None
+}
+
+/// Find repository root by looking for .helix directory
+fn find_repo_root(start: &Path) -> Result<PathBuf> {
+    for ancestor in start.ancestors() {
+        if ancestor.join(".helix").is_dir() {
+            return Ok(ancestor.to_path_buf());
+        }
+    }
+    bail!(
+        "Not a helix repository (or any parent up to root): {}",
+        start.display()
+    )
+}
+
 pub fn run_sandbox_tui(repo_path: Option<&Path>) -> Result<()> {
     let repo_path = repo_path
         .map(|p| p.to_path_buf())
@@ -239,6 +277,14 @@ pub fn create_sandbox(repo_path: &Path, name: &str, options: CreateOptions) -> R
 
     let files_count = checkout_tree_to_path(repo_path, &base_commit, &workdir, &checkout_options)?;
 
+    // use helix index methods
+    let entries = build_index_entries_from_commit(repo_path, &base_commit, &workdir)?;
+    write_sandbox_index(&sandbox_root, &entries)?;
+
+    if options.verbose {
+        println!("Created sandbox index with {} entries", entries.len());
+    }
+
     // create a branch for the sandbox with the name as the branch_name
     let branch_name = format!("sandbox/{}", name);
     let ref_name = format!("refs/heads/{}", branch_name);
@@ -274,6 +320,50 @@ pub fn create_sandbox(repo_path: &Path, name: &str, options: CreateOptions) -> R
         root: sandbox_root,
         workdir,
     })
+}
+
+/// builds the index entries from commit
+// in the sync.rs module, we have a build_index_entries_from_git, we might at some point want to ccombine and generalize the two?
+fn build_index_entries_from_commit(
+    repo_path: &Path,
+    commit_hash: &Hash,
+    workdir: &Path,
+) -> Result<Vec<Entry>> {
+    let tree_store = TreeStore::for_repo(repo_path);
+    let store = FsObjectStore::new(repo_path);
+
+    let commit_bytes = store.read_object(&ObjectType::Commit, commit_hash)?;
+    if commit_bytes.len() < 32 {
+        bail!("Commit too short");
+    }
+
+    let mut tree_hash = [0u8; 32];
+    tree_hash.copy_from_slice(&commit_bytes[0..32]);
+
+    let files = tree_store.collect_all_files(&tree_hash)?;
+
+    let mut entries: Vec<Entry> = files
+        .into_iter()
+        .map(|(path, oid)| Entry::from_blob(path, oid, workdir))
+        .collect();
+
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
+
+    Ok(entries)
+}
+
+fn write_sandbox_index(sandbox_root: &Path, entries: &[Entry]) -> Result<()> {
+    // Create .helix subdir in sandbox (mirrors repo structure)
+    let helix_dir = sandbox_root.join(".helix");
+    fs::create_dir_all(&helix_dir)?;
+
+    let header = Header::new(1, entries.len() as u32);
+
+    // Writer will write to {sandbox_root}/.helix/helix.idx
+    let writer = Writer::new_canonical(sandbox_root);
+    writer.write(&header, entries)?;
+
+    Ok(())
 }
 
 /// Delete a sandbox
@@ -681,25 +771,6 @@ fn build_tree_from_workdir(
 
     let tree_builder = TreeBuilder::new(repo_path);
     tree_builder.build_from_entries(&entries)
-}
-
-fn get_file_mode(metadata: &fs::Metadata) -> u32 {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = metadata.permissions().mode();
-        if mode & 0o111 != 0 {
-            0o100755
-        } else {
-            0o100644
-        }
-    }
-
-    #[cfg(not(unix))]
-    {
-        let _ = metadata;
-        0o100644
-    }
 }
 
 fn get_author(repo_path: &Path) -> Result<String> {
