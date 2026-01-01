@@ -51,7 +51,7 @@ impl Reader {
         self.parse(&mmap)
     }
 
-    fn parse(&self, data: &[u8]) -> Result<HelixIndex> {
+    pub fn parse(&self, data: &[u8]) -> Result<HelixIndex> {
         if data.len() < Header::HEADER_SIZE + FOOTER_SIZE {
             anyhow::bail!("Index file too small");
         }

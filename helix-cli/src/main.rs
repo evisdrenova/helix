@@ -294,8 +294,6 @@ async fn main() -> Result<()> {
         Some(Commands::Sandbox { command }) => {
             let repo_path = resolve_repo_path(None)?;
 
-            sandbox_command::run_sandbox_tui(Some(&repo_path))?;
-
             match command {
                 SandboxCommands::Create {
                     name,

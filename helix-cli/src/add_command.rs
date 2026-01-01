@@ -3,6 +3,7 @@
 use crate::helix_index::api::HelixIndexData;
 use crate::helix_index::format::{Entry, EntryFlags};
 use crate::ignore::IgnoreRules;
+use crate::sandbox_command::RepoContext;
 use anyhow::{Context, Result};
 use helix_protocol::message::ObjectType;
 use helix_protocol::storage::FsObjectStore;
@@ -10,7 +11,6 @@ use rayon::prelude::*;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
 use walkdir::WalkDir;
 
 pub struct AddOptions {
@@ -31,14 +31,24 @@ impl Default for AddOptions {
 
 /// Add files to staging area using pure Helix storage
 pub fn add(repo_path: &Path, paths: &[PathBuf], options: AddOptions) -> Result<()> {
-    let start = Instant::now();
-
     if paths.is_empty() {
         anyhow::bail!("No paths specified. Use 'helix add <files>' or 'helix add .'");
     }
 
-    // Load helix index
-    let mut index = HelixIndexData::load_or_rebuild(repo_path)?;
+    let context = RepoContext::detect(repo_path)?;
+
+    // Use context's index path for loading
+    let mut index = HelixIndexData::load_from_path(&context.index_path, &context.repo_root)?;
+
+    if options.verbose {
+        if context.is_sandbox() {
+            println!(
+                "Working in sandbox: {}",
+                context.sandbox_name().unwrap_or_default()
+            );
+        }
+        println!("Loaded index (generation {})", index.generation());
+    }
 
     println!("DEBUG: Index has {} entries", index.entries().len());
     for entry in index.entries().iter().take(10) {
@@ -56,7 +66,7 @@ pub fn add(repo_path: &Path, paths: &[PathBuf], options: AddOptions) -> Result<(
     }
 
     // Resolve which files need adding (parallel)
-    let files_to_add = resolve_files_to_add(repo_path, &index, paths, &options)?;
+    let files_to_add = resolve_files_to_add(repo_path, &index, paths, &options, &context)?;
 
     if files_to_add.is_empty() {
         // Check if there are already staged files
@@ -100,14 +110,13 @@ pub fn add(repo_path: &Path, paths: &[PathBuf], options: AddOptions) -> Result<(
     }
 
     // Stage files (parallel hashing + batch blob writes)
-    stage_files(repo_path, &mut index, &files_to_add, &options)?;
+    stage_files(repo_path, &mut index, &files_to_add, &options, &context)?;
 
     // Persist index to disk
     index.persist()?;
 
-    let elapsed = start.elapsed();
     if options.verbose {
-        println!("Staged {} files in {:?}", files_to_add.len(), elapsed);
+        println!("Staged {} files", files_to_add.len());
         println!("Index generation: {}", index.generation());
     }
 
@@ -119,6 +128,7 @@ fn resolve_files_to_add(
     index: &HelixIndexData,
     paths: &[PathBuf],
     options: &AddOptions,
+    context: &RepoContext,
 ) -> Result<Vec<PathBuf>> {
     let tracked = index.get_tracked();
     let staged = index.get_staged();
@@ -161,7 +171,9 @@ fn resolve_files_to_add(
             }
 
             // Check if needs adding
-            match should_add_file(file_path, &full_path, &tracked, &staged, index, options) {
+            match should_add_file(
+                file_path, &full_path, &tracked, &staged, index, options, context,
+            ) {
                 Ok(true) => Some(file_path.clone()),
                 Ok(false) => None,
                 Err(e) => {
@@ -184,6 +196,7 @@ fn should_add_file(
     staged: &HashSet<PathBuf>,
     index: &HelixIndexData,
     options: &AddOptions,
+    context: &RepoContext,
 ) -> Result<bool> {
     // If untracked, always add
     if !tracked.contains(relative_path) {
@@ -209,13 +222,7 @@ fn should_add_file(
         .duration_since(std::time::UNIX_EPOCH)?
         .as_secs();
 
-    // Get repo_path by going up from full_path
-    let repo_path = full_path
-        .ancestors()
-        .find(|p| p.join(".helix").exists())
-        .ok_or_else(|| anyhow::anyhow!("Could not find repo root"))?;
-
-    let store = FsObjectStore::new(repo_path);
+    let store = FsObjectStore::new(&context.repo_root);
 
     // Check if file is already staged
     if staged.contains(relative_path) {
@@ -270,6 +277,7 @@ fn stage_files(
     index: &mut HelixIndexData,
     files: &[PathBuf],
     options: &AddOptions,
+    context: &RepoContext,
 ) -> Result<()> {
     if options.verbose {
         println!("Reading and hashing {} files...", files.len());
@@ -279,7 +287,7 @@ fn stage_files(
     let file_data: Vec<(PathBuf, Vec<u8>, fs::Metadata)> = files
         .par_iter()
         .map(|path| {
-            let full_path = repo_path.join(path);
+            let full_path = context.workdir.join(path);
             let content = fs::read(&full_path)
                 .with_context(|| format!("Failed to read {}", path.display()))?;
             let metadata = fs::metadata(&full_path)
@@ -442,6 +450,7 @@ mod tests {
     use crate::helix_index::{EntryFlags, Reader};
     use std::fs;
     use std::process::Command;
+    use std::time::Instant;
     use tempfile::TempDir;
 
     fn init_test_repo(path: &Path) -> Result<()> {

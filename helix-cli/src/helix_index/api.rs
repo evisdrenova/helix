@@ -1,13 +1,15 @@
 use crate::helix_index::Writer;
 
+use super::format::Header;
 use super::format::{Entry, EntryFlags};
 use super::reader::{HelixIndex, Reader};
 use super::sync::SyncEngine;
 use super::verify::{Verifier, VerifyResult};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use helix_protocol::hash;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::path::{Path, PathBuf};
 
 pub struct HelixIndexData {
@@ -61,6 +63,31 @@ impl HelixIndexData {
         })
     }
 
+    pub fn load_from_path(index_path: &Path, repo_path: &Path) -> Result<Self> {
+        if !index_path.exists() {
+            // Return empty index if not found
+            return Ok(Self {
+                repo_path: repo_path.to_path_buf(),
+                data: HelixIndex {
+                    header: Header::new(1, 0),
+                    entries: Vec::new(),
+                },
+            });
+        }
+
+        // Read file content
+        let content = fs::read(index_path)
+            .with_context(|| format!("Failed to read index at {}", index_path.display()))?;
+
+        // Reuse the Reader's parse logic
+        let reader = Reader::new(repo_path);
+        let data = reader.parse(&content)?;
+
+        Ok(Self {
+            repo_path: repo_path.to_path_buf(),
+            data,
+        })
+    }
     /// Reload the helix index from disk
     /// Use this after operations that modify .helix/helix.idx (like helix add, helix commit)
     pub fn reload(&mut self) -> Result<()> {

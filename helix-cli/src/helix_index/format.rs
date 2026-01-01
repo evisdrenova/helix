@@ -180,6 +180,12 @@ impl Entry {
         }
     }
 
+    pub fn serialized_size(&self) -> usize {
+        // path_len (2) + path + oid (32) + flags (1) + size (8) + mtime_sec (8) +
+        // mtime_nsec (4) + file_mode (4) + merge_conflict_stage (1) + reserved (33)
+        2 + self.path.as_os_str().len() + 32 + 1 + 8 + 8 + 4 + 4 + 1 + 33
+    }
+
     /// Serialize entry to bytes
     pub fn to_bytes(&self) -> Result<Vec<u8>, FormatError> {
         let path_str = self.path.to_string_lossy();
