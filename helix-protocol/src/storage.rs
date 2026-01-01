@@ -144,7 +144,7 @@ impl FsObjectStore {
         Ok(())
     }
 
-    /// List all object hashes on disk for a given ObjectType
+    /// List all object hashes on disk for a given ObjectType (not-recursive)
     pub fn list_object_hashes(&self, ty: &ObjectType) -> Result<Vec<Hash>> {
         let dir = self
             .repo_root

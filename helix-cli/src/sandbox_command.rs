@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use crate::checkout::{checkout_tree_to_path, CheckoutOptions};
 use crate::helix_index::commit::read_head;
-use crate::helix_index::tree::{EntryType, Tree, TreeBuilder};
+use crate::helix_index::tree::{EntryType, Tree, TreeBuilder, TreeStore};
 use crate::helix_index::{Entry, EntryFlags};
 use crate::sandbox_tui;
 use helix_protocol::hash::{hash_bytes, hash_to_hex, hex_to_hash, Hash};
@@ -72,6 +72,12 @@ impl Default for MergeOptions {
             verbose: false,
         }
     }
+}
+
+pub struct CommitOptions {
+    pub message: String,
+    pub author: Option<String>,
+    pub verbose: bool,
 }
 
 // Manifest file for each sandbox
@@ -343,24 +349,24 @@ pub fn get_sandbox_changes(repo_path: &Path, name: &str) -> Result<Vec<SandboxCh
     let manifest = SandboxManifest::load(&sandbox_root)?;
     let base_commit = manifest.base_commit_hash()?;
 
-    let store = FsObjectStore::new(repo_path);
-
     // Get files from base commit's tree in order to match against the workdir
-    let base_files = collect_files_from_commit(&store, &base_commit)?;
+    let base_files = collect_files_from_commit(&repo_path, &base_commit)?;
 
     // Get files from sandbox workdir to match against the base commit tree
     let workdir_files = collect_files_from_workdir(&workdir)?;
 
-    // Compute diff
     compute_sandbox_diff(&base_files, &workdir_files, &workdir)
 }
 
 /// Collect all file paths and hashes from a commit's tree
 fn collect_files_from_commit(
-    store: &FsObjectStore,
-    commit_hash: &Hash,
+    repo_path: &Path,
+    base_commit: &Hash,
 ) -> Result<HashMap<PathBuf, Hash>> {
-    let commit_bytes = store.read_object(&ObjectType::Commit, commit_hash)?;
+    let object_store = FsObjectStore::new(repo_path);
+    let tree_store = TreeStore::for_repo(repo_path);
+
+    let commit_bytes = object_store.read_object(&ObjectType::Commit, base_commit)?;
 
     if commit_bytes.len() < 32 {
         bail!("Commit too short");
@@ -369,35 +375,7 @@ fn collect_files_from_commit(
     let mut tree_hash = [0u8; 32];
     tree_hash.copy_from_slice(&commit_bytes[0..32]);
 
-    let mut files = HashMap::new();
-    collect_files_from_tree(store, &tree_hash, Path::new(""), &mut files)?;
-
-    Ok(files)
-}
-
-fn collect_files_from_tree(
-    store: &FsObjectStore,
-    tree_hash: &Hash,
-    prefix: &Path,
-    files: &mut HashMap<PathBuf, Hash>,
-) -> Result<()> {
-    let tree_bytes = store.read_object(&ObjectType::Tree, tree_hash)?;
-    let tree = Tree::from_bytes(&tree_bytes)?;
-
-    for entry in tree.entries {
-        let path = prefix.join(&entry.name);
-
-        match entry.entry_type {
-            EntryType::Tree => {
-                collect_files_from_tree(store, &entry.oid, &path, files)?;
-            }
-            _ => {
-                files.insert(path, entry.oid);
-            }
-        }
-    }
-
-    Ok(())
+    tree_store.collect_all_files(&tree_hash)
 }
 
 /// Collect all file paths from sandbox workdir
@@ -488,6 +466,142 @@ fn compute_sandbox_diff(
     changes.sort_by(|a, b| a.path.cmp(&b.path));
 
     Ok(changes)
+}
+
+/// Commit sandbox changes
+pub fn commit_sandbox(repo_path: &Path, name: &str, options: CommitOptions) -> Result<Hash> {
+    if options.message.trim().is_empty() {
+        bail!("Commit message cannot be empty");
+    }
+
+    let sandbox_root = repo_path.join(".helix").join("sandboxes").join(name);
+
+    if !sandbox_root.exists() {
+        bail!("Sandbox '{}' does not exist", name);
+    }
+
+    let manifest = SandboxManifest::load(&sandbox_root)?;
+    let base_commit = manifest.base_commit_hash()?;
+    let workdir = sandbox_root.join("workdir");
+
+    // Check for changes first
+    let changes = get_sandbox_changes(repo_path, name)?;
+    if changes.is_empty() {
+        bail!("No changes to commit in sandbox '{}'", name);
+    }
+
+    if options.verbose {
+        println!("Committing {} changes in sandbox '{}'", changes.len(), name);
+    }
+
+    // Build tree from sandbox workdir
+    let store = FsObjectStore::new(repo_path);
+    let tree_hash = build_tree_from_workdir(&store, &workdir, repo_path)?;
+
+    // Get author
+    let author = match options.author {
+        Some(a) => a,
+        None => get_author(repo_path)?,
+    };
+
+    // Create commit with base as parent
+    let commit_hash = create_commit(
+        &store,
+        tree_hash,
+        vec![base_commit],
+        &author,
+        &options.message,
+    )?;
+
+    // Update sandbox branch
+    if let Some(ref branch_name) = manifest.branch {
+        let ref_name = format!("refs/heads/{}", branch_name);
+        let refs = FsRefStore::new(repo_path);
+        refs.set_ref(&ref_name, commit_hash)?;
+    }
+
+    // Store commit hash in sandbox metadata (for merge)
+    let commit_ref_path = sandbox_root.join("commit");
+    fs::write(&commit_ref_path, hash_to_hex(&commit_hash))?;
+
+    println!(
+        "Created commit {} in sandbox '{}'",
+        &hash_to_hex(&commit_hash)[..8],
+        name
+    );
+
+    Ok(commit_hash)
+}
+
+/// Merge sandbox into a branch
+pub fn merge_sandbox(repo_path: &Path, name: &str, options: MergeOptions) -> Result<Hash> {
+    let sandbox_root = repo_path.join(".helix").join("sandboxes").join(name);
+
+    if !sandbox_root.exists() {
+        bail!("Sandbox '{}' does not exist", name);
+    }
+
+    // Check if sandbox has been committed
+    let commit_ref_path = sandbox_root.join("commit");
+    if !commit_ref_path.exists() {
+        bail!(
+            "Sandbox '{}' has no commit. Run 'helix sandbox commit {} -m <message>' first.",
+            name,
+            name
+        );
+    }
+
+    let sandbox_commit_hex = fs::read_to_string(&commit_ref_path)?.trim().to_string();
+    let sandbox_commit = hex_to_hash(&sandbox_commit_hex)?;
+
+    let manifest = SandboxManifest::load(&sandbox_root)?;
+    let base_commit = manifest.base_commit_hash()?;
+
+    // Determine target branch
+    let target_branch = options.into_branch.unwrap_or_else(|| "main".to_string());
+    let ref_name = format!("refs/heads/{}", target_branch);
+
+    if options.verbose {
+        println!(
+            "Merging sandbox '{}' commit {} into {}",
+            name,
+            &sandbox_commit_hex[..8],
+            target_branch
+        );
+    }
+
+    // Get current target HEAD
+    let refs = FsRefStore::new(repo_path);
+    let target_head = refs.get_ref(&ref_name)?;
+
+    match target_head {
+        None => {
+            // No target branch yet - just set it to sandbox commit
+            refs.set_ref(&ref_name, sandbox_commit)?;
+            println!(
+                "Created branch '{}' at {}",
+                target_branch,
+                &sandbox_commit_hex[..8]
+            );
+        }
+        Some(current_head) => {
+            // Check if it's a fast-forward
+            if current_head == base_commit {
+                // Fast-forward: target hasn't moved since sandbox was created
+                refs.set_ref(&ref_name, sandbox_commit)?;
+                println!("Fast-forward merged '{}' into '{}'", name, target_branch);
+            } else {
+                // Target has moved - need real merge (V2)
+                bail!(
+                    "Cannot fast-forward: '{}' has diverged from sandbox base.\n\
+                     Manual merge required (not yet implemented in V1).",
+                    target_branch
+                );
+            }
+        }
+    }
+
+    Ok(sandbox_commit)
 }
 
 // =============================================================================

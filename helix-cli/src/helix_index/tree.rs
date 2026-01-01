@@ -18,7 +18,7 @@ use helix_protocol::hash::{hash_bytes, Hash};
 use helix_protocol::message::ObjectType;
 use helix_protocol::storage::FsObjectStore;
 use rayon::prelude::*;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -316,6 +316,37 @@ impl TreeStore {
     /// Check if multiple trees exist in parallel
     pub fn exists_batch(&self, hashes: &[Hash]) -> Vec<bool> {
         self.objects.has_objects_batch(&ObjectType::Tree, hashes)
+    }
+
+    // Recursively collect all file paths in a HashMap with it's correspnding hash.
+    pub fn collect_all_files(&self, tree_hash: &Hash) -> Result<HashMap<PathBuf, Hash>> {
+        let mut files = HashMap::new();
+        self.collect_files_recursive(tree_hash, Path::new(""), &mut files)?;
+        Ok(files)
+    }
+
+    fn collect_files_recursive(
+        &self,
+        tree_hash: &Hash,
+        prefix: &Path,
+        files: &mut HashMap<PathBuf, Hash>,
+    ) -> Result<()> {
+        let tree = self.read(tree_hash)?;
+
+        for entry in tree.entries {
+            let path = prefix.join(&entry.name);
+
+            match entry.entry_type {
+                EntryType::Tree => {
+                    self.collect_files_recursive(&entry.oid, &path, files)?;
+                }
+                _ => {
+                    files.insert(path, entry.oid);
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
