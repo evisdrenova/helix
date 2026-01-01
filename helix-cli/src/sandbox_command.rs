@@ -36,6 +36,14 @@ pub struct CreateOptions {
     pub base_commit: Option<Hash>,
     pub verbose: bool,
 }
+impl Default for CreateOptions {
+    fn default() -> Self {
+        Self {
+            base_commit: None,
+            verbose: false,
+        }
+    }
+}
 
 pub struct DestroyOptions {
     force: bool,
@@ -46,15 +54,6 @@ impl Default for DestroyOptions {
     fn default() -> Self {
         Self {
             force: false,
-            verbose: false,
-        }
-    }
-}
-
-impl Default for CreateOptions {
-    fn default() -> Self {
-        Self {
-            base_commit: None,
             verbose: false,
         }
     }
@@ -74,6 +73,7 @@ impl Default for MergeOptions {
     }
 }
 
+// Manifest file for each sandbox
 impl SandboxManifest {
     pub fn new(name: &str, base_commit: Hash) -> Self {
         let now = SystemTime::now()
@@ -275,24 +275,40 @@ pub fn destroy_sandbox(repo_path: &Path, name: &str, options: DestroyOptions) ->
 
     Ok(())
 }
+
 /// Switch to a different sandbox (checkout)
 pub fn switch_sandbox(repo_path: &Path, name: &str) -> Result<()> {
-    let sandbox_path = repo_path.join(format!(".helix/refs/heads/{}", name));
+    let sandbox_root = repo_path.join(".helix").join("sandboxes").join(name);
 
     // Check if sandbox exists
-    if !sandbox_path.exists() {
-        return Err(anyhow!(
-            "sandbox '{}' does not exist. Create it with 'helix sandbox {}'",
+    if !sandbox_root.exists() {
+        bail!(
+            "Sandbox '{}' does not exist. Create it with 'helix sandbox create {}'",
             name,
             name
-        ));
+        );
     }
 
-    // Update HEAD to point to new sandbox
-    let head_path = repo_path.join(".helix/HEAD");
-    fs::write(&head_path, format!("ref: refs/heads/{}\n", name))?;
+    // Load manifest to get branch name
+    let manifest = SandboxManifest::load(&sandbox_root)?;
+    let workdir = sandbox_root.join("workdir");
+
+    // Update HEAD to point to sandbox branch
+    if let Some(ref branch_name) = manifest.branch {
+        let head_path = repo_path.join(".helix").join("HEAD");
+        fs::write(&head_path, format!("ref: refs/heads/{}\n", branch_name))?;
+    }
 
     println!("Switched to sandbox '{}'", name);
+    println!();
+    println!(
+        "  branch:  {}",
+        manifest.branch.as_deref().unwrap_or("(none)")
+    );
+    println!("  workdir: {}", workdir.display());
+    println!();
+    println!("To work in this sandbox, cd to the workdir:");
+    println!("  cd {}", workdir.display());
 
     Ok(())
 }
