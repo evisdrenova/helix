@@ -38,54 +38,40 @@ struct Args {
 enum SandboxCommands {
     /// Create a new sandbox from HEAD (or specified commit)
     Create {
-        /// Sandbox name
         name: String,
-        /// Base commit hash (defaults to HEAD)
         #[arg(long)]
-        base: Option<String>,
-        /// Show verbose output
+        base: Option<String>, // Base commit hash (defaults to HEAD)
         #[arg(short, long)]
         verbose: bool,
     },
     /// List all sandboxes
     List {},
     Switch {
-        /// Sandbox name
         name: String,
     },
     /// Commit sandbox changes
     Commit {
-        /// Sandbox name
         name: String,
-        /// Commit message
         #[arg(short, long)]
         message: String,
-        /// Author (overrides config)
         #[arg(short, long)]
         author: Option<String>,
-        /// Show verbose output
         #[arg(short, long)]
         verbose: bool,
     },
     /// Merge sandbox commit into a branch
     Merge {
-        /// Sandbox name
         name: String,
-        /// Target branch (defaults to main)
         #[arg(long)]
         into: Option<String>,
-        /// Show verbose output
         #[arg(short, long)]
         verbose: bool,
     },
     /// Destroy a sandbox
     Destroy {
-        /// Sandbox name
         name: String,
-        /// Force destroy even with uncommitted changes
         #[arg(long)]
         force: bool,
-        /// Show verbose output
         #[arg(short, long)]
         verbose: bool,
     },

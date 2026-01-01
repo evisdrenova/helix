@@ -1,6 +1,7 @@
 // Sandbox management for Helix
 
 use anyhow::{bail, Context, Result};
+use clap::builder::PathBufValueParser;
 use helix_protocol::message::ObjectType;
 use helix_protocol::storage::{FsObjectStore, FsRefStore};
 use serde::{Deserialize, Serialize};
@@ -11,8 +12,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 use crate::checkout::{checkout_tree_to_path, CheckoutOptions};
-use crate::helix_index::commit::read_head;
-use crate::helix_index::tree::{EntryType, Tree, TreeBuilder, TreeStore};
+use crate::helix_index::commit::{read_head, Commit};
+use crate::helix_index::tree::{TreeBuilder, TreeStore};
 use crate::helix_index::{Entry, EntryFlags};
 use crate::sandbox_tui;
 use helix_protocol::hash::{hash_bytes, hash_to_hex, hex_to_hash, Hash};
@@ -114,6 +115,55 @@ impl SandboxManifest {
 
     pub fn base_commit_hash(&self) -> Result<Hash> {
         hex_to_hash(&self.base_commit)
+    }
+}
+
+/// Represents the current working context - either main repo or a sandbox
+#[derive(Clone, Debug)]
+pub struct RepoContext {
+    pub repo_root: PathBuf,
+    pub sandbox_root: Option<PathBuf>,
+    pub workdir: PathBuf,
+    pub index_path: PathBuf,
+}
+
+impl RepoContext {
+    pub fn detect(start_path: &Path) -> Result<Self> {
+        let start_path = start_path.canonicalize()?;
+
+        // check if we're inside a sandbox workdir
+        if let Some((sandbox_root, repo_root)) = detect_sandbox_from_path(&start_path) {
+            return Ok(Self {
+                repo_root: repo_root.clone(),
+                sandbox_root: Some(sandbox_root.clone()),
+                workdir: sandbox_root.join("workdir"),
+                index_path: sandbox_root.join("helix.idx"),
+            });
+        }
+
+        // Otherwise, find the repo root by looking for .helix
+        let repo_root = find_repo_root(&start_path)?;
+
+        Ok(Self {
+            repo_root: repo_root.clone(),
+            sandbox_root: None,
+            workdir: repo_root.clone(),
+            index_path: repo_root.join(".helix").join("helix.idx"),
+        })
+    }
+
+    /// Check if we're in a sandbox
+    pub fn is_sandbox(&self) -> bool {
+        self.sandbox_root.is_some()
+    }
+
+    /// Get sandbox name if in a sandbox
+    pub fn sandbox_name(&self) -> Option<String> {
+        self.sandbox_root.as_ref().and_then(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|s| s.to_string())
+        })
     }
 }
 
@@ -496,6 +546,7 @@ pub fn commit_sandbox(repo_path: &Path, name: &str, options: CommitOptions) -> R
 
     // Build tree from sandbox workdir
     let store = FsObjectStore::new(repo_path);
+    // let tree_builder = TreeBuilder::new(repo_path)
     let tree_hash = build_tree_from_workdir(&store, &workdir, repo_path)?;
 
     // Get author
@@ -505,32 +556,26 @@ pub fn commit_sandbox(repo_path: &Path, name: &str, options: CommitOptions) -> R
     };
 
     // Create commit with base as parent
-    let commit_hash = create_commit(
-        &store,
-        tree_hash,
-        vec![base_commit],
-        &author,
-        &options.message,
-    )?;
+    let commit_hash = Commit::new(tree_hash, vec![base_commit], author, options.message);
 
     // Update sandbox branch
     if let Some(ref branch_name) = manifest.branch {
         let ref_name = format!("refs/heads/{}", branch_name);
         let refs = FsRefStore::new(repo_path);
-        refs.set_ref(&ref_name, commit_hash)?;
+        refs.set_ref(&ref_name, commit_hash.commit_hash)?;
     }
 
     // Store commit hash in sandbox metadata (for merge)
     let commit_ref_path = sandbox_root.join("commit");
-    fs::write(&commit_ref_path, hash_to_hex(&commit_hash))?;
+    fs::write(&commit_ref_path, hash_to_hex(&commit_hash.commit_hash))?;
 
     println!(
         "Created commit {} in sandbox '{}'",
-        &hash_to_hex(&commit_hash)[..8],
+        &hash_to_hex(&commit_hash.commit_hash)[..8],
         name
     );
 
-    Ok(commit_hash)
+    Ok(commit_hash.commit_hash)
 }
 
 /// Merge sandbox into a branch
@@ -604,10 +649,6 @@ pub fn merge_sandbox(repo_path: &Path, name: &str, options: MergeOptions) -> Res
     Ok(sandbox_commit)
 }
 
-// =============================================================================
-// GENERAL HELPERS
-// =============================================================================
-
 /// Build a tree from workdir files
 fn build_tree_from_workdir(
     store: &FsObjectStore,
@@ -661,39 +702,6 @@ fn get_file_mode(metadata: &fs::Metadata) -> u32 {
     }
 }
 
-fn create_commit(
-    store: &FsObjectStore,
-    tree_hash: Hash,
-    parents: Vec<Hash>,
-    author: &str,
-    message: &str,
-) -> Result<Hash> {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
-    let mut bytes = Vec::new();
-
-    bytes.extend_from_slice(&tree_hash);
-    bytes.extend_from_slice(&(parents.len() as u32).to_le_bytes());
-
-    for parent in &parents {
-        bytes.extend_from_slice(parent);
-    }
-
-    bytes.extend_from_slice(&(author.len() as u16).to_le_bytes());
-    bytes.extend_from_slice(author.as_bytes());
-
-    bytes.extend_from_slice(&now.to_le_bytes());
-    bytes.extend_from_slice(&now.to_le_bytes());
-
-    bytes.extend_from_slice(&(message.len() as u32).to_le_bytes());
-    bytes.extend_from_slice(message.as_bytes());
-
-    store.write_object(&ObjectType::Commit, &bytes)
-}
-
 fn get_author(repo_path: &Path) -> Result<String> {
     let config_path = repo_path.join("helix.toml");
 
@@ -713,25 +721,6 @@ fn get_author(repo_path: &Path) -> Result<String> {
     }
 
     bail!("Author not configured. Add [user] section to helix.toml")
-}
-
-fn format_age(timestamp: u64) -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
-    let age_secs = now.saturating_sub(timestamp);
-
-    if age_secs < 60 {
-        "just now".to_string()
-    } else if age_secs < 3600 {
-        format!("{} min ago", age_secs / 60)
-    } else if age_secs < 86400 {
-        format!("{} hours ago", age_secs / 3600)
-    } else {
-        format!("{} days ago", age_secs / 86400)
-    }
 }
 
 // #[cfg(test)]
