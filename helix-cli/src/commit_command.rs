@@ -345,8 +345,9 @@ pub fn show_staged(repo_path: &Path) -> Result<()> {
     Ok(())
 }
 
-// hate this but im tired and want to move on TODO
+// TODO: hate this but im tired and want to move on
 /// Check if any native Helix commits have been created (vs only imported commits)
+/// this is only really used for the first commit after helix init
 fn has_native_commits(repo_path: &Path) -> bool {
     repo_path
         .join(".helix")

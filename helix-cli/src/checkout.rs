@@ -22,10 +22,30 @@ impl Default for CheckoutOptions {
     }
 }
 
-/// Checkout a commit's tree to the working directory
+/// Checkout a commit's tree to the repo's working directory
+///
+/// This is a convenience wrapper around `checkout_tree_to_path` that uses
+/// repo_path as both the object store location and the destination.
 pub fn checkout_tree(
     repo_path: &Path,
     commit_hash: &Hash,
+    options: &CheckoutOptions,
+) -> Result<u64> {
+    checkout_tree_to_path(repo_path, commit_hash, repo_path, options)
+}
+
+/// Checkout a commit's tree to a specific destination path
+///
+/// - `repo_path`: Where the object store lives (.helix/objects/)
+/// - `commit_hash`: The commit to checkout
+/// - `dest_path`: Where to write the files (can be different from repo_path)
+/// - `options`: Checkout options (verbose, force)
+///
+/// This is the core checkout function used by both normal checkout and sandboxes.
+pub fn checkout_tree_to_path(
+    repo_path: &Path,
+    commit_hash: &Hash,
+    dest_path: &Path,
     options: &CheckoutOptions,
 ) -> Result<u64> {
     let store = FsObjectStore::new(repo_path);
@@ -38,20 +58,31 @@ pub fn checkout_tree(
     let tree_hash = parse_tree_hash_from_commit(&commit_bytes)?;
 
     if options.verbose {
-        println!("Checking out tree {}", &hash_to_hex(&tree_hash)[..8]);
+        if repo_path == dest_path {
+            println!("Checking out tree {}", &hash_to_hex(&tree_hash)[..8]);
+        } else {
+            println!(
+                "Checking out tree {} to {}",
+                &hash_to_hex(&tree_hash)[..8],
+                dest_path.display()
+            );
+        }
+    }
+
+    // Create destination directory if different from repo
+    if dest_path != repo_path {
+        fs::create_dir_all(dest_path)
+            .with_context(|| format!("Failed to create destination {}", dest_path.display()))?;
     }
 
     // Recursively checkout the tree
-    let files_written =
-        checkout_tree_recursive(&store, repo_path, &tree_hash, Path::new(""), options)?;
-
-    Ok(files_written)
+    checkout_tree_recursive(&store, dest_path, &tree_hash, Path::new(""), options)
 }
 
 /// Recursively checkout a tree to a directory
 fn checkout_tree_recursive(
     store: &FsObjectStore,
-    repo_path: &Path,
+    dest_root: &Path,
     tree_hash: &Hash,
     relative_path: &Path,
     options: &CheckoutOptions,
@@ -65,30 +96,26 @@ fn checkout_tree_recursive(
 
     for entry in tree.entries {
         let entry_path = relative_path.join(&entry.name);
-        let full_path = repo_path.join(&entry_path);
+        let full_path = dest_root.join(&entry_path);
 
         match entry.entry_type {
             EntryType::Tree => {
-                // Create directory and recurse
                 fs::create_dir_all(&full_path).with_context(|| {
                     format!("Failed to create directory {}", full_path.display())
                 })?;
 
                 files_written +=
-                    checkout_tree_recursive(store, repo_path, &entry.oid, &entry_path, options)?;
+                    checkout_tree_recursive(store, dest_root, &entry.oid, &entry_path, options)?;
             }
             EntryType::File | EntryType::FileExecutable => {
-                // Read blob and write to file
                 let blob_bytes = store
                     .read_object(&ObjectType::Blob, &entry.oid)
                     .with_context(|| format!("Failed to read blob {}", hash_to_hex(&entry.oid)))?;
 
-                // Create parent directory if needed
                 if let Some(parent) = full_path.parent() {
                     fs::create_dir_all(parent)?;
                 }
 
-                // Check if file exists
                 if full_path.exists() && !options.force {
                     if options.verbose {
                         println!("  Skipping {} (already exists)", entry_path.display());
@@ -99,7 +126,6 @@ fn checkout_tree_recursive(
                 fs::write(&full_path, &blob_bytes)
                     .with_context(|| format!("Failed to write file {}", full_path.display()))?;
 
-                // Set executable bit if needed
                 if entry.entry_type == EntryType::FileExecutable {
                     let mut perms = fs::metadata(&full_path)?.permissions();
                     perms.set_mode(0o755);
@@ -117,7 +143,6 @@ fn checkout_tree_recursive(
                 files_written += 1;
             }
             EntryType::Symlink => {
-                // Read blob as symlink target
                 let target_bytes = store
                     .read_object(&ObjectType::Blob, &entry.oid)
                     .with_context(|| {
@@ -127,12 +152,10 @@ fn checkout_tree_recursive(
                 let target =
                     String::from_utf8(target_bytes).context("Symlink target is not valid UTF-8")?;
 
-                // Create parent directory if needed
                 if let Some(parent) = full_path.parent() {
                     fs::create_dir_all(parent)?;
                 }
 
-                // Remove existing if force
                 if full_path.exists() || full_path.symlink_metadata().is_ok() {
                     if options.force {
                         fs::remove_file(&full_path).ok();

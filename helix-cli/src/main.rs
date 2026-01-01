@@ -32,6 +32,33 @@ struct Args {
     stage_and_generate: bool, // add files and generate message (don't commit)
     files: Vec<String>, // files to add to staging
 }
+#[derive(Subcommand)]
+enum SandboxCommands {
+    Create {
+        name: String,
+        #[arg(long)]
+        base: Option<String>,
+    },
+    List,
+    Status {
+        name: String,
+    },
+    Commit {
+        name: String,
+        #[arg(short, long)]
+        message: String,
+    },
+    Merge {
+        name: String,
+        #[arg(long)]
+        into: Option<String>,
+    },
+    Destroy {
+        name: String,
+        #[arg(long)]
+        force: bool,
+    },
+}
 
 #[derive(Subcommand, Debug)]
 enum Commands {
@@ -274,6 +301,7 @@ async fn main() -> Result<()> {
             pull(&repo_path, &remote, &branch, options).await?;
             return Ok(());
         }
+
         None => {
             // let config = load_config()?;
             // let workflow = Workflow::new(config);

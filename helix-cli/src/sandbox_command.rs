@@ -1,90 +1,149 @@
-// Branch management for Helix
-//
-// Commands:
-//   helix branch                  - List all branches
-//   helix branch <name>           - Create new branch
-//   helix branch -d <name>        - Delete branch
-//   helix branch -m <old> <new>   - Rename branch
+// Sandbox management for Helix
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
+use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+use uuid::Uuid;
 
-use crate::branch_tui;
+use crate::checkout::{checkout_tree, CheckoutOptions};
 use crate::helix_index::state::{get_branch_upstream, remove_branch_state, set_branch_upstream};
+use crate::sandbox_tui;
 use helix_protocol::hash::{hash_to_hex, hex_to_hash, Hash};
 
-pub struct BranchOptions {
-    pub delete: bool,
-    pub rename: bool,
-    pub force: bool,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SandboxManifest {
+    pub id: String,
+    pub name: String,
+    pub base_commit: String,
+    pub created_at: u64,
+    pub description: Option<String>,
+}
+
+pub struct Sandbox {
+    pub manifest: SandboxManifest,
+    pub root: PathBuf,
+    pub workdir: PathBuf,
+}
+
+pub struct CreateOptions {
+    pub base_commit: Option<Hash>,
     pub verbose: bool,
 }
 
-impl Default for BranchOptions {
+impl Default for CreateOptions {
     fn default() -> Self {
         Self {
-            delete: false,
-            rename: false,
-            force: false,
+            base_commit: None,
             verbose: false,
         }
     }
 }
 
-pub fn run_branch_tui(repo_path: Option<&Path>) -> Result<()> {
+impl SandboxManifest {
+    pub fn new(name: &str, base_commit: Hash) -> Self {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        Self {
+            id: Uuid::new_v4().to_string(),
+            name: name.to_string(),
+            base_commit: hash_to_hex(&base_commit),
+            created_at: now,
+            description: None,
+        }
+    }
+
+    pub fn save(&self, sandbox_root: &Path) -> Result<()> {
+        let manifest_path = sandbox_root.join("manifest.toml");
+        let content = toml::to_string_pretty(self).context("Failed to serialize manifest")?;
+        fs::write(&manifest_path, content).context("Failed to write manifest")?;
+        Ok(())
+    }
+
+    pub fn load(sandbox_root: &Path) -> Result<Self> {
+        let manifest_path = sandbox_root.join("manifest.toml");
+        let content = fs::read_to_string(&manifest_path)
+            .with_context(|| format!("Failed to read manifest at {}", manifest_path.display()))?;
+        toml::from_str(&content).context("Failed to parse sandbox manifest")
+    }
+}
+
+pub fn run_sandbox_tui(repo_path: Option<&Path>) -> Result<()> {
     let repo_path = repo_path
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| std::env::current_dir().expect("Failed to get current directory"));
 
-    let mut app = branch_tui::app::App::new(&repo_path)?;
+    let mut app = sandbox_tui::app::App::new(&repo_path)?;
     app.run()?;
 
     Ok(())
 }
 
-/// Create a new branch
-pub fn create_branch(repo_path: &Path, name: &str, options: BranchOptions) -> Result<()> {
-    // Validate branch name
-    validate_branch_name(name)?;
+/// Create a new sandbox
+pub fn create_sandbox(repo_path: &Path, name: &str, options: CreateOptions) -> Result<Sandbox> {
+    validate_sandbox_name(name)?;
 
-    let branch_path = repo_path.join(format!(".helix/refs/heads/{}", name));
+    let sandbox_root = repo_path.join(".helix").join("sandboxes").join(name);
+    let workdir = sandbox_root.join("workdir");
 
-    if branch_path.exists() && !options.force {
-        return Err(anyhow!(
-            "Branch '{}' already exists. Use --force to overwrite.",
-            name
-        ));
+    // Check if sandbox already exists
+    if sandbox_root.exists() {
+        bail!("Sandbox '{}' already exists", name);
     }
 
-    let head_hash = read_head(repo_path)?;
-
-    // Create branch pointing to current commit
-    fs::create_dir_all(branch_path.parent().unwrap())?;
-    fs::write(&branch_path, format!("{}\n", hash_to_hex(&head_hash)))?;
-
-    let current_branch = get_current_branch(repo_path)?;
-    if current_branch != "(no branch)" && current_branch != "(detached HEAD)" {
-        if let Err(e) = set_branch_upstream(repo_path, name, &current_branch) {
-            eprintln!("Warning: Failed to set upstream: {}", e);
-        }
-    }
+    // Get base commit (default to HEAD)
+    let base_commit = match options.base_commit {
+        Some(hash) => hash,
+        None => read_head(repo_path).context("No HEAD found. Create a commit first.")?,
+    };
 
     if options.verbose {
         println!(
-            "Created branch '{}' at commit {}",
+            "Creating sandbox '{}' from commit {}",
             name,
-            short_hash(&head_hash)
+            &hash_to_hex(&base_commit)[..8]
         );
-    } else {
-        println!("Created branch '{}'", name);
     }
 
-    Ok(())
+    // Create sandbox directories
+    fs::create_dir_all(&workdir)
+        .with_context(|| format!("Failed to create sandbox directory {}", workdir.display()))?;
+
+    let checkout_options = CheckoutOptions {
+        verbose: options.verbose,
+        force: true,
+    };
+
+    let files_count = checkout_tree_to_path(repo_path, &base_commit, &workdir, &checkout_options)?;
+
+    // Create and save manifest
+    let manifest = SandboxManifest::new(name, base_commit);
+    manifest.save(&sandbox_root)?;
+
+    if options.verbose {
+        println!(
+            "Created sandbox '{}' with {} files (base: {})",
+            name,
+            files_count,
+            &manifest.base_commit[..8]
+        );
+    } else {
+        println!("Created sandbox '{}' ({} files)", name, files_count);
+    }
+
+    Ok(Sandbox {
+        manifest,
+        root: sandbox_root,
+        workdir,
+    })
 }
 
 /// Delete a branch
-pub fn delete_branch(repo_path: &Path, name: &str, options: BranchOptions) -> Result<()> {
+pub fn delete_branch(repo_path: &Path, name: &str, options: SandboxOptions) -> Result<()> {
     let branch_path = repo_path.join(format!(".helix/refs/heads/{}", name));
 
     // Check if branch exists
@@ -121,10 +180,10 @@ pub fn rename_branch(
     repo_path: &Path,
     old_name: &str,
     new_name: &str,
-    options: BranchOptions,
+    options: SandboxOptions,
 ) -> Result<()> {
     // Validate new branch name
-    validate_branch_name(new_name)?;
+    validate_sandbox_name(new_name)?;
 
     let old_path = repo_path.join(format!(".helix/refs/heads/{}", old_name));
     let new_path = repo_path.join(format!(".helix/refs/heads/{}", new_name));
@@ -275,29 +334,24 @@ fn read_head(repo_path: &Path) -> Result<Hash> {
 }
 
 /// Validate branch name (no special characters, slashes, etc.)
-fn validate_branch_name(name: &str) -> Result<()> {
+/// Validate sandbox name (alphanumeric, hyphens, underscores only)
+fn validate_sandbox_name(name: &str) -> Result<()> {
     if name.is_empty() {
-        return Err(anyhow!("Branch name cannot be empty"));
+        bail!("Sandbox name cannot be empty");
     }
 
-    // Check for invalid characters
-    if name.contains('/') {
-        return Err(anyhow!(
-            "Branch name cannot contain '/'. Use simple names like 'main', 'dev', 'feature-x'"
-        ));
+    if name.len() > 64 {
+        bail!("Sandbox name too long (max 64 characters)");
     }
 
-    if name.starts_with('.') || name.starts_with('-') {
-        return Err(anyhow!("Branch name cannot start with '.' or '-'"));
-    }
-
-    if name.contains("..") {
-        return Err(anyhow!("Branch name cannot contain '..'"));
-    }
-
-    // Reserved names
-    if name == "HEAD" {
-        return Err(anyhow!("'HEAD' is a reserved name"));
+    if !name
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    {
+        bail!(
+            "Invalid sandbox name '{}'. Use only alphanumeric characters, hyphens, and underscores.",
+            name
+        );
     }
 
     Ok(())
@@ -376,7 +430,7 @@ email = "test@test.com"
         make_initial_commit(temp_dir.path())?;
 
         // Create new branch
-        create_branch(temp_dir.path(), "feature", BranchOptions::default())?;
+        create_branch(temp_dir.path(), "feature", SandboxOptions::default())?;
 
         // Verify branch file exists
         let branch_path = temp_dir.path().join(".helix/refs/heads/feature");
@@ -396,10 +450,10 @@ email = "test@test.com"
         init_test_repo(temp_dir.path())?;
         make_initial_commit(temp_dir.path())?;
 
-        create_branch(temp_dir.path(), "feature", BranchOptions::default())?;
+        create_branch(temp_dir.path(), "feature", SandboxOptions::default())?;
 
         // Try to create again - should fail
-        let result = create_branch(temp_dir.path(), "feature", BranchOptions::default());
+        let result = create_branch(temp_dir.path(), "feature", SandboxOptions::default());
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("already exists"));
 
@@ -412,14 +466,13 @@ email = "test@test.com"
         init_test_repo(temp_dir.path())?;
         make_initial_commit(temp_dir.path())?;
 
-        create_branch(temp_dir.path(), "feature", BranchOptions::default())?;
+        create_branch(temp_dir.path(), "feature", SandboxOptions::default())?;
 
         // Create again with force - should succeed
         let result = create_branch(
             temp_dir.path(),
             "feature",
-            BranchOptions {
-                force: true,
+            SandboxOptions {
                 ..Default::default()
             },
         );
@@ -434,10 +487,10 @@ email = "test@test.com"
         init_test_repo(temp_dir.path())?;
         make_initial_commit(temp_dir.path())?;
 
-        create_branch(temp_dir.path(), "feature", BranchOptions::default())?;
+        create_branch(temp_dir.path(), "feature", SandboxOptions::default())?;
 
         // Delete the branch
-        delete_branch(temp_dir.path(), "feature", BranchOptions::default())?;
+        delete_branch(temp_dir.path(), "feature", SandboxOptions::default())?;
 
         // Verify it's gone
         let branch_path = temp_dir.path().join(".helix/refs/heads/feature");
@@ -453,7 +506,7 @@ email = "test@test.com"
         make_initial_commit(temp_dir.path())?;
 
         // Try to delete current branch - should fail
-        let result = delete_branch(temp_dir.path(), "main", BranchOptions::default());
+        let result = delete_branch(temp_dir.path(), "main", SandboxOptions::default());
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("current branch"));
 
@@ -466,7 +519,7 @@ email = "test@test.com"
         init_test_repo(temp_dir.path())?;
         make_initial_commit(temp_dir.path())?;
 
-        create_branch(temp_dir.path(), "feature", BranchOptions::default())?;
+        create_branch(temp_dir.path(), "feature", SandboxOptions::default())?;
 
         // Switch to feature branch
         switch_branch(temp_dir.path(), "feature")?;
@@ -489,14 +542,14 @@ email = "test@test.com"
         init_test_repo(temp_dir.path())?;
         make_initial_commit(temp_dir.path())?;
 
-        create_branch(temp_dir.path(), "old-name", BranchOptions::default())?;
+        create_branch(temp_dir.path(), "old-name", SandboxOptions::default())?;
 
         // Rename the branch
         rename_branch(
             temp_dir.path(),
             "old-name",
             "new-name",
-            BranchOptions::default(),
+            SandboxOptions::default(),
         )?;
 
         // Verify old name gone
@@ -517,7 +570,7 @@ email = "test@test.com"
         make_initial_commit(temp_dir.path())?;
 
         // Rename current branch (main)
-        rename_branch(temp_dir.path(), "main", "master", BranchOptions::default())?;
+        rename_branch(temp_dir.path(), "main", "master", SandboxOptions::default())?;
 
         // Verify HEAD updated
         let current = get_current_branch(temp_dir.path())?;
@@ -532,8 +585,8 @@ email = "test@test.com"
         init_test_repo(temp_dir.path())?;
         make_initial_commit(temp_dir.path())?;
 
-        create_branch(temp_dir.path(), "feature1", BranchOptions::default())?;
-        create_branch(temp_dir.path(), "feature2", BranchOptions::default())?;
+        create_branch(temp_dir.path(), "feature1", SandboxOptions::default())?;
+        create_branch(temp_dir.path(), "feature2", SandboxOptions::default())?;
 
         let branches = get_all_branches(temp_dir.path())?;
 
@@ -546,20 +599,20 @@ email = "test@test.com"
     }
 
     #[test]
-    fn test_validate_branch_name() -> Result<()> {
+    fn test_validate_sandbox_name() -> Result<()> {
         // Valid names
-        assert!(validate_branch_name("main").is_ok());
-        assert!(validate_branch_name("feature").is_ok());
-        assert!(validate_branch_name("bug-fix").is_ok());
-        assert!(validate_branch_name("dev_123").is_ok());
+        assert!(validate_sandbox_name("main").is_ok());
+        assert!(validate_sandbox_name("feature").is_ok());
+        assert!(validate_sandbox_name("bug-fix").is_ok());
+        assert!(validate_sandbox_name("dev_123").is_ok());
 
         // Invalid names
-        assert!(validate_branch_name("").is_err());
-        assert!(validate_branch_name("feature/test").is_err());
-        assert!(validate_branch_name(".hidden").is_err());
-        assert!(validate_branch_name("-bad").is_err());
-        assert!(validate_branch_name("bad..name").is_err());
-        assert!(validate_branch_name("HEAD").is_err());
+        assert!(validate_sandbox_name("").is_err());
+        assert!(validate_sandbox_name("feature/test").is_err());
+        assert!(validate_sandbox_name(".hidden").is_err());
+        assert!(validate_sandbox_name("-bad").is_err());
+        assert!(validate_sandbox_name("bad..name").is_err());
+        assert!(validate_sandbox_name("HEAD").is_err());
 
         Ok(())
     }
@@ -570,7 +623,7 @@ email = "test@test.com"
         init_test_repo(temp_dir.path())?;
 
         // Try to create branch before any commits
-        let result = create_branch(temp_dir.path(), "feature", BranchOptions::default());
+        let result = create_branch(temp_dir.path(), "feature", SandboxOptions::default());
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("No commits yet"));
 
