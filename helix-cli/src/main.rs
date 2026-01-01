@@ -363,8 +363,8 @@ async fn main() -> Result<()> {
                     force,
                     verbose,
                 } => {
-                    // let options = sandbox_command::DestroyOptions { force, verbose };
-                    // sandbox_command::destroy_sandbox(&repo_path, &name, options)?;
+                    let options = sandbox_command::DestroyOptions { force, verbose };
+                    sandbox_command::destroy_sandbox(&repo_path, &name, options)?;
                 }
             }
         }

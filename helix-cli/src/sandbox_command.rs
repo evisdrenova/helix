@@ -47,8 +47,8 @@ impl Default for CreateOptions {
 }
 
 pub struct DestroyOptions {
-    force: bool,
-    verbose: bool,
+    pub force: bool,
+    pub verbose: bool,
 }
 
 impl Default for DestroyOptions {
