@@ -446,7 +446,12 @@ fn write_sandbox_index(sandbox_root: &Path, entries: &[Entry]) -> Result<()> {
 
 /// Delete a sandbox
 pub fn destroy_sandbox(repo_path: &Path, name: &str, options: DestroyOptions) -> Result<()> {
+    let context = RepoContext::detect(repo_path)?;
+    let repo_path = &context.repo_root;
+
     let sandbox_root = repo_path.join(".helix").join("sandboxes").join(name);
+
+    println!("the sandbox root {:?}", sandbox_root);
 
     if !sandbox_root.exists() {
         bail!("Sandbox '{}' does not exist", name);
