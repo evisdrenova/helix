@@ -1,16 +1,20 @@
 // Sandbox management for Helix
 
 use anyhow::{anyhow, bail, Context, Result};
-use helix_protocol::storage::FsRefStore;
+use helix_protocol::message::ObjectType;
+use helix_protocol::storage::{FsObjectStore, FsRefStore};
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 use crate::checkout::{checkout_tree_to_path, CheckoutOptions};
+use crate::helix_index::tree::{EntryType, Tree, TreeBuilder};
+use crate::helix_index::{Entry, EntryFlags};
 use crate::sandbox_tui;
-use helix_protocol::hash::{hash_to_hex, hex_to_hash, Hash};
+use helix_protocol::hash::{hash_bytes, hash_to_hex, hex_to_hash, Hash};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SandboxManifest {
@@ -223,13 +227,23 @@ pub fn destroy_sandbox(repo_path: &Path, name: &str, options: DestroyOptions) ->
         bail!("Sandbox '{}' does not exist", name);
     }
 
-    // Load manifest to get branch name
     let manifest = SandboxManifest::load(&sandbox_root)?;
 
-    // Check for uncommitted changes unless force
-    if !options.force {}
+    if !options.force {
+        let changes = get_sandbox_changes(repo_path, name)?;
 
-    // Delete the sandbox directory
+        if !changes.is_empty() {
+            bail!(
+                "Sandbox '{}' has {} uncommitted change(s).\n\
+                 Use --force to destroy anyway, or commit first with:\n\
+                   helix sandbox commit {} -m <message>",
+                name,
+                changes.len(),
+                name
+            );
+        }
+    }
+
     fs::remove_dir_all(&sandbox_root).with_context(|| {
         format!(
             "Failed to remove sandbox directory {}",
@@ -237,15 +251,20 @@ pub fn destroy_sandbox(repo_path: &Path, name: &str, options: DestroyOptions) ->
         )
     })?;
 
-    // Delete the branch
     if let Some(branch_name) = manifest.branch {
+        // Branch is stored as "sandbox/name", need to handle nested path
         let ref_path = repo_path
             .join(".helix")
             .join("refs")
             .join("heads")
             .join(&branch_name);
+
         if ref_path.exists() {
-            fs::remove_file(&ref_path).ok(); // Ignore errors, branch might not exist
+            fs::remove_file(&ref_path).ok();
+            // Also try to remove parent "sandbox" dir if empty
+            if let Some(parent) = ref_path.parent() {
+                fs::remove_dir(parent).ok();
+            }
             if options.verbose {
                 println!("Deleted branch '{}'", branch_name);
             }
@@ -256,7 +275,6 @@ pub fn destroy_sandbox(repo_path: &Path, name: &str, options: DestroyOptions) ->
 
     Ok(())
 }
-
 /// Switch to a different sandbox (checkout)
 pub fn switch_sandbox(repo_path: &Path, name: &str) -> Result<()> {
     let sandbox_path = repo_path.join(format!(".helix/refs/heads/{}", name));
@@ -355,6 +373,289 @@ fn validate_sandbox_name(name: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+pub fn get_sandbox_changes(repo_path: &Path, name: &str) -> Result<Vec<SandboxChange>> {
+    let sandbox_root = repo_path.join(".helix").join("sandboxes").join(name);
+    let workdir = sandbox_root.join("workdir");
+    let manifest = SandboxManifest::load(&sandbox_root)?;
+    let base_commit = manifest.base_commit_hash()?;
+
+    let store = FsObjectStore::new(repo_path);
+
+    // Get files from base commit's tree
+    let base_files = collect_files_from_commit(&store, &base_commit)?;
+
+    // Get files from sandbox workdir
+    let workdir_files = collect_files_from_workdir(&workdir)?;
+
+    // Compute diff
+    compute_sandbox_diff(&base_files, &workdir_files, &workdir)
+}
+
+/// Collect all file paths and hashes from a commit's tree
+fn collect_files_from_commit(
+    store: &FsObjectStore,
+    commit_hash: &Hash,
+) -> Result<HashMap<PathBuf, Hash>> {
+    let commit_bytes = store.read_object(&ObjectType::Commit, commit_hash)?;
+
+    if commit_bytes.len() < 32 {
+        bail!("Commit too short");
+    }
+
+    let mut tree_hash = [0u8; 32];
+    tree_hash.copy_from_slice(&commit_bytes[0..32]);
+
+    let mut files = HashMap::new();
+    collect_files_from_tree(store, &tree_hash, Path::new(""), &mut files)?;
+
+    Ok(files)
+}
+
+fn collect_files_from_tree(
+    store: &FsObjectStore,
+    tree_hash: &Hash,
+    prefix: &Path,
+    files: &mut HashMap<PathBuf, Hash>,
+) -> Result<()> {
+    let tree_bytes = store.read_object(&ObjectType::Tree, tree_hash)?;
+    let tree = Tree::from_bytes(&tree_bytes)?;
+
+    for entry in tree.entries {
+        let path = prefix.join(&entry.name);
+
+        match entry.entry_type {
+            EntryType::Tree => {
+                collect_files_from_tree(store, &entry.oid, &path, files)?;
+            }
+            _ => {
+                files.insert(path, entry.oid);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Collect all file paths from sandbox workdir
+fn collect_files_from_workdir(workdir: &Path) -> Result<HashSet<PathBuf>> {
+    let mut files = HashSet::new();
+    collect_workdir_files_recursive(workdir, workdir, &mut files)?;
+    Ok(files)
+}
+
+fn collect_workdir_files_recursive(
+    root: &Path,
+    current: &Path,
+    files: &mut HashSet<PathBuf>,
+) -> Result<()> {
+    if !current.exists() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(current)? {
+        let entry = entry?;
+        let path = entry.path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+        // Skip hidden and common large directories
+        if name.starts_with('.')
+            || name == "node_modules"
+            || name == "target"
+            || name == "__pycache__"
+            || name == ".venv"
+            || name == "venv"
+        {
+            continue;
+        }
+
+        if path.is_dir() {
+            collect_workdir_files_recursive(root, &path, files)?;
+        } else if path.is_file() {
+            let relative = path.strip_prefix(root)?;
+            files.insert(relative.to_path_buf());
+        }
+    }
+
+    Ok(())
+}
+
+/// Compute diff between base commit files and workdir files
+fn compute_sandbox_diff(
+    base_files: &HashMap<PathBuf, Hash>,
+    workdir_files: &HashSet<PathBuf>,
+    workdir: &Path,
+) -> Result<Vec<SandboxChange>> {
+    let mut changes = Vec::new();
+
+    // Check for added and modified files
+    for path in workdir_files {
+        let full_path = workdir.join(path);
+        let content = fs::read(&full_path)?;
+        let current_hash = hash_bytes(&content);
+
+        match base_files.get(path) {
+            None => {
+                changes.push(SandboxChange {
+                    path: path.clone(),
+                    kind: SandboxChangeKind::Added,
+                });
+            }
+            Some(base_hash) => {
+                if &current_hash != base_hash {
+                    changes.push(SandboxChange {
+                        path: path.clone(),
+                        kind: SandboxChangeKind::Modified,
+                    });
+                }
+            }
+        }
+    }
+
+    // Check for deleted files
+    for path in base_files.keys() {
+        if !workdir_files.contains(path) {
+            changes.push(SandboxChange {
+                path: path.clone(),
+                kind: SandboxChangeKind::Deleted,
+            });
+        }
+    }
+
+    changes.sort_by(|a, b| a.path.cmp(&b.path));
+
+    Ok(changes)
+}
+
+// =============================================================================
+// GENERAL HELPERS
+// =============================================================================
+
+/// Build a tree from workdir files
+fn build_tree_from_workdir(
+    store: &FsObjectStore,
+    workdir: &Path,
+    repo_path: &Path,
+) -> Result<Hash> {
+    let files = collect_files_from_workdir(workdir)?;
+    let mut entries = Vec::new();
+
+    for path in files {
+        let full_path = workdir.join(&path);
+        let content = fs::read(&full_path)?;
+        let oid = store.write_object(&ObjectType::Blob, &content)?;
+
+        let metadata = fs::metadata(&full_path)?;
+        let file_mode = get_file_mode(&metadata);
+
+        entries.push(Entry {
+            path,
+            oid,
+            flags: EntryFlags::TRACKED,
+            size: metadata.len(),
+            mtime_sec: 0,
+            mtime_nsec: 0,
+            file_mode,
+            merge_conflict_stage: 0,
+            reserved: [0u8; 33],
+        });
+    }
+
+    let tree_builder = TreeBuilder::new(repo_path);
+    tree_builder.build_from_entries(&entries)
+}
+
+fn get_file_mode(metadata: &fs::Metadata) -> u32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = metadata.permissions().mode();
+        if mode & 0o111 != 0 {
+            0o100755
+        } else {
+            0o100644
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        0o100644
+    }
+}
+
+fn create_commit(
+    store: &FsObjectStore,
+    tree_hash: Hash,
+    parents: Vec<Hash>,
+    author: &str,
+    message: &str,
+) -> Result<Hash> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let mut bytes = Vec::new();
+
+    bytes.extend_from_slice(&tree_hash);
+    bytes.extend_from_slice(&(parents.len() as u32).to_le_bytes());
+
+    for parent in &parents {
+        bytes.extend_from_slice(parent);
+    }
+
+    bytes.extend_from_slice(&(author.len() as u16).to_le_bytes());
+    bytes.extend_from_slice(author.as_bytes());
+
+    bytes.extend_from_slice(&now.to_le_bytes());
+    bytes.extend_from_slice(&now.to_le_bytes());
+
+    bytes.extend_from_slice(&(message.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(message.as_bytes());
+
+    store.write_object(&ObjectType::Commit, &bytes)
+}
+
+fn get_author(repo_path: &Path) -> Result<String> {
+    let config_path = repo_path.join("helix.toml");
+
+    if config_path.exists() {
+        let content = fs::read_to_string(&config_path)?;
+
+        if let Ok(config) = content.parse::<toml::Value>() {
+            if let Some(user) = config.get("user") {
+                let name = user.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let email = user.get("email").and_then(|v| v.as_str()).unwrap_or("");
+
+                if !name.is_empty() && !email.is_empty() {
+                    return Ok(format!("{} <{}>", name, email));
+                }
+            }
+        }
+    }
+
+    bail!("Author not configured. Add [user] section to helix.toml")
+}
+
+fn format_age(timestamp: u64) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let age_secs = now.saturating_sub(timestamp);
+
+    if age_secs < 60 {
+        "just now".to_string()
+    } else if age_secs < 3600 {
+        format!("{} min ago", age_secs / 60)
+    } else if age_secs < 86400 {
+        format!("{} hours ago", age_secs / 3600)
+    } else {
+        format!("{} days ago", age_secs / 86400)
+    }
 }
 
 // #[cfg(test)]
