@@ -445,19 +445,20 @@ fn write_sandbox_index(sandbox_root: &Path, entries: &[Entry]) -> Result<()> {
 }
 
 /// Delete a sandbox
-pub fn destroy_sandbox(repo_path: &Path, name: &str, options: DestroyOptions) -> Result<()> {
-    let context = RepoContext::detect(repo_path)?;
+pub fn destroy_sandbox(start_path: &Path, name: &str, options: DestroyOptions) -> Result<()> {
+    // Find the actual repo root
+    let context = RepoContext::detect(start_path)?;
     let repo_path = &context.repo_root;
 
     let sandbox_root = repo_path.join(".helix").join("sandboxes").join(name);
 
-    println!("the sandbox root {:?}", sandbox_root);
+    if options.verbose {
+        println!("Sandbox root: {:?}", sandbox_root);
+    }
 
     if !sandbox_root.exists() {
         bail!("Sandbox '{}' does not exist", name);
     }
-
-    let manifest = SandboxManifest::load(&sandbox_root)?;
 
     if !options.force {
         let changes = get_sandbox_changes(repo_path, name)?;
@@ -474,6 +475,7 @@ pub fn destroy_sandbox(repo_path: &Path, name: &str, options: DestroyOptions) ->
         }
     }
 
+    // Remove sandbox directory
     fs::remove_dir_all(&sandbox_root).with_context(|| {
         format!(
             "Failed to remove sandbox directory {}",
@@ -481,22 +483,50 @@ pub fn destroy_sandbox(repo_path: &Path, name: &str, options: DestroyOptions) ->
         )
     })?;
 
-    if let Some(branch_name) = manifest.branch {
-        // Branch is stored as "sandbox/name", need to handle nested path
-        let ref_path = repo_path
-            .join(".helix")
-            .join("refs")
-            .join("heads")
-            .join(&branch_name);
+    // Remove parent sandboxes dir if empty
+    let sandboxes_dir = repo_path.join(".helix").join("sandboxes");
+    if sandboxes_dir.exists() {
+        // remove_dir only succeeds if directory is empty
+        fs::remove_dir(&sandboxes_dir).ok();
+    }
 
-        if ref_path.exists() {
-            fs::remove_file(&ref_path).ok();
-            // Also try to remove parent "sandbox" dir if empty
-            if let Some(parent) = ref_path.parent() {
-                fs::remove_dir(parent).ok();
+    // Delete sandbox ref (refs/sandboxes/<name>)
+    let ref_path = repo_path
+        .join(".helix")
+        .join("refs")
+        .join("sandboxes")
+        .join(name);
+
+    if ref_path.exists() {
+        fs::remove_file(&ref_path).ok();
+        if options.verbose {
+            println!("Deleted sandbox ref '{}'", name);
+        }
+    }
+
+    // Remove parent refs/sandboxes dir if empty
+    let refs_sandboxes_dir = repo_path.join(".helix").join("refs").join("sandboxes");
+    if refs_sandboxes_dir.exists() {
+        fs::remove_dir(&refs_sandboxes_dir).ok();
+    }
+
+    // Clear ACTIVE_SANDBOX if this was the active one
+    let active_path = repo_path.join(".helix").join("ACTIVE_SANDBOX");
+    if active_path.exists() {
+        if let Ok(content) = fs::read_to_string(&active_path) {
+            if content.contains(&format!("name={}", name)) {
+                fs::remove_file(&active_path).ok();
             }
+        }
+    }
+
+    // If HEAD points to this sandbox, reset to main
+    let head_path = repo_path.join(".helix").join("HEAD");
+    if let Ok(head_content) = fs::read_to_string(&head_path) {
+        if head_content.contains(&format!("refs/sandboxes/{}", name)) {
+            fs::write(&head_path, "ref: refs/heads/main\n").ok();
             if options.verbose {
-                println!("Deleted branch '{}'", branch_name);
+                println!("Reset HEAD to main");
             }
         }
     }
