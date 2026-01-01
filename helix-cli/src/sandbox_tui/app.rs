@@ -1,91 +1,91 @@
-use anyhow::{Context, Result};
+// sandbox_tui/app.rs
+
+use anyhow::{bail, Context, Result};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use git2::StatusOptions;
 use ratatui::{backend::CrosstermBackend, Terminal};
-use std::collections::HashSet;
-use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
-use walkdir::WalkDir;
+use std::{
+    collections::HashSet,
+    time::{SystemTime, UNIX_EPOCH},
+};
+use std::{fs, io};
 
-use crate::{
-    fsmonitor::FSMonitor,
-    helix_index::{api::HelixIndexData, EntryFlags},
-    ignore::IgnoreRules,
+use crate::sandbox_command::{
+    get_sandbox_changes, Sandbox, SandboxChange, SandboxChangeKind, SandboxManifest,
 };
 
 use super::actions::Action;
 use super::ui;
 
-// Change tracking
-pub enum FileChangeKind {
-    Added,
-    Modified,
-    Deleted,
-}
-pub struct FileChange {
-    pub path: PathBuf,
-    pub kind: FileChangeKind,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Section {
-    Unstaged,
-    Staged,
-    Untracked,
+    Sandboxes,
+    Changes,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum FileStatus {
-    Modified(PathBuf),
-    Added(PathBuf),
-    Deleted(PathBuf),
-    Untracked(PathBuf),
+#[derive(Debug, Clone)]
+pub struct SandboxInfo {
+    pub manifest: SandboxManifest,
+    pub root: PathBuf,
+    pub workdir: PathBuf,
+    pub changes: Vec<SandboxChange>,
 }
 
-impl FileStatus {
-    pub fn path(&self) -> &Path {
-        match self {
-            FileStatus::Modified(p) => p,
-            FileStatus::Added(p) => p,
-            FileStatus::Deleted(p) => p,
-            FileStatus::Untracked(p) => p,
-        }
-    }
+impl SandboxInfo {
+    pub fn change_summary(&self) -> String {
+        if self.changes.is_empty() {
+            "clean".to_string()
+        } else {
+            let added = self
+                .changes
+                .iter()
+                .filter(|c| c.kind == SandboxChangeKind::Added)
+                .count();
+            let modified = self
+                .changes
+                .iter()
+                .filter(|c| c.kind == SandboxChangeKind::Modified)
+                .count();
+            let deleted = self
+                .changes
+                .iter()
+                .filter(|c| c.kind == SandboxChangeKind::Deleted)
+                .count();
 
-    pub fn status_char(&self) -> char {
-        match self {
-            FileStatus::Modified(_) => 'M',
-            FileStatus::Added(_) => 'A',
-            FileStatus::Deleted(_) => 'D',
-            FileStatus::Untracked(_) => '?',
+            let mut parts = Vec::new();
+            if added > 0 {
+                parts.push(format!("+{}", added));
+            }
+            if modified > 0 {
+                parts.push(format!("~{}", modified));
+            }
+            if deleted > 0 {
+                parts.push(format!("-{}", deleted));
+            }
+
+            parts.join(" ")
         }
     }
 }
 
 pub struct App {
-    pub files: Vec<FileStatus>,
-    pub selected_index: usize,
+    pub sandboxes: Vec<SandboxInfo>,
+    pub selected_sandbox_index: usize,
+    pub selected_change_index: usize,
     pub scroll_offset: usize,
-    pub fsmonitor: FSMonitor,
     pub should_quit: bool,
-    pub show_untracked: bool,
     pub visible_height: usize,
     pub repo_path: PathBuf,
     pub repo_name: String,
-    pub auto_refresh: bool,
-    pub last_refresh: std::time::Instant,
-    pub staged_files: HashSet<PathBuf>,
-    pub tracked_files: HashSet<PathBuf>,
     pub show_help: bool,
     pub current_section: Section,
     pub sections_collapsed: HashSet<Section>,
-    pub current_branch: Option<String>,
-    pub helix_index: HelixIndexData,
-    pub ignore_rules: IgnoreRules,
+    pub last_refresh: std::time::Instant,
 }
 
 impl App {
@@ -96,39 +96,23 @@ impl App {
             .and_then(|n| n.to_str())
             .unwrap_or("repository")
             .to_string();
-        let current_branch = get_current_branch(&repo_path).ok();
-
-        let helix_index =
-            HelixIndexData::load_or_rebuild(&repo_path).context("Failed to load Helix index")?;
-
-        let mut fsmonitor = FSMonitor::new(&repo_path)?;
-        fsmonitor.start_watching_repo()?;
-
-        let ignore_rules = IgnoreRules::load(&repo_path);
 
         let mut app = Self {
-            files: Vec::new(),
-            selected_index: 0,
+            sandboxes: Vec::new(),
+            selected_sandbox_index: 0,
+            selected_change_index: 0,
             scroll_offset: 0,
-            fsmonitor,
             should_quit: false,
-            show_untracked: true,
             visible_height: 20,
             repo_path,
             repo_name,
-            auto_refresh: true,
-            last_refresh: std::time::Instant::now(),
-            staged_files: HashSet::new(),
-            tracked_files: HashSet::new(),
             show_help: false,
-            current_section: Section::Unstaged,
+            current_section: Section::Sandboxes,
             sections_collapsed: HashSet::new(),
-            current_branch,
-            helix_index,
-            ignore_rules,
+            last_refresh: std::time::Instant::now(),
         };
 
-        app.refresh_status()?;
+        app.refresh_sandboxes()?;
         Ok(app)
     }
 
@@ -138,296 +122,252 @@ impl App {
         self.visible_height = inner_height as usize;
     }
 
-    pub fn refresh_status(&mut self) -> Result<()> {
-        self.files.clear();
-        self.tracked_files.clear();
-        self.staged_files.clear();
+    pub fn refresh_sandboxes(&mut self) -> Result<()> {
+        self.sandboxes.clear();
 
-        // If index changed on disk, reload it
-        if self.fsmonitor.index_changed() {
-            self.helix_index = HelixIndexData::load_or_rebuild(&self.repo_path)?;
-            self.fsmonitor.clear_index_flag();
+        let sandboxes = list_sandboxes_silent(&self.repo_path)?;
+
+        for sandbox in sandboxes {
+            let changes =
+                get_sandbox_changes(&self.repo_path, &sandbox.manifest.name).unwrap_or_default();
+
+            self.sandboxes.push(SandboxInfo {
+                manifest: sandbox.manifest,
+                root: sandbox.root,
+                workdir: sandbox.workdir,
+                changes,
+            });
         }
 
-        // Build tracked & staged sets from helix index entries
-        let entries = self.helix_index.entries();
+        // Sort by creation time (newest first)
+        self.sandboxes
+            .sort_by(|a, b| b.manifest.created_at.cmp(&a.manifest.created_at));
 
-        for entry in entries {
-            let path = entry.path.clone();
-            let flags = entry.flags;
-
-            if flags.contains(EntryFlags::TRACKED) {
-                self.tracked_files.insert(path.clone());
-            }
-
-            if flags.contains(EntryFlags::STAGED) {
-                self.staged_files.insert(path.clone());
-            }
+        // Reset selection if out of bounds
+        if self.selected_sandbox_index >= self.sandboxes.len() && !self.sandboxes.is_empty() {
+            self.selected_sandbox_index = self.sandboxes.len() - 1;
         }
 
-        // Build FileStatus from flags (FileStatus is a simple wrapper over the flags)
-        let mut seen = std::collections::HashSet::new();
-
-        // tracked entries with changes (staged and/or modified/deleted)
-        for entry in entries {
-            let path = entry.path.clone();
-            let flags = entry.flags;
-
-            if !flags.contains(EntryFlags::TRACKED) {
-                continue;
-            }
-
-            // Clean file → no status entry
-            if !flags.intersects(EntryFlags::STAGED | EntryFlags::MODIFIED | EntryFlags::DELETED) {
-                continue;
-            }
-
-            // Partially staged case:
-            // TRACKED | STAGED | MODIFIED
-            // We represent it as "Modified" in FileStatus and let the UI
-            // also show it in the STAGED section via self.staged_files.
-
-            if flags.contains(EntryFlags::MODIFIED) {
-                if seen.insert(path.clone()) {
-                    self.files.push(FileStatus::Modified(path));
-                }
-            } else if flags.contains(EntryFlags::DELETED) {
-                if seen.insert(path.clone()) {
-                    self.files.push(FileStatus::Deleted(path));
-                }
-            } else if flags.contains(EntryFlags::STAGED) {
-                // Staged, no extra working-tree changes -> treat as "Added"/"Staged change"
-                if seen.insert(path.clone()) {
-                    self.files.push(FileStatus::Added(path));
-                }
-            }
-        }
-
-        // Untracked files (not in helix index)
-        if self.show_untracked {
-            let untracked_paths = self.scan_for_untracked_files()?;
-            for path in untracked_paths {
-                if seen.insert(path.clone()) {
-                    self.files.push(FileStatus::Untracked(path));
-                }
-            }
-        }
-
-        //  Sort for stable display
-        self.files.sort_by(|a, b| a.path().cmp(b.path()));
+        self.last_refresh = std::time::Instant::now();
 
         Ok(())
     }
 
-    /// Scan working tree for untracked files
-    /// This catches files that existed before FSMonitor started
-    fn scan_for_untracked_files(&mut self) -> Result<Vec<PathBuf>> {
-        let mut untracked = Vec::new();
+    pub fn get_selected_sandbox(&self) -> Option<&SandboxInfo> {
+        self.sandboxes.get(self.selected_sandbox_index)
+    }
 
-        // No filter_entry that closes over &self
-        for entry in WalkDir::new(&self.repo_path)
-            .follow_links(false)
-            .into_iter()
-        {
+    pub fn get_selected_change(&self) -> Option<&SandboxChange> {
+        self.get_selected_sandbox()
+            .and_then(|s| s.changes.get(self.selected_change_index))
+    }
+    pub fn list_sandboxes(repo_path: &Path) -> Result<Vec<Sandbox>> {
+        let sandboxes_dir = repo_path.join(".helix").join("sandboxes");
+
+        if !sandboxes_dir.exists() {
+            println!("No sandboxes found.");
+            println!("Create one with: helix sandbox create <name>");
+            return Ok(vec![]);
+        }
+
+        let mut sandboxes = Vec::new();
+
+        for entry in fs::read_dir(&sandboxes_dir)? {
             let entry = entry?;
+            let path = entry.path();
 
-            // Now the borrow of &self is only for this call, and ends right after
-            if !self.should_process_entry(&entry) {
-                continue;
+            if path.is_dir() {
+                let manifest_path = path.join("manifest.toml");
+                if manifest_path.exists() {
+                    if let Ok(manifest) = SandboxManifest::load(&path) {
+                        sandboxes.push(Sandbox {
+                            manifest,
+                            root: path.clone(),
+                            workdir: path.join("workdir"),
+                        });
+                    }
+                }
             }
-
-            if !entry.path().is_file() {
-                continue;
-            }
-
-            let rel_path = entry.path().strip_prefix(&self.repo_path)?;
-
-            // Short immutable borrow for helix_index
-            let tracked = self.helix_index.is_tracked(rel_path);
-            if tracked {
-                // Now we can mutably borrow self.tracked_files safely
-                self.tracked_files.insert(rel_path.to_path_buf());
-                continue;
-            }
-
-            if self.ignore_rules.should_ignore(rel_path) {
-                continue;
-            }
-
-            untracked.push(rel_path.to_path_buf());
         }
 
-        Ok(untracked)
+        if sandboxes.is_empty() {
+            println!("No sandboxes found.");
+            println!("Create one with: helix sandbox create <name>");
+            return Ok(vec![]);
+        }
+
+        // Sort by creation time (newest first)
+        sandboxes.sort_by(|a, b| b.manifest.created_at.cmp(&a.manifest.created_at));
+
+        println!("Sandboxes:\n");
+
+        for sandbox in &sandboxes {
+            let age = format_age(sandbox.manifest.created_at);
+            let base_short = &sandbox.manifest.base_commit[..8];
+
+            // Quick status check
+            let status = get_sandbox_status_summary(repo_path, &sandbox.manifest.name);
+
+            println!(
+                "  {}  (base: {}, {}, {})",
+                sandbox.manifest.name, base_short, age, status
+            );
+        }
+
+        println!();
+        Ok(sandboxes)
     }
 
-    fn should_process_entry(&self, entry: &walkdir::DirEntry) -> bool {
-        let name = entry.file_name().to_string_lossy();
+    pub fn sandbox_status(
+        repo_path: &Path,
+        name: &str,
+        options: StatusOptions,
+    ) -> Result<Vec<SandboxChange>> {
+        let sandbox_root = repo_path.join(".helix").join("sandboxes").join(name);
 
-        // Skip .git and .helix
-        if name == ".git" || name == ".helix" {
-            return false;
+        if !sandbox_root.exists() {
+            bail!("Sandbox '{}' does not exist", name);
         }
 
-        // For directories, check if ignored
-        if entry.path().is_dir() {
-            let rel_path = match entry.path().strip_prefix(&self.repo_path) {
-                Ok(p) => p,
-                Err(_) => return false,
-            };
+        let manifest = SandboxManifest::load(&sandbox_root)?;
 
-            if self.ignore_rules.should_ignore(rel_path) {
-                return false;
+        println!(
+            "Sandbox '{}' (base: {})\n",
+            name,
+            &manifest.base_commit[..8]
+        );
+
+        let changes = get_sandbox_changes(repo_path, name)?;
+
+        if changes.is_empty() {
+            println!("No changes in sandbox '{}'", name);
+            println!("\nUse existing helix commands in the sandbox workdir:");
+            println!("  cd {}", sandbox_root.join("workdir").display());
+            println!("  helix status   # view status");
+            println!("  helix add .    # stage changes");
+            println!("  helix commit   # commit changes");
+        } else {
+            println!("Changes in sandbox '{}':\n", name);
+            for change in &changes {
+                println!("  {} {}", change.status_char(), change.path.display());
             }
+            println!("\n{} file(s) changed", changes.len());
         }
 
-        true
-    }
-
-    /// Get the currently selected file
-    pub fn get_selected_file(&self) -> Option<&FileStatus> {
-        if self.files.is_empty() {
-            return None;
-        }
-        self.files.get(self.selected_index)
-    }
-
-    /// Toggle staging for the selected file
-    pub fn toggle_stage(&mut self) -> Result<()> {
-        if let Some(file) = self.get_selected_file() {
-            let path = file.path().to_path_buf();
-
-            if self.staged_files.contains(&path) {
-                // Unstage: remove STAGED flag
-                self.helix_index.unstage_file(&path)?;
-                self.staged_files.remove(&path);
-            } else {
-                // Stage: add STAGED flag
-                self.helix_index.stage_file(&path)?;
-                self.staged_files.insert(path);
-            }
-
-            // Persist changes to .helix/helix.idx
-            self.helix_index.persist()?;
-        }
-
-        Ok(())
-    }
-
-    /// Stage all files
-    pub fn stage_all(&mut self) -> Result<()> {
-        for file in &self.files {
-            let path = file.path().to_path_buf();
-            self.helix_index.stage_file(&path)?;
-            self.staged_files.insert(path);
-        }
-
-        // Persist changes to .helix/helix.idx
-        self.helix_index.persist()?;
-        Ok(())
-    }
-
-    /// Unstage all files
-    pub fn unstage_all(&mut self) -> Result<()> {
-        for path in self.staged_files.clone() {
-            self.helix_index.unstage_file(&path)?;
-        }
-
-        self.staged_files.clear();
-
-        // Persist changes to .helix/helix.idx
-        self.helix_index.persist()?;
-        Ok(())
+        Ok(changes)
     }
 
     pub fn handle_action(&mut self, action: Action) -> Result<()> {
-        let visible = self.files.iter();
-        let visible_count = visible.len();
-
-        if visible_count == 0
-            && !matches!(
-                action,
-                Action::Quit | Action::Refresh | Action::ToggleHelp | Action::SwitchSection
-            )
-        {
-            return Ok(());
-        }
-
         match action {
             Action::Quit => {
                 self.should_quit = true;
             }
             Action::MoveUp => {
-                if self.selected_index > 0 {
-                    self.selected_index -= 1;
-                    self.adjust_scroll();
+                match self.current_section {
+                    Section::Sandboxes => {
+                        if self.selected_sandbox_index > 0 {
+                            self.selected_sandbox_index -= 1;
+                            self.selected_change_index = 0; // Reset change selection
+                        }
+                    }
+                    Section::Changes => {
+                        if self.selected_change_index > 0 {
+                            self.selected_change_index -= 1;
+                        }
+                    }
                 }
+                self.adjust_scroll();
             }
             Action::MoveDown => {
-                if self.selected_index < visible_count.saturating_sub(1) {
-                    self.selected_index += 1;
-                    self.adjust_scroll();
+                match self.current_section {
+                    Section::Sandboxes => {
+                        if self.selected_sandbox_index < self.sandboxes.len().saturating_sub(1) {
+                            self.selected_sandbox_index += 1;
+                            self.selected_change_index = 0; // Reset change selection
+                        }
+                    }
+                    Section::Changes => {
+                        if let Some(sandbox) = self.get_selected_sandbox() {
+                            if self.selected_change_index < sandbox.changes.len().saturating_sub(1)
+                            {
+                                self.selected_change_index += 1;
+                            }
+                        }
+                    }
                 }
+                self.adjust_scroll();
             }
             Action::PageUp => {
-                self.selected_index = self.selected_index.saturating_sub(10);
+                match self.current_section {
+                    Section::Sandboxes => {
+                        self.selected_sandbox_index =
+                            self.selected_sandbox_index.saturating_sub(10);
+                    }
+                    Section::Changes => {
+                        self.selected_change_index = self.selected_change_index.saturating_sub(10);
+                    }
+                }
                 self.adjust_scroll();
             }
             Action::PageDown => {
-                self.selected_index =
-                    (self.selected_index + 10).min(visible_count.saturating_sub(1));
+                match self.current_section {
+                    Section::Sandboxes => {
+                        self.selected_sandbox_index = (self.selected_sandbox_index + 10)
+                            .min(self.sandboxes.len().saturating_sub(1));
+                    }
+                    Section::Changes => {
+                        if let Some(sandbox) = self.get_selected_sandbox() {
+                            self.selected_change_index = (self.selected_change_index + 10)
+                                .min(sandbox.changes.len().saturating_sub(1));
+                        }
+                    }
+                }
                 self.adjust_scroll();
             }
             Action::GoToTop => {
-                self.selected_index = 0;
+                match self.current_section {
+                    Section::Sandboxes => self.selected_sandbox_index = 0,
+                    Section::Changes => self.selected_change_index = 0,
+                }
                 self.scroll_offset = 0;
             }
             Action::GoToBottom => {
-                self.selected_index = visible_count.saturating_sub(1);
+                match self.current_section {
+                    Section::Sandboxes => {
+                        self.selected_sandbox_index = self.sandboxes.len().saturating_sub(1);
+                    }
+                    Section::Changes => {
+                        if let Some(sandbox) = self.get_selected_sandbox() {
+                            self.selected_change_index = sandbox.changes.len().saturating_sub(1);
+                        }
+                    }
+                }
                 self.adjust_scroll();
             }
-            Action::ToggleStage => {
-                self.toggle_stage()?;
-            }
-            Action::StageAll => {
-                self.stage_all()?;
-            }
-            Action::UnstageAll => {
-                self.unstage_all()?;
-            }
             Action::Refresh => {
-                self.refresh_status()?;
-                // Reset selection if out of bounds
-                let visible_count = self.files.len();
-                if self.selected_index >= visible_count && visible_count > 0 {
-                    self.selected_index = visible_count - 1;
-                }
-            }
-            Action::ToggleUntracked => {
-                self.show_untracked = !self.show_untracked;
-                self.refresh_status()?;
+                self.refresh_sandboxes()?;
             }
             Action::ToggleHelp => {
                 self.show_help = !self.show_help;
             }
             Action::SwitchSection => {
-                // Toggle between Unstaged and Staged sections
                 self.current_section = match self.current_section {
-                    Section::Unstaged => Section::Staged,
-                    Section::Staged => Section::Unstaged,
-                    Section::Untracked => Section::Staged,
+                    Section::Sandboxes => Section::Changes,
+                    Section::Changes => Section::Sandboxes,
                 };
-                // Reset selection when switching sections
-                self.selected_index = 0;
                 self.scroll_offset = 0;
             }
             Action::CollapseSection => {
-                // Collapse the current section
                 self.sections_collapsed.insert(self.current_section);
             }
             Action::ExpandSection => {
-                // Expand the current section
                 self.sections_collapsed.remove(&self.current_section);
             }
+            // These actions don't apply to sandbox TUI
+            Action::ToggleStage
+            | Action::StageAll
+            | Action::UnstageAll
+            | Action::ToggleUntracked => {}
         }
 
         Ok(())
@@ -436,18 +376,26 @@ impl App {
     fn adjust_scroll(&mut self) {
         let visible_height = self.visible_height.max(1);
 
-        // If selected is above visible area, scroll up
-        if self.selected_index < self.scroll_offset {
-            self.scroll_offset = self.selected_index;
-        }
-        // If selected is below visible area, scroll down
-        else if self.selected_index >= self.scroll_offset + visible_height {
-            self.scroll_offset = self.selected_index.saturating_sub(visible_height - 1);
+        let selected = match self.current_section {
+            Section::Sandboxes => self.selected_sandbox_index,
+            Section::Changes => self.selected_change_index,
+        };
+
+        if selected < self.scroll_offset {
+            self.scroll_offset = selected;
+        } else if selected >= self.scroll_offset + visible_height {
+            self.scroll_offset = selected.saturating_sub(visible_height - 1);
         }
 
-        // Ensure scroll doesn't go past the end
-        let visible_count = self.files.len();
-        let max_scroll = visible_count.saturating_sub(visible_height);
+        let count = match self.current_section {
+            Section::Sandboxes => self.sandboxes.len(),
+            Section::Changes => self
+                .get_selected_sandbox()
+                .map(|s| s.changes.len())
+                .unwrap_or(0),
+        };
+
+        let max_scroll = count.saturating_sub(visible_height);
         self.scroll_offset = self.scroll_offset.min(max_scroll);
     }
 
@@ -476,11 +424,6 @@ impl App {
             let terminal_height = terminal.size()?.height;
             self.update_visible_height(terminal_height);
 
-            // Auto-refresh every 2 seconds if enabled
-            if self.auto_refresh && self.last_refresh.elapsed().as_secs() >= 2 {
-                self.refresh_status()?;
-            }
-
             terminal.draw(|f| {
                 ui::draw(f, self);
             })?;
@@ -507,11 +450,7 @@ impl App {
                         KeyCode::PageUp => Some(Action::PageUp),
                         KeyCode::Home => Some(Action::GoToTop),
                         KeyCode::End => Some(Action::GoToBottom),
-                        KeyCode::Char(' ') | KeyCode::Enter => Some(Action::ToggleStage),
-                        KeyCode::Char('a') => Some(Action::StageAll),
-                        KeyCode::Char('A') => Some(Action::UnstageAll),
                         KeyCode::Char('r') => Some(Action::Refresh),
-                        KeyCode::Char('t') => Some(Action::ToggleUntracked),
                         KeyCode::Char('?') => Some(Action::ToggleHelp),
                         KeyCode::Tab => Some(Action::SwitchSection),
                         KeyCode::Char('h') => Some(Action::CollapseSection),
@@ -534,27 +473,67 @@ impl App {
     }
 }
 
-/// Get current branch name from .helix/HEAD
-fn get_current_branch(repo_path: &Path) -> Result<String> {
-    let head_path = repo_path.join(".helix").join("HEAD");
+/// List sandboxes without printing to stdout (for TUI)
+fn list_sandboxes_silent(repo_path: &Path) -> Result<Vec<Sandbox>> {
+    use std::fs;
 
-    if !head_path.exists() {
-        return Ok("(no branch)".to_string());
+    let sandboxes_dir = repo_path.join(".helix").join("sandboxes");
+
+    if !sandboxes_dir.exists() {
+        return Ok(vec![]);
     }
 
-    let content = fs::read_to_string(&head_path)?;
-    let content = content.trim();
+    let mut sandboxes = Vec::new();
 
-    if content.starts_with("ref:") {
-        let ref_path = content.strip_prefix("ref:").unwrap().trim();
+    for entry in fs::read_dir(&sandboxes_dir)? {
+        let entry = entry?;
+        let path = entry.path();
 
-        // Extract branch name from refs/heads/main
-        if let Some(branch) = ref_path.strip_prefix("refs/heads/") {
-            Ok(branch.to_string())
-        } else {
-            Ok("(unknown)".to_string())
+        if path.is_dir() {
+            let manifest_path = path.join("manifest.toml");
+            if manifest_path.exists() {
+                if let Ok(manifest) = SandboxManifest::load(&path) {
+                    sandboxes.push(Sandbox {
+                        manifest,
+                        root: path.clone(),
+                        workdir: path.join("workdir"),
+                    });
+                }
+            }
         }
+    }
+
+    Ok(sandboxes)
+}
+
+fn format_age(timestamp: u64) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let age_secs = now.saturating_sub(timestamp);
+
+    if age_secs < 60 {
+        "just now".to_string()
+    } else if age_secs < 3600 {
+        format!("{} min ago", age_secs / 60)
+    } else if age_secs < 86400 {
+        format!("{} hours ago", age_secs / 3600)
     } else {
-        Ok("(detached HEAD)".to_string())
+        format!("{} days ago", age_secs / 86400)
+    }
+}
+
+fn get_sandbox_status_summary(repo_path: &Path, name: &str) -> String {
+    match get_sandbox_changes(repo_path, name) {
+        Ok(changes) => {
+            if changes.is_empty() {
+                "clean".to_string()
+            } else {
+                format!("{} changes", changes.len())
+            }
+        }
+        Err(_) => "unknown".to_string(),
     }
 }

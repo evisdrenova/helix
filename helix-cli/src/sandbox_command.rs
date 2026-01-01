@@ -75,6 +75,16 @@ impl Default for MergeOptions {
     }
 }
 
+pub struct ListOptions {
+    pub verbose: bool,
+}
+
+impl Default for ListOptions {
+    fn default() -> Self {
+        Self { verbose: false }
+    }
+}
+
 pub struct CommitOptions {
     pub message: String,
     pub author: Option<String>,
