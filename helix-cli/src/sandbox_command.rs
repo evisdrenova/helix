@@ -427,7 +427,6 @@ pub fn destroy_sandbox(repo_path: &Path, name: &str, options: DestroyOptions) ->
 pub fn switch_sandbox(repo_path: &Path, name: &str) -> Result<()> {
     let sandbox_root = repo_path.join(".helix").join("sandboxes").join(name);
 
-    // Check if sandbox exists
     if !sandbox_root.exists() {
         bail!(
             "Sandbox '{}' does not exist. Create it with 'helix sandbox create {}'",
@@ -436,7 +435,6 @@ pub fn switch_sandbox(repo_path: &Path, name: &str) -> Result<()> {
         );
     }
 
-    // Load manifest to get branch name
     let manifest = SandboxManifest::load(&sandbox_root)?;
     let workdir = sandbox_root.join("workdir");
 
@@ -454,8 +452,13 @@ pub fn switch_sandbox(repo_path: &Path, name: &str) -> Result<()> {
     );
     println!("  workdir: {}", workdir.display());
     println!();
-    println!("To work in this sandbox, cd to the workdir:");
+    println!("To work in this sandbox:");
     println!("  cd {}", workdir.display());
+    println!();
+    println!("Then use regular helix commands:");
+    println!("  helix status");
+    println!("  helix add <files>");
+    println!("  helix commit -m \"message\"");
 
     Ok(())
 }
@@ -512,10 +515,8 @@ fn collect_files_from_commit(
         bail!("Commit too short");
     }
 
-    let mut tree_hash = [0u8; 32];
-    tree_hash.copy_from_slice(&commit_bytes[0..32]);
-
-    tree_store.collect_all_files(&tree_hash)
+    let tree_hash = Commit::from_bytes(&commit_bytes)?;
+    tree_store.collect_all_files(&tree_hash.tree_hash)
 }
 
 /// Collect all file paths from sandbox workdir
@@ -676,67 +677,69 @@ pub fn merge_sandbox(repo_path: &Path, name: &str, options: MergeOptions) -> Res
         bail!("Sandbox '{}' does not exist", name);
     }
 
-    // Check if sandbox has been committed
-    let commit_ref_path = sandbox_root.join("commit");
-    if !commit_ref_path.exists() {
-        bail!(
-            "Sandbox '{}' has no commit. Run 'helix sandbox commit {} -m <message>' first.",
-            name,
-            name
-        );
-    }
-
-    let sandbox_commit_hex = fs::read_to_string(&commit_ref_path)?.trim().to_string();
-    let sandbox_commit = hex_to_hash(&sandbox_commit_hex)?;
-
     let manifest = SandboxManifest::load(&sandbox_root)?;
     let base_commit = manifest.base_commit_hash()?;
 
-    // Determine target branch
-    let target_branch = options.into_branch.unwrap_or_else(|| "main".to_string());
-    let ref_name = format!("refs/heads/{}", target_branch);
+    // Get the current sandbox branch HEAD
+    let sandbox_branch = manifest
+        .branch
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Sandbox has no branch"))?;
 
-    if options.verbose {
-        println!(
-            "Merging sandbox '{}' commit {} into {}",
+    let ref_name = format!("refs/heads/{}", sandbox_branch);
+    let refs = FsRefStore::new(repo_path);
+
+    let sandbox_head = refs
+        .get_ref(&ref_name)?
+        .ok_or_else(|| anyhow::anyhow!("Sandbox branch not found"))?;
+
+    // Check if there are any commits beyond base
+    if sandbox_head == base_commit {
+        bail!(
+            "Sandbox '{}' has no commits. Make changes and commit first:\n\
+             cd {}\n\
+             helix add .\n\
+             helix commit -m \"message\"",
             name,
-            &sandbox_commit_hex[..8],
-            target_branch
+            sandbox_root.join("workdir").display()
         );
     }
 
+    // Determine target branch
+    let target_branch = options.into_branch.unwrap_or_else(|| "main".to_string());
+    let target_ref_name = format!("refs/heads/{}", target_branch);
+
+    if options.verbose {
+        println!("Merging sandbox '{}' into {}", name, target_branch);
+    }
+
     // Get current target HEAD
-    let refs = FsRefStore::new(repo_path);
-    let target_head = refs.get_ref(&ref_name)?;
+    let target_head = refs.get_ref(&target_ref_name)?;
 
     match target_head {
         None => {
-            // No target branch yet - just set it to sandbox commit
-            refs.set_ref(&ref_name, sandbox_commit)?;
+            refs.set_ref(&target_ref_name, sandbox_head)?;
             println!(
                 "Created branch '{}' at {}",
                 target_branch,
-                &sandbox_commit_hex[..8]
+                &hash_to_hex(&sandbox_head)[..8]
             );
         }
         Some(current_head) => {
-            // Check if it's a fast-forward
             if current_head == base_commit {
-                // Fast-forward: target hasn't moved since sandbox was created
-                refs.set_ref(&ref_name, sandbox_commit)?;
+                refs.set_ref(&target_ref_name, sandbox_head)?;
                 println!("Fast-forward merged '{}' into '{}'", name, target_branch);
             } else {
-                // Target has moved - need real merge (V2)
                 bail!(
                     "Cannot fast-forward: '{}' has diverged from sandbox base.\n\
-                     Manual merge required (not yet implemented in V1).",
+                     Manual merge required (TODO:: not yet implemented).",
                     target_branch
                 );
             }
         }
     }
 
-    Ok(sandbox_commit)
+    Ok(sandbox_head)
 }
 
 /// Build a tree from workdir files
