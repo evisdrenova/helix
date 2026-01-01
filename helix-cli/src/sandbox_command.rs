@@ -38,10 +38,33 @@ pub struct DestroyOptions {
     verbose: bool,
 }
 
+impl Default for DestroyOptions {
+    fn default() -> Self {
+        Self {
+            force: false,
+            verbose: false,
+        }
+    }
+}
+
 impl Default for CreateOptions {
     fn default() -> Self {
         Self {
             base_commit: None,
+            verbose: false,
+        }
+    }
+}
+
+pub struct MergeOptions {
+    pub into_branch: Option<String>,
+    pub verbose: bool,
+}
+
+impl Default for MergeOptions {
+    fn default() -> Self {
+        Self {
+            into_branch: None,
             verbose: false,
         }
     }
@@ -77,6 +100,10 @@ impl SandboxManifest {
             .with_context(|| format!("Failed to read manifest at {}", manifest_path.display()))?;
         toml::from_str(&content).context("Failed to parse sandbox manifest")
     }
+
+    pub fn base_commit_hash(&self) -> Result<Hash> {
+        hex_to_hash(&self.base_commit)
+    }
 }
 
 pub fn run_sandbox_tui(repo_path: Option<&Path>) -> Result<()> {
@@ -88,6 +115,31 @@ pub fn run_sandbox_tui(repo_path: Option<&Path>) -> Result<()> {
     app.run()?;
 
     Ok(())
+}
+
+// TODO: we should just combine this with the status_tui's FileStatus and make it generic
+// we should be able to compare a dir against a commit regardless of where it is, but it's easier now to juts have it separate
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SandboxChangeKind {
+    Added,
+    Modified,
+    Deleted,
+}
+
+#[derive(Debug, Clone)]
+pub struct SandboxChange {
+    pub path: PathBuf,
+    pub kind: SandboxChangeKind,
+}
+
+impl SandboxChange {
+    pub fn status_char(&self) -> char {
+        match self.kind {
+            SandboxChangeKind::Added => 'A',
+            SandboxChangeKind::Modified => 'M',
+            SandboxChangeKind::Deleted => 'D',
+        }
+    }
 }
 
 /// Create a new sandbox
@@ -175,9 +227,7 @@ pub fn destroy_sandbox(repo_path: &Path, name: &str, options: DestroyOptions) ->
     let manifest = SandboxManifest::load(&sandbox_root)?;
 
     // Check for uncommitted changes unless force
-    if !options.force {
-        // ... existing check ...
-    }
+    if !options.force {}
 
     // Delete the sandbox directory
     fs::remove_dir_all(&sandbox_root).with_context(|| {
@@ -187,7 +237,7 @@ pub fn destroy_sandbox(repo_path: &Path, name: &str, options: DestroyOptions) ->
         )
     })?;
 
-    // Delete the associated branch
+    // Delete the branch
     if let Some(branch_name) = manifest.branch {
         let ref_path = repo_path
             .join(".helix")
