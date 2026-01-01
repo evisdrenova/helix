@@ -48,19 +48,7 @@ enum SandboxCommands {
         verbose: bool,
     },
     /// List all sandboxes
-    List {
-        /// Show verbose output
-        #[arg(short, long)]
-        verbose: bool,
-    },
-    /// Show status of a sandbox (changes vs base commit)
-    Status {
-        /// Sandbox name
-        name: String,
-        /// Show verbose output
-        #[arg(short, long)]
-        verbose: bool,
-    },
+    List {},
     /// Commit sandbox changes
     Commit {
         /// Sandbox name
@@ -316,6 +304,8 @@ async fn main() -> Result<()> {
         Some(Commands::Sandbox { command }) => {
             let repo_path = resolve_repo_path(None)?;
 
+            sandbox_command::run_sandbox_tui(Some(&repo_path))?;
+
             match command {
                 SandboxCommands::Create {
                     name,
@@ -334,13 +324,8 @@ async fn main() -> Result<()> {
 
                     sandbox_command::create_sandbox(&repo_path, &name, options)?;
                 }
-                SandboxCommands::List { verbose } => {
-                    // let options = sandbox_command::ListOptions { verbose };
-                    // sandbox_command::list_sandboxes(&repo_path, options)?;
-                }
-                SandboxCommands::Status { name, verbose } => {
-                    // let options = sandbox_command::StatusOptions { verbose };
-                    // sandbox_command::sandbox_status(&repo_path, &name, options)?;
+                SandboxCommands::List {} => {
+                    sandbox_command::run_sandbox_tui(Some(&repo_path))?;
                 }
                 SandboxCommands::Commit {
                     name,
