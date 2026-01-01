@@ -193,7 +193,25 @@ async fn main() -> Result<()> {
             if (name.is_none() && !delete && !rename) || list {
                 branch_command::run_branch_tui(Some(&repo_path))?;
             } else if let Some(branch_name) = name {
-                if delete {
+                // Handle sandbox branches first (before validation)
+                if branch_name.starts_with("sandboxes/") {
+                    let sandbox_name = branch_name.strip_prefix("sandboxes/").unwrap();
+
+                    if delete {
+                        let destroy_options = sandbox_command::DestroyOptions { force, verbose };
+                        sandbox_command::destroy_sandbox(
+                            &repo_path,
+                            sandbox_name,
+                            destroy_options,
+                        )?;
+                    } else if rename {
+                        eprintln!("Error: Cannot rename sandboxes. Destroy and recreate instead.");
+                        std::process::exit(1);
+                    } else {
+                        // Switch to sandbox
+                        sandbox_command::switch_sandbox(&repo_path, sandbox_name)?;
+                    }
+                } else if delete {
                     branch_command::delete_branch(&repo_path, &branch_name, options)?;
                 } else if rename {
                     if let Some(new) = new_name {
@@ -204,36 +222,14 @@ async fn main() -> Result<()> {
                         std::process::exit(1);
                     }
                 } else {
-                    // Check if branch exists (regular or sandbox)
-                    let regular_branch_exists = repo_path
+                    // Regular branch - check if exists
+                    let branch_exists = repo_path
                         .join(format!(".helix/refs/heads/{}", branch_name))
                         .exists();
 
-                    let sandbox_branch_exists = if branch_name.starts_with("sandboxes/") {
-                        let sandbox_name = branch_name.strip_prefix("sandboxes/").unwrap();
-                        repo_path
-                            .join(format!(".helix/refs/sandboxes/{}", sandbox_name))
-                            .exists()
-                    } else {
-                        false
-                    };
-
-                    if regular_branch_exists {
+                    if branch_exists {
                         branch_command::switch_branch(&repo_path, &branch_name)?;
-                    } else if sandbox_branch_exists {
-                        // Switch to sandbox
-                        let sandbox_name = branch_name.strip_prefix("sandboxes/").unwrap();
-                        sandbox_command::switch_sandbox(&repo_path, sandbox_name)?;
                     } else {
-                        // Create new branch (but not if it starts with sandboxes/)
-                        if branch_name.starts_with("sandboxes/") {
-                            eprintln!(
-                                "Error: Sandbox '{}' does not exist.",
-                                branch_name.strip_prefix("sandboxes/").unwrap()
-                            );
-                            eprintln!("Create it with: helix sandbox create <name>");
-                            std::process::exit(1);
-                        }
                         branch_command::create_branch(&repo_path, &branch_name, options)?;
                     }
                 }
