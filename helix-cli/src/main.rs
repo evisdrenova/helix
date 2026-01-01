@@ -340,23 +340,23 @@ async fn main() -> Result<()> {
                     author,
                     verbose,
                 } => {
-                    // let options = sandbox_command::CommitOptions {
-                    //     message,
-                    //     author,
-                    //     verbose,
-                    // };
-                    // sandbox_command::commit_sandbox(&repo_path, &name, options)?;
+                    let options = sandbox_command::CommitOptions {
+                        message,
+                        author,
+                        verbose,
+                    };
+                    sandbox_command::commit_sandbox(&repo_path, &name, options)?;
                 }
                 SandboxCommands::Merge {
                     name,
                     into,
                     verbose,
                 } => {
-                    // let options = sandbox_command::MergeOptions {
-                    //     into_branch: into,
-                    //     verbose,
-                    // };
-                    // sandbox_command::merge_sandbox(&repo_path, &name, options)?;
+                    let options = sandbox_command::MergeOptions {
+                        into_branch: into,
+                        verbose,
+                    };
+                    sandbox_command::merge_sandbox(&repo_path, &name, options)?;
                 }
                 SandboxCommands::Destroy {
                     name,
