@@ -11,8 +11,11 @@ use std::io;
 use std::path::Path;
 
 use super::ui;
-use crate::helix_index::commit::{Commit, CommitStore};
 use crate::helix_index::state::get_branch_upstream;
+use crate::{
+    helix_index::commit::{Commit, CommitStore},
+    sandbox_command::RepoContext,
+};
 
 #[derive(Debug)]
 pub struct BranchInfo {
@@ -51,6 +54,9 @@ pub enum Focus {
 
 impl App {
     pub fn new(repo_path: &Path) -> Result<Self> {
+        let context = RepoContext::detect(repo_path)?;
+        let repo_path = &context.repo_root;
+
         let repo_name = repo_path
             .file_name()
             .and_then(|n| n.to_str())

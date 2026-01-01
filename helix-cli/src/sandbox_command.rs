@@ -298,7 +298,7 @@ pub fn create_sandbox(repo_path: &Path, name: &str, options: CreateOptions) -> R
 
     // create a branch for the sandbox with the name as the branch_name
     let branch_name = format!("sandboxes/{}", name);
-    let ref_name = format!("refs/heads/{}", branch_name);
+    let ref_name = format!("refs/{}", branch_name);
     let refs = FsRefStore::new(repo_path);
 
     refs.set_ref(&ref_name, base_commit)
@@ -333,10 +333,9 @@ fn activate_sandbox(
     files_count: Option<u64>,
 ) -> Result<()> {
     // Update HEAD to point to sandbox branch
-    if let Some(ref branch_name) = manifest.branch {
-        let head_path = repo_path.join(".helix").join("HEAD");
-        fs::write(&head_path, format!("ref: refs/heads/{}\n", branch_name))?;
-    }
+
+    let head_path = repo_path.join(".helix").join("HEAD");
+    fs::write(&head_path, format!("ref: refs/sandboxes/{}\n", name))?;
 
     // Optional: record the currently active sandbox (handy for other commands)
     let active_path = repo_path.join(".helix").join("ACTIVE_SANDBOX");
@@ -709,7 +708,7 @@ pub fn commit_sandbox(repo_path: &Path, name: &str, options: CommitOptions) -> R
 
     // Update sandbox branch
     if let Some(ref branch_name) = manifest.branch {
-        let ref_name = format!("refs/heads/{}", branch_name);
+        let ref_name = format!("refs/sandboxes/{}", branch_name);
         let refs = FsRefStore::new(repo_path);
         refs.set_ref(&ref_name, commit_hash.commit_hash)?;
     }
@@ -744,7 +743,7 @@ pub fn merge_sandbox(repo_path: &Path, name: &str, options: MergeOptions) -> Res
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Sandbox has no branch"))?;
 
-    let ref_name = format!("refs/heads/{}", sandbox_branch);
+    let ref_name = format!("refs/{}", sandbox_branch);
     let refs = FsRefStore::new(repo_path);
 
     let sandbox_head = refs
@@ -854,272 +853,3 @@ fn get_author(repo_path: &Path) -> Result<String> {
 
     bail!("Author not configured. Add [user] section to helix.toml")
 }
-
-// #[cfg(test)]
-// mod tests {
-//     use std::path::PathBuf;
-
-//     use super::*;
-//     use crate::commit_command::{commit, CommitOptions};
-//     use crate::init_command::init_helix_repo;
-//     use tempfile::TempDir;
-
-//     fn init_test_repo(path: &Path) -> Result<()> {
-//         init_helix_repo(path, None)?;
-
-//         // Set up config
-//         let config_path = path.join("helix.toml");
-//         fs::write(
-//             &config_path,
-//             r#"
-// [user]
-// name = "Test User"
-// email = "test@test.com"
-// "#,
-//         )?;
-
-//         Ok(())
-//     }
-
-//     fn make_initial_commit(repo_path: &Path) -> Result<Hash> {
-//         use crate::add_command::{add, AddOptions};
-
-//         // Create and add a file
-//         fs::write(repo_path.join("test.txt"), "content")?;
-//         add(
-//             repo_path,
-//             &[PathBuf::from("test.txt")],
-//             AddOptions::default(),
-//         )?;
-
-//         // Make initial commit
-//         commit(
-//             repo_path,
-//             CommitOptions {
-//                 message: "Initial commit".to_string(),
-//                 author: Some("Test <test@test.com>".to_string()),
-//                 allow_empty: false,
-//                 amend: false,
-//                 verbose: false,
-//             },
-//         )
-//     }
-
-//     #[test]
-//     fn test_get_current_sandbox_before_commit() -> Result<()> {
-//         let temp_dir = TempDir::new()?;
-//         init_test_repo(temp_dir.path())?;
-
-//         let sandbox = get_current_sandbox(temp_dir.path())?;
-//         assert_eq!(sandbox, "main");
-
-//         Ok(())
-//     }
-
-//     #[test]
-//     fn test_create_sandbox() -> Result<()> {
-//         let temp_dir = TempDir::new()?;
-//         init_test_repo(temp_dir.path())?;
-//         make_initial_commit(temp_dir.path())?;
-
-//         // Create new sandbox
-//         create_sandbox(temp_dir.path(), "feature", CreateOptions::default())?;
-
-//         // Verify sandbox file exists
-//         let sandbox_path = temp_dir.path().join(".helix/refs/heads/feature");
-//         assert!(sandbox_path.exists());
-
-//         // Verify it points to current commit
-//         let main_hash = fs::read_to_string(temp_dir.path().join(".helix/refs/heads/main"))?;
-//         let feature_hash = fs::read_to_string(&sandbox_path)?;
-//         assert_eq!(main_hash.trim(), feature_hash.trim());
-
-//         Ok(())
-//     }
-
-//     #[test]
-//     fn test_create_sandbox_already_exists() -> Result<()> {
-//         let temp_dir = TempDir::new()?;
-//         init_test_repo(temp_dir.path())?;
-//         make_initial_commit(temp_dir.path())?;
-
-//         create_sandbox(temp_dir.path(), "feature", CreateOptions::default())?;
-
-//         // Try to create again - should fail
-//         let result = create_sandbox(temp_dir.path(), "feature", CreateOptions::default());
-//         assert!(result.is_err());
-//         assert!(result.unwrap_err().to_string().contains("already exists"));
-
-//         Ok(())
-//     }
-
-//     #[test]
-//     fn test_create_sandbox_with_force() -> Result<()> {
-//         let temp_dir = TempDir::new()?;
-//         init_test_repo(temp_dir.path())?;
-//         make_initial_commit(temp_dir.path())?;
-
-//         create_sandbox(temp_dir.path(), "feature", CreateOptions::default())?;
-
-//         // Create again with force - should succeed
-//         let result = create_sandbox(
-//             temp_dir.path(),
-//             "feature",
-//             CreateOptions {
-//                 ..Default::default()
-//             },
-//         );
-//         assert!(result.is_ok());
-
-//         Ok(())
-//     }
-
-//     #[test]
-//     fn test_delete_sandbox() -> Result<()> {
-//         let temp_dir = TempDir::new()?;
-//         init_test_repo(temp_dir.path())?;
-//         make_initial_commit(temp_dir.path())?;
-
-//         create_sandbox(temp_dir.path(), "feature", CreateOptions::default())?;
-
-//         // Delete the sandbox
-//         delete_sandbox(temp_dir.path(), "feature", CreateOptions::default())?;
-
-//         // Verify it's gone
-//         let sandbox_path = temp_dir.path().join(".helix/refs/heads/feature");
-//         assert!(!sandbox_path.exists());
-
-//         Ok(())
-//     }
-
-//     #[test]
-//     fn test_delete_current_sandbox_fails() -> Result<()> {
-//         let temp_dir = TempDir::new()?;
-//         init_test_repo(temp_dir.path())?;
-//         make_initial_commit(temp_dir.path())?;
-
-//         // Try to delete current sandbox - should fail
-//         let result = delete_sandbox(temp_dir.path(), "main", CreateOptions::default());
-//         assert!(result.is_err());
-//         assert!(result.unwrap_err().to_string().contains("current sandbox"));
-
-//         Ok(())
-//     }
-
-//     #[test]
-//     fn test_switch_sandbox() -> Result<()> {
-//         let temp_dir = TempDir::new()?;
-//         init_test_repo(temp_dir.path())?;
-//         make_initial_commit(temp_dir.path())?;
-
-//         create_sandbox(temp_dir.path(), "feature", CreateOptions::default())?;
-
-//         // Switch to feature sandbox
-//         switch_sandbox(temp_dir.path(), "feature")?;
-
-//         // Verify current sandbox
-//         let current = get_current_sandbox(temp_dir.path())?;
-//         assert_eq!(current, "feature");
-
-//         // Switch back to main
-//         switch_sandbox(temp_dir.path(), "main")?;
-//         let current = get_current_sandbox(temp_dir.path())?;
-//         assert_eq!(current, "main");
-
-//         Ok(())
-//     }
-
-//     #[test]
-//     fn test_rename_sandbox() -> Result<()> {
-//         let temp_dir = TempDir::new()?;
-//         init_test_repo(temp_dir.path())?;
-//         make_initial_commit(temp_dir.path())?;
-
-//         create_sandbox(temp_dir.path(), "old-name", CreateOptions::default())?;
-
-//         // Rename the sandbox
-//         rename_sandbox(
-//             temp_dir.path(),
-//             "old-name",
-//             "new-name",
-//             CreateOptions::default(),
-//         )?;
-
-//         // Verify old name gone
-//         let old_path = temp_dir.path().join(".helix/refs/heads/old-name");
-//         assert!(!old_path.exists());
-
-//         // Verify new name exists
-//         let new_path = temp_dir.path().join(".helix/refs/heads/new-name");
-//         assert!(new_path.exists());
-
-//         Ok(())
-//     }
-
-//     #[test]
-//     fn test_rename_current_sandbox_updates_head() -> Result<()> {
-//         let temp_dir = TempDir::new()?;
-//         init_test_repo(temp_dir.path())?;
-//         make_initial_commit(temp_dir.path())?;
-
-//         // Rename current sandbox (main)
-//         rename_sandbox(temp_dir.path(), "main", "master", CreateOptions::default())?;
-
-//         // Verify HEAD updated
-//         let current = get_current_sandbox(temp_dir.path())?;
-//         assert_eq!(current, "master");
-
-//         Ok(())
-//     }
-
-//     #[test]
-//     fn test_list_sandboxes() -> Result<()> {
-//         let temp_dir = TempDir::new()?;
-//         init_test_repo(temp_dir.path())?;
-//         make_initial_commit(temp_dir.path())?;
-
-//         create_sandbox(temp_dir.path(), "feature1", CreateOptions::default())?;
-//         create_sandbox(temp_dir.path(), "feature2", CreateOptions::default())?;
-
-//         let sandboxes = get_all_sandboxes(temp_dir.path())?;
-
-//         assert_eq!(sandboxes.len(), 3);
-//         assert!(sandboxes.contains(&"main".to_string()));
-//         assert!(sandboxes.contains(&"feature1".to_string()));
-//         assert!(sandboxes.contains(&"feature2".to_string()));
-
-//         Ok(())
-//     }
-
-//     #[test]
-//     fn test_validate_sandbox_name() -> Result<()> {
-//         // Valid names
-//         assert!(validate_sandbox_name("main").is_ok());
-//         assert!(validate_sandbox_name("feature").is_ok());
-//         assert!(validate_sandbox_name("bug-fix").is_ok());
-//         assert!(validate_sandbox_name("dev_123").is_ok());
-
-//         // Invalid names
-//         assert!(validate_sandbox_name("").is_err());
-//         assert!(validate_sandbox_name("feature/test").is_err());
-//         assert!(validate_sandbox_name(".hidden").is_err());
-//         assert!(validate_sandbox_name("-bad").is_err());
-//         assert!(validate_sandbox_name("bad..name").is_err());
-//         assert!(validate_sandbox_name("HEAD").is_err());
-
-//         Ok(())
-//     }
-
-//     #[test]
-//     fn test_sandbox_without_commits() -> Result<()> {
-//         let temp_dir = TempDir::new()?;
-//         init_test_repo(temp_dir.path())?;
-
-//         // Try to create sandbox before any commits
-//         let result = create_sandbox(temp_dir.path(), "feature", CreateOptions::default());
-//         assert!(result.is_err());
-//         assert!(result.unwrap_err().to_string().contains("No commits yet"));
-
-//         Ok(())
-//     }
-// }

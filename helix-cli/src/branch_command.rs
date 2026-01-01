@@ -12,6 +12,7 @@ use std::path::Path;
 
 use crate::branch_tui;
 use crate::helix_index::state::{get_branch_upstream, remove_branch_state, set_branch_upstream};
+use crate::sandbox_command::RepoContext;
 use helix_protocol::hash::{hash_to_hex, hex_to_hash, Hash};
 
 pub struct BranchOptions {
@@ -221,11 +222,15 @@ pub fn get_current_branch(repo_path: &Path) -> Result<String> {
         Ok("(detached HEAD)".to_string())
     }
 }
-pub fn get_all_branches(repo_path: &Path) -> Result<Vec<String>> {
+pub fn get_all_branches(start_path: &Path) -> Result<Vec<String>> {
+    // Use RepoContext to find the actual repo root
+    let context = RepoContext::detect(start_path)?;
+    let repo_root = &context.repo_root;
+
     let mut branches = Vec::new();
 
     // Regular branches from refs/heads
-    let heads_dir = repo_path.join(".helix/refs/heads");
+    let heads_dir = repo_root.join(".helix/refs/heads");
     if heads_dir.exists() {
         for entry in fs::read_dir(&heads_dir)? {
             let entry = entry?;
@@ -240,7 +245,7 @@ pub fn get_all_branches(repo_path: &Path) -> Result<Vec<String>> {
     }
 
     // Sandbox branches from refs/sandboxes (prefixed with "sandboxes/")
-    let sandboxes_dir = repo_path.join(".helix/refs/heads/sandboxes");
+    let sandboxes_dir = repo_root.join(".helix/refs/sandboxes");
     if sandboxes_dir.exists() {
         for entry in fs::read_dir(&sandboxes_dir)? {
             let entry = entry?;
@@ -255,7 +260,7 @@ pub fn get_all_branches(repo_path: &Path) -> Result<Vec<String>> {
     }
 
     Ok(branches)
-}
+}   
 
 /// Read HEAD and return the commit hash
 fn read_head(repo_path: &Path) -> Result<Hash> {
