@@ -49,6 +49,10 @@ enum SandboxCommands {
     },
     /// List all sandboxes
     List {},
+    Switch {
+        /// Sandbox name
+        name: String,
+    },
     /// Commit sandbox changes
     Commit {
         /// Sandbox name
@@ -326,6 +330,9 @@ async fn main() -> Result<()> {
                 }
                 SandboxCommands::List {} => {
                     sandbox_command::run_sandbox_tui(Some(&repo_path))?;
+                }
+                SandboxCommands::Switch { name } => {
+                    sandbox_command::switch_sandbox(&repo_path, &name)?;
                 }
                 SandboxCommands::Commit {
                     name,

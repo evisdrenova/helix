@@ -1,6 +1,6 @@
 // Sandbox management for Helix
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 use helix_protocol::message::ObjectType;
 use helix_protocol::storage::{FsObjectStore, FsRefStore};
 use serde::{Deserialize, Serialize};
@@ -11,6 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 use crate::checkout::{checkout_tree_to_path, CheckoutOptions};
+use crate::helix_index::commit::read_head;
 use crate::helix_index::tree::{EntryType, Tree, TreeBuilder};
 use crate::helix_index::{Entry, EntryFlags};
 use crate::sandbox_tui;
@@ -313,62 +314,7 @@ pub fn switch_sandbox(repo_path: &Path, name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Get the current sandbox name
-pub fn get_current_sandbox(repo_path: &Path) -> Result<String> {
-    let head_path = repo_path.join(".helix/HEAD");
-
-    if !head_path.exists() {
-        return Ok("(no sandbox)".to_string());
-    }
-
-    let content = fs::read_to_string(&head_path)?;
-    let content = content.trim();
-
-    if content.starts_with("ref:") {
-        // Symbolic reference: "ref: refs/heads/main"
-        let ref_path = content.strip_prefix("ref:").unwrap().trim();
-
-        if let Some(sandbox_name) = ref_path.strip_prefix("refs/heads/") {
-            Ok(sandbox_name.to_string())
-        } else {
-            Ok("(unknown)".to_string())
-        }
-    } else {
-        // Detached HEAD
-        Ok("(detached HEAD)".to_string())
-    }
-}
-
-/// Read HEAD and return the commit hash
-fn read_head(repo_path: &Path) -> Result<Hash> {
-    let head_path = repo_path.join(".helix/HEAD");
-
-    if !head_path.exists() {
-        return Err(anyhow!("No commits yet."));
-    }
-
-    let content = fs::read_to_string(&head_path)?;
-    let content = content.trim();
-
-    if content.starts_with("ref:") {
-        // Symbolic reference: read the sandbox file
-        let ref_path = content.strip_prefix("ref:").unwrap().trim();
-        let sandbox_path = repo_path.join(".helix").join(ref_path);
-
-        if !sandbox_path.exists() {
-            return Err(anyhow!("No commits yet'"));
-        }
-
-        let hash_str = fs::read_to_string(&sandbox_path)?;
-        hex_to_hash(hash_str.trim())
-    } else {
-        // Direct hash
-        hex_to_hash(content)
-    }
-}
-
-/// Validate sandbox name (no special characters, slashes, etc.)
-/// Validate sandbox name (alphanumeric, hyphens, underscores only)
+/// Validate sandbox name (no special characters, slashes, etc.), (alphanumeric, hyphens, underscores only)
 fn validate_sandbox_name(name: &str) -> Result<()> {
     if name.is_empty() {
         bail!("Sandbox name cannot be empty");
@@ -399,10 +345,10 @@ pub fn get_sandbox_changes(repo_path: &Path, name: &str) -> Result<Vec<SandboxCh
 
     let store = FsObjectStore::new(repo_path);
 
-    // Get files from base commit's tree
+    // Get files from base commit's tree in order to match against the workdir
     let base_files = collect_files_from_commit(&store, &base_commit)?;
 
-    // Get files from sandbox workdir
+    // Get files from sandbox workdir to match against the base commit tree
     let workdir_files = collect_files_from_workdir(&workdir)?;
 
     // Compute diff

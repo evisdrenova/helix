@@ -338,7 +338,7 @@ impl CommitStore {
     pub fn load_commits(&self, limit: usize) -> Result<Vec<Commit>> {
         let mut commits = Vec::new();
 
-        let head_hash = match self.read_head() {
+        let head_hash = match read_head(&self.repo_path) {
             Ok(hash) => hash,
             Err(_) => return Ok(commits),
         };
@@ -367,37 +367,6 @@ impl CommitStore {
         }
 
         Ok(commits)
-    }
-
-    /// Read current HEAD commit hash
-    pub fn read_head(&self) -> Result<Hash> {
-        let head_path = self.repo_path.join(".helix").join("HEAD");
-
-        if !head_path.exists() {
-            anyhow::bail!("HEAD not found");
-        }
-
-        let content = fs::read_to_string(&head_path).context("Failed to read HEAD")?;
-
-        let content = content.trim();
-
-        if content.starts_with("ref:") {
-            // Symbolic reference
-            let ref_path = content.strip_prefix("ref:").unwrap().trim();
-            let full_ref_path = self.repo_path.join(".helix").join(ref_path);
-
-            if !full_ref_path.exists() {
-                anyhow::bail!("Reference {} not found", ref_path);
-            }
-
-            let ref_content =
-                fs::read_to_string(&full_ref_path).context("Failed to read reference")?;
-
-            hex_to_hash(ref_content.trim()).context("Invalid hash in reference")
-        } else {
-            // Direct hash
-            hex_to_hash(content).context("Invalid hash in HEAD")
-        }
     }
 
     /// Get current branch name
@@ -514,6 +483,36 @@ impl CommitStore {
         }
 
         Ok(())
+    }
+}
+
+/// Read current HEAD commit hash
+pub fn read_head(repo_path: &Path) -> Result<Hash> {
+    let head_path = repo_path.join(".helix").join("HEAD");
+
+    if !head_path.exists() {
+        anyhow::bail!("HEAD not found");
+    }
+
+    let content = fs::read_to_string(&head_path).context("Failed to read HEAD")?;
+
+    let content = content.trim();
+
+    if content.starts_with("ref:") {
+        // Symbolic reference
+        let ref_path = content.strip_prefix("ref:").unwrap().trim();
+        let full_ref_path = repo_path.join(".helix").join(ref_path);
+
+        if !full_ref_path.exists() {
+            anyhow::bail!("Reference {} not found", ref_path);
+        }
+
+        let ref_content = fs::read_to_string(&full_ref_path).context("Failed to read reference")?;
+
+        hex_to_hash(ref_content.trim()).context("Invalid hash in reference")
+    } else {
+        // Direct hash
+        hex_to_hash(content).context("Invalid hash in HEAD")
     }
 }
 
