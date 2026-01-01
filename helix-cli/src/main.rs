@@ -204,13 +204,36 @@ async fn main() -> Result<()> {
                         std::process::exit(1);
                     }
                 } else {
-                    let branch_exists = repo_path
+                    // Check if branch exists (regular or sandbox)
+                    let regular_branch_exists = repo_path
                         .join(format!(".helix/refs/heads/{}", branch_name))
                         .exists();
 
-                    if branch_exists {
-                        branch_command::switch_branch(&repo_path, &branch_name)?;
+                    let sandbox_branch_exists = if branch_name.starts_with("sandboxes/") {
+                        let sandbox_name = branch_name.strip_prefix("sandboxes/").unwrap();
+                        repo_path
+                            .join(format!(".helix/refs/sandboxes/{}", sandbox_name))
+                            .exists()
                     } else {
+                        false
+                    };
+
+                    if regular_branch_exists {
+                        branch_command::switch_branch(&repo_path, &branch_name)?;
+                    } else if sandbox_branch_exists {
+                        // Switch to sandbox
+                        let sandbox_name = branch_name.strip_prefix("sandboxes/").unwrap();
+                        sandbox_command::switch_sandbox(&repo_path, sandbox_name)?;
+                    } else {
+                        // Create new branch (but not if it starts with sandboxes/)
+                        if branch_name.starts_with("sandboxes/") {
+                            eprintln!(
+                                "Error: Sandbox '{}' does not exist.",
+                                branch_name.strip_prefix("sandboxes/").unwrap()
+                            );
+                            eprintln!("Create it with: helix sandbox create <name>");
+                            std::process::exit(1);
+                        }
                         branch_command::create_branch(&repo_path, &branch_name, options)?;
                     }
                 }

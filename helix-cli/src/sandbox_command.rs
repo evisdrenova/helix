@@ -430,6 +430,7 @@ fn build_index_entries_from_commit(
     Ok(entries)
 }
 
+
 fn write_sandbox_index(sandbox_root: &Path, entries: &[Entry]) -> Result<()> {
     // Create .helix subdir in sandbox (mirrors repo structure)
     let helix_dir = sandbox_root.join(".helix");

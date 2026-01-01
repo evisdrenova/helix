@@ -177,9 +177,33 @@ pub fn rename_branch(
 
 /// Switch to a different branch (checkout)
 pub fn switch_branch(repo_path: &Path, name: &str) -> Result<()> {
+    // Check if it's a sandbox branch
+    if name.starts_with("sandboxes/") {
+        let sandbox_name = name.strip_prefix("sandboxes/").unwrap();
+        let sandbox_ref_path = repo_path.join(format!(".helix/refs/sandboxes/{}", sandbox_name));
+
+        if !sandbox_ref_path.exists() {
+            return Err(anyhow!(
+                "Sandbox '{}' does not exist. Create it with 'helix sandbox create {}'",
+                sandbox_name,
+                sandbox_name
+            ));
+        }
+
+        // Update HEAD to point to sandbox ref
+        let head_path = repo_path.join(".helix/HEAD");
+        fs::write(
+            &head_path,
+            format!("ref: refs/sandboxes/{}\n", sandbox_name),
+        )?;
+
+        println!("Switched to sandbox '{}'", sandbox_name);
+        return Ok(());
+    }
+
+    // Regular branch
     let branch_path = repo_path.join(format!(".helix/refs/heads/{}", name));
 
-    // Check if branch exists
     if !branch_path.exists() {
         return Err(anyhow!(
             "Branch '{}' does not exist. Create it with 'helix branch {}'",
@@ -260,7 +284,7 @@ pub fn get_all_branches(start_path: &Path) -> Result<Vec<String>> {
     }
 
     Ok(branches)
-}   
+}
 
 /// Read HEAD and return the commit hash
 fn read_head(repo_path: &Path) -> Result<Hash> {
