@@ -12,7 +12,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::status::app::Section;
+use crate::sandbox_tui::app::Section;
 
 use super::app::{App, FileStatus};
 

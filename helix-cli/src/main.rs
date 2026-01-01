@@ -4,6 +4,7 @@ use helix_cli::{
     init_command::init_helix_repo,
     pull_command::{self, pull},
     push_command::{self, push},
+    sandbox::{self, CreateOptions},
 };
 use std::path::{Path, PathBuf};
 
@@ -23,40 +24,78 @@ struct Args {
     #[command(subcommand)]
     command: Option<Commands>,
     #[arg(short, long, global = true)]
-    branch: Option<String>, // branch to push to (defaults to current branch)
+    branch: Option<String>,
     #[arg(short, long)]
-    auto: bool, // add files, generate message, commit, and push automatically
+    auto: bool,
     #[arg(short, long)]
-    generate: bool, // only generate commit message for staged changes
+    generate: bool,
     #[arg(short = 's', long)]
-    stage_and_generate: bool, // add files and generate message (don't commit)
-    files: Vec<String>, // files to add to staging
+    stage_and_generate: bool,
+    files: Vec<String>,
 }
-#[derive(Subcommand)]
+
+#[derive(Subcommand, Debug)]
 enum SandboxCommands {
+    /// Create a new sandbox from HEAD (or specified commit)
     Create {
+        /// Sandbox name
         name: String,
+        /// Base commit hash (defaults to HEAD)
         #[arg(long)]
         base: Option<String>,
+        /// Show verbose output
+        #[arg(short, long)]
+        verbose: bool,
     },
-    List,
+    /// List all sandboxes
+    List {
+        /// Show verbose output
+        #[arg(short, long)]
+        verbose: bool,
+    },
+    /// Show status of a sandbox (changes vs base commit)
     Status {
+        /// Sandbox name
         name: String,
+        /// Show verbose output
+        #[arg(short, long)]
+        verbose: bool,
     },
+    /// Commit sandbox changes
     Commit {
+        /// Sandbox name
         name: String,
+        /// Commit message
         #[arg(short, long)]
         message: String,
+        /// Author (overrides config)
+        #[arg(short, long)]
+        author: Option<String>,
+        /// Show verbose output
+        #[arg(short, long)]
+        verbose: bool,
     },
+    /// Merge sandbox commit into a branch
     Merge {
+        /// Sandbox name
         name: String,
+        /// Target branch (defaults to main)
         #[arg(long)]
         into: Option<String>,
+        /// Show verbose output
+        #[arg(short, long)]
+        verbose: bool,
     },
+    /// Destroy a sandbox
     Destroy {
+        /// Sandbox name
         name: String,
+        /// Force destroy even with uncommitted changes
         #[arg(long)]
         force: bool,
+        /// Show verbose output
+        #[arg(short, long)]
+        verbose: bool,
     },
 }
 
@@ -64,85 +103,76 @@ enum SandboxCommands {
 enum Commands {
     Init {
         #[arg(value_name = "PATH")]
-        path: Option<PathBuf>, // repository path (defaults to cwd)
+        path: Option<PathBuf>,
     },
     Log {
         #[arg(value_name = "PATH")]
-        path: Option<PathBuf>, // repo path (defaults to cwd)v
+        path: Option<PathBuf>,
     },
     Status {
         #[arg(value_name = "PATH")]
-        path: Option<PathBuf>, // Repository path (defaults to cwd)
+        path: Option<PathBuf>,
     },
     Commit {
-        /// Commit message
         #[arg(short, long)]
         message: Option<String>,
-        /// Author (overrides config)
         #[arg(short, long)]
         author: Option<String>,
-        /// Allow empty commit (no staged files)
         #[arg(long)]
         allow_empty: bool,
-        /// Amend previous commit
         #[arg(long)]
         amend: bool,
-        /// Show verbose output
         #[arg(short, long)]
         verbose: bool,
     },
     Add {
         #[arg(required = true)]
-        paths: Vec<PathBuf>, // Files or directories to add
-        #[arg(short, long)]
-        verbose: bool, // Show verbose output
-        #[arg(short = 'n', long)]
-        dry_run: bool, // Perform a dry run (don't actually add)
-        #[arg(short, long)]
-        force: bool, // Force add (even if in .gitignore)
-    },
-    Branch {
-        name: Option<String>, // Branch name (for create/delete/rename/switch operations)
-        new_name: Option<String>, // New branch name (for rename operation)
-        #[arg(value_name = "PATH")]
-        path: Option<PathBuf>, // repository path (defaults to cwd)
-        #[arg(short, long)]
-        list: bool, // list branches (opens TUI)
-        #[arg(short, long)]
-        delete: bool, // delete a branch
-        #[arg(short = 'm', long)]
-        rename: bool, // rename a branch
-        #[arg(short, long)]
-        force: bool, // force operations
-        #[arg(short, long)]
-        verbose: bool, // verbose output
-    },
-    Push {
-        /// Remote name (e.g., "origin")
-        remote: String,
-        /// Branch name (e.g., "main")
-        branch: String,
-        /// Force push
-        #[arg(short, long)]
-        force: bool,
-        /// Show verbose output
+        paths: Vec<PathBuf>,
         #[arg(short, long)]
         verbose: bool,
-        /// Dry run (show what would be pushed)
+        #[arg(short = 'n', long)]
+        dry_run: bool,
+        #[arg(short, long)]
+        force: bool,
+    },
+    Branch {
+        name: Option<String>,
+        new_name: Option<String>,
+        #[arg(value_name = "PATH")]
+        path: Option<PathBuf>,
+        #[arg(short, long)]
+        list: bool,
+        #[arg(short, long)]
+        delete: bool,
+        #[arg(short = 'm', long)]
+        rename: bool,
+        #[arg(short, long)]
+        force: bool,
+        #[arg(short, long)]
+        verbose: bool,
+    },
+    Push {
+        remote: String,
+        branch: String,
+        #[arg(short, long)]
+        force: bool,
+        #[arg(short, long)]
+        verbose: bool,
         #[arg(short = 'n', long)]
         dry_run: bool,
     },
     Pull {
-        /// Remote name (e.g., "origin")
         remote: String,
-        /// Branch name (e.g., "main")
         branch: String,
-        /// Show verbose output
         #[arg(short, long)]
         verbose: bool,
-        /// Dry run (show what would be pushed)
         #[arg(short = 'n', long)]
         dry_run: bool,
+    },
+    /// Manage sandboxes for isolated agent workspaces
+    Sandbox {
+        #[command(subcommand)]
+        command: SandboxCommands,
     },
 }
 
@@ -154,17 +184,14 @@ async fn main() -> Result<()> {
         Some(Commands::Log { path }) => {
             let repo_path = resolve_repo_path(path.as_deref())?;
             log::run(Some(&repo_path))?;
-            return Ok(());
         }
         Some(Commands::Status { path }) => {
             let repo_path = resolve_repo_path(path.as_deref())?;
             status::run(Some(&repo_path))?;
-            return Ok(());
         }
         Some(Commands::Init { path }) => {
             let repo_path = resolve_repo_path(path.as_deref())?;
             init_helix_repo(&repo_path, None)?;
-            return Ok(());
         }
         Some(Commands::Branch {
             name,
@@ -185,16 +212,12 @@ async fn main() -> Result<()> {
                 verbose,
             };
 
-            // If no name and no flags, or explicit --list, show TUI
             if (name.is_none() && !delete && !rename) || list {
                 branch_command::run_branch_tui(Some(&repo_path))?;
             } else if let Some(branch_name) = name {
-                // Handle specific branch operations
                 if delete {
-                    // Delete branch
                     branch_command::delete_branch(&repo_path, &branch_name, options)?;
                 } else if rename {
-                    // Rename branch
                     if let Some(new) = new_name {
                         branch_command::rename_branch(&repo_path, &branch_name, &new, options)?;
                     } else {
@@ -203,7 +226,6 @@ async fn main() -> Result<()> {
                         std::process::exit(1);
                     }
                 } else {
-                    // Create or switch to branch
                     let branch_exists = repo_path
                         .join(format!(".helix/refs/heads/{}", branch_name))
                         .exists();
@@ -218,10 +240,7 @@ async fn main() -> Result<()> {
                 eprintln!("Error: Branch name required for this operation");
                 std::process::exit(1);
             }
-
-            return Ok(());
         }
-
         Some(Commands::Add {
             paths,
             verbose,
@@ -237,7 +256,6 @@ async fn main() -> Result<()> {
             };
 
             add_command::add(&repo_path, &paths, options)?;
-            return Ok(());
         }
         Some(Commands::Commit {
             message,
@@ -249,7 +267,6 @@ async fn main() -> Result<()> {
             let repo_path = resolve_repo_path(None)?;
 
             if let Some(msg) = message {
-                // Commit with message
                 let options = commit_command::CommitOptions {
                     message: msg,
                     author,
@@ -260,15 +277,12 @@ async fn main() -> Result<()> {
 
                 commit_command::commit(&repo_path, options)?;
             } else {
-                // No message provided - show what would be committed
                 commit_command::show_staged(&repo_path)?;
                 eprintln!();
                 eprintln!("Aborting commit due to empty commit message.");
                 eprintln!("Use 'helix commit -m <message>' to commit.");
                 std::process::exit(1);
             }
-
-            return Ok(());
         }
         Some(Commands::Push {
             remote,
@@ -286,7 +300,6 @@ async fn main() -> Result<()> {
             };
 
             push(&repo_path, &remote, &branch, options).await?;
-            return Ok(());
         }
         Some(Commands::Pull {
             remote,
@@ -299,36 +312,83 @@ async fn main() -> Result<()> {
             let options = pull_command::PullOptions { verbose, dry_run };
 
             pull(&repo_path, &remote, &branch, options).await?;
-            return Ok(());
         }
+        Some(Commands::Sandbox { command }) => {
+            let repo_path = resolve_repo_path(None)?;
 
+            match command {
+                SandboxCommands::Create {
+                    name,
+                    base,
+                    verbose,
+                } => {
+                    let base_commit = match base {
+                        Some(hex) => Some(helix_protocol::hash::hex_to_hash(&hex)?),
+                        None => None,
+                    };
+
+                    let options = CreateOptions {
+                        base_commit,
+                        verbose,
+                    };
+
+                    sandbox::create_sandbox(&repo_path, &name, options)?;
+                }
+                SandboxCommands::List { verbose } => {
+                    let options = sandbox::ListOptions { verbose };
+                    sandbox::list_sandboxes(&repo_path, options)?;
+                }
+                SandboxCommands::Status { name, verbose } => {
+                    let options = sandbox::StatusOptions { verbose };
+                    sandbox::sandbox_status(&repo_path, &name, options)?;
+                }
+                SandboxCommands::Commit {
+                    name,
+                    message,
+                    author,
+                    verbose,
+                } => {
+                    let options = sandbox::CommitOptions {
+                        message,
+                        author,
+                        verbose,
+                    };
+                    sandbox::commit_sandbox(&repo_path, &name, options)?;
+                }
+                SandboxCommands::Merge {
+                    name,
+                    into,
+                    verbose,
+                } => {
+                    let options = sandbox::MergeOptions {
+                        into_branch: into,
+                        verbose,
+                    };
+                    sandbox::merge_sandbox(&repo_path, &name, options)?;
+                }
+                SandboxCommands::Destroy {
+                    name,
+                    force,
+                    verbose,
+                } => {
+                    let options = sandbox::DestroyOptions { force, verbose };
+                    sandbox::destroy_sandbox(&repo_path, &name, options)?;
+                }
+            }
+        }
         None => {
-            // let config = load_config()?;
-            // let workflow = Workflow::new(config);
-
-            // if args.auto {
-            //     workflow
-            //         .auto_commit_and_push(args.files, args.branch)
-            //         .await?;
-            // } else if args.generate {
-            //     if !args.files.is_empty() {
-            //         eprintln!("Warning: Files specified with --generate will be ignored");
-            //     }
-            //     workflow.generate_message_only().await?;
-            // } else if args.stage_and_generate {
-            //     workflow.stage_and_generate(args.files).await?;
-            // } else {
-            //     workflow
-            //         .auto_commit_and_push(args.files, args.branch)
-            //         .await?;
-            // }
+            // Default behavior when no command specified
+            println!("Helix - AI-native version control");
+            println!();
+            println!("Usage: helix <COMMAND>");
+            println!();
+            println!("Run 'helix --help' for available commands.");
         }
     }
 
     Ok(())
 }
 
-// defaults to cwd
 fn resolve_repo_path(path: Option<&Path>) -> Result<PathBuf> {
     let repo_path = match path {
         Some(p) => p.to_path_buf(),
