@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 
 pub struct HelixIndexData {
     repo_path: PathBuf,
+    index_path: PathBuf,
     data: HelixIndex,
 }
 
@@ -23,6 +24,8 @@ impl HelixIndexData {
     pub fn load_or_rebuild(repo_path: &Path) -> Result<Self> {
         let verifier = Verifier::new(repo_path);
 
+        let index_path = repo_path.join(".helix").join("helix.idx");
+
         match verifier.verify()? {
             VerifyResult::Valid => {
                 let reader = Reader::new(repo_path);
@@ -30,6 +33,7 @@ impl HelixIndexData {
 
                 Ok(Self {
                     repo_path: repo_path.to_path_buf(),
+                    index_path: index_path.to_path_buf(),
                     data,
                 })
             }
@@ -54,11 +58,14 @@ impl HelixIndexData {
         let syncer = SyncEngine::new(repo_path);
         syncer.import_from_git()?;
 
+        let index_path = repo_path.join(".helix").join("helix.idx");
+
         let reader = Reader::new(repo_path);
         let data = reader.read()?;
 
         Ok(Self {
             repo_path: repo_path.to_path_buf(),
+            index_path,
             data,
         })
     }
@@ -68,6 +75,7 @@ impl HelixIndexData {
             // Return empty index if not found
             return Ok(Self {
                 repo_path: repo_path.to_path_buf(),
+                index_path: index_path.to_path_buf(),
                 data: HelixIndex {
                     header: Header::new(1, 0),
                     entries: Vec::new(),
@@ -85,6 +93,7 @@ impl HelixIndexData {
 
         Ok(Self {
             repo_path: repo_path.to_path_buf(),
+            index_path: index_path.to_path_buf(),
             data,
         })
     }
@@ -104,37 +113,16 @@ impl HelixIndexData {
     /// - Computed checksum
     /// - fsync for durability
     pub fn persist(&mut self) -> Result<()> {
-        // Increment generation
         self.data.header.generation += 1;
-
-        // Update entry count
         self.data.header.entry_count = self.data.entries.len() as u32;
 
-        // Write to disk
-        let writer = Writer::new_canonical(&self.repo_path);
-        writer.write(&self.data.header, &self.data.entries)?;
-
-        Ok(())
-    }
-
-    pub fn persist_to_path(&mut self, index_path: &Path) -> Result<()> {
-        // Increment generation
-        self.data.header.generation += 1;
-
-        // Update entry count
-        self.data.header.entry_count = self.data.entries.len() as u32;
-
-        // Get the parent directory (e.g., .helix/)
-        let helix_dir = index_path
-            .parent()
+        // Derive root from index_path: /path/.helix/helix.idx -> /path
+        let root = self
+            .index_path
+            .parent() // .helix/
+            .and_then(|p| p.parent()) // /path
             .ok_or_else(|| anyhow::anyhow!("Invalid index path"))?;
 
-        // Get the repo/sandbox root (parent of .helix/)
-        let root = helix_dir
-            .parent()
-            .ok_or_else(|| anyhow::anyhow!("Invalid helix directory"))?;
-
-        // Write to disk
         let writer = Writer::new_canonical(root);
         writer.write(&self.data.header, &self.data.entries)?;
 

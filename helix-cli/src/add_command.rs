@@ -124,7 +124,7 @@ pub fn add(repo_path: &Path, paths: &[PathBuf], options: AddOptions) -> Result<(
     stage_files(&mut index, &files_to_add, &options, &context)?;
 
     // Persist index to disk
-    index.persist_to_path(&context.index_path)?;
+    index.persist()?;
 
     println!("DEBUG: persisted index to {}", context.index_path.display());
 
