@@ -19,6 +19,7 @@ use crate::helix_index::commit::{Commit, CommitStore};
 use crate::helix_index::format::EntryFlags;
 use crate::helix_index::tree::TreeBuilder;
 use crate::init_command::HelixConfig;
+use crate::sandbox_command::RepoContext;
 use anyhow::{Context, Result};
 use helix_protocol::hash::{hash_to_hex, hex_to_hash, Hash};
 use helix_protocol::storage::FsObjectStore;
@@ -47,16 +48,24 @@ impl Default for CommitOptions {
 
 /// Create a commit from staged files
 pub fn commit(repo_path: &Path, options: CommitOptions) -> Result<Hash> {
-    let object_store = FsObjectStore::new(repo_path);
-    let commit_store = CommitStore::new(repo_path, object_store)?;
+    let context = RepoContext::detect(repo_path)?;
+
+    let object_store = FsObjectStore::new(&context.repo_root);
+    let commit_store = CommitStore::new(&context.repo_root, object_store)?;
 
     if options.message.trim().is_empty() {
         anyhow::bail!("Commit message cannot be empty. Use -m <message>");
     }
 
-    let index = HelixIndexData::load_or_rebuild(repo_path)?;
+    let index = HelixIndexData::load_from_path(&context.index_path, &context.repo_root)?;
 
     if options.verbose {
+        if context.is_sandbox() {
+            println!(
+                "Committing in sandbox: {}",
+                context.sandbox_name().unwrap_or_default()
+            );
+        }
         println!("Loaded index (generation {})", index.generation());
     }
 
@@ -79,7 +88,7 @@ pub fn commit(repo_path: &Path, options: CommitOptions) -> Result<Hash> {
     }
 
     // Get current HEAD (if exists)
-    let head_commit_hash = read_head(repo_path).ok();
+    let head_commit_hash = read_head(&context.repo_root).ok();
 
     if options.amend && head_commit_hash.is_none() {
         anyhow::bail!("Cannot amend - no previous commit exists");
@@ -90,7 +99,7 @@ pub fn commit(repo_path: &Path, options: CommitOptions) -> Result<Hash> {
         println!("Building tree from {} entries...", staged_entries.len());
     }
 
-    let tree_builder = TreeBuilder::new(repo_path);
+    let tree_builder = TreeBuilder::new(&context.repo_root);
     let tree_hash = tree_builder
         .build_from_entries(&staged_entries)
         .context("Failed to build tree")?;
@@ -106,7 +115,7 @@ pub fn commit(repo_path: &Path, options: CommitOptions) -> Result<Hash> {
 
             if tree_hash == head_commit_obj.tree_hash {
                 // Allow if this is the first native commit after import
-                if has_native_commits(repo_path) {
+                if has_native_commits(&context.repo_root) {
                     anyhow::bail!("No changes to commit. The tree is identical to HEAD.");
                 }
 
@@ -156,14 +165,14 @@ pub fn commit(repo_path: &Path, options: CommitOptions) -> Result<Hash> {
     }
 
     // Update HEAD
-    write_head(repo_path, commit_hash)?;
+    write_head(&context.repo_root, commit_hash)?;
 
     if options.verbose {
         println!("Updated HEAD");
     }
 
     // Clear staged flags in index
-    clear_staged_flags(repo_path)?;
+    clear_staged_flags(&context)?;
 
     // Print commit summary
     let short_hash = hash_to_hex(&commit_hash);
@@ -177,8 +186,8 @@ pub fn commit(repo_path: &Path, options: CommitOptions) -> Result<Hash> {
         println!("{} files changed", staged_entries.len());
     }
 
-    if !has_native_commits(repo_path) {
-        mark_native_commit_exists(repo_path)?;
+    if !has_native_commits(&context.repo_root) {
+        mark_native_commit_exists(&context.repo_root)?;
     }
 
     Ok(commit_hash)
@@ -293,16 +302,15 @@ fn get_author(repo_path: &Path) -> Result<String> {
     )
 }
 
-/// Clear staged flags from index after successful commit
-fn clear_staged_flags(repo_path: &Path) -> Result<()> {
-    let mut index = HelixIndexData::load_or_rebuild(repo_path)?;
+fn clear_staged_flags(context: &RepoContext) -> Result<()> {
+    let mut index = HelixIndexData::load_from_path(&context.index_path, &context.repo_root)?;
 
     // Remove STAGED flag from all entries
     for entry in index.entries_mut() {
         entry.flags.remove(EntryFlags::STAGED);
     }
 
-    // Persist updated index
+    // Persist to correct location
     index.persist()?;
 
     Ok(())
