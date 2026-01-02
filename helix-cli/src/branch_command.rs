@@ -246,6 +246,7 @@ pub fn get_current_branch(repo_path: &Path) -> Result<String> {
         Ok("(detached HEAD)".to_string())
     }
 }
+
 pub fn get_all_branches(start_path: &Path) -> Result<Vec<String>> {
     // Use RepoContext to find the actual repo root
     let context = RepoContext::detect(start_path)?;

@@ -4,8 +4,14 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use helix_cli::helix_index::commit::{Commit, CommitStore};
-use helix_protocol::{hash::Hash, storage::FsObjectStore};
+use helix_cli::{
+    helix_index::commit::{Commit, CommitStore},
+    sandbox_command::{RepoContext, SandboxManifest},
+};
+use helix_protocol::{
+    hash::{hex_to_hash, Hash},
+    storage::FsObjectStore,
+};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
 use std::path::Path;
@@ -38,13 +44,43 @@ pub struct App {
 
 impl App {
     pub fn new(repo_path: &Path) -> Result<Self> {
+        let context = RepoContext::detect(repo_path)?;
+        let repo_path = &context.repo_root;
+
         let store = FsObjectStore::new(repo_path);
         let loader = CommitStore::new(repo_path, store)?;
         let current_branch_name = loader.get_current_branch_name()?;
 
-        let commits = loader.load_commits(50)?;
+        // If in sandbox, get the base commit to limit history
+        let base_commit_hex: Option<String> = if let Some(ref sandbox_root) = context.sandbox_root {
+            SandboxManifest::load(sandbox_root)
+                .ok()
+                .map(|m| m.base_commit)
+        } else {
+            None
+        };
+
+        let base_commit_hash: Option<Hash> =
+            base_commit_hex.as_deref().map(hex_to_hash).transpose()?;
+
+        // Load commits for current branch, stopping at base if sandbox
+        let commits = loader.load_commits_for_branch_until(
+            &current_branch_name,
+            50,
+            base_commit_hash.as_ref(),
+        )?;
+
         let total_loaded = commits.len();
-        let repo_name = loader.get_repo_name();
+
+        let repo_name = if context.is_sandbox() {
+            format!(
+                "{} (sandbox: {})",
+                loader.get_repo_name(),
+                context.sandbox_name().unwrap_or_default()
+            )
+        } else {
+            loader.get_repo_name()
+        };
 
         let (remote_branch, ahead, behind) = loader
             .remote_tracking_info()
@@ -57,7 +93,7 @@ impl App {
             scroll_offset: 0,
             current_branch_name,
             should_quit: false,
-            split_ratio: 0.35, // 35% for timeline, 65% for details
+            split_ratio: 0.35,
             loader,
             total_loaded,
             repo_name,

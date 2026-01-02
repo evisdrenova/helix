@@ -404,12 +404,28 @@ impl CommitStore {
     }
 
     pub fn load_commits_for_branch(&self, branch_name: &str, limit: usize) -> Result<Vec<Commit>> {
-        // refs/heads/main
-        let ref_path = self
-            .repo_path
-            .join(".helix")
-            .join("refs/heads")
-            .join(branch_name);
+        self.load_commits_for_branch_until(branch_name, limit, None)
+    }
+
+    pub fn load_commits_for_branch_until(
+        &self,
+        branch_name: &str,
+        limit: usize,
+        stop_at: Option<&Hash>,
+    ) -> Result<Vec<Commit>> {
+        // Determine ref path based on branch type
+        let ref_path = if branch_name.starts_with("sandboxes/") {
+            let sandbox_name = branch_name.strip_prefix("sandboxes/").unwrap();
+            self.repo_path
+                .join(".helix")
+                .join("refs/sandboxes")
+                .join(sandbox_name)
+        } else {
+            self.repo_path
+                .join(".helix")
+                .join("refs/heads")
+                .join(branch_name)
+        };
 
         if !ref_path.exists() {
             return Ok(Vec::new());
@@ -423,6 +439,13 @@ impl CommitStore {
         let mut visited = std::collections::HashSet::new();
 
         while commits.len() < limit {
+            // Stop if we've reached the base commit
+            if let Some(stop_hash) = stop_at {
+                if &current_hash == stop_hash {
+                    break;
+                }
+            }
+
             if !visited.insert(current_hash) {
                 break;
             }
