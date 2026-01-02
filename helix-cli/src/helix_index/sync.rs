@@ -140,6 +140,11 @@ impl SyncEngine {
         let remote_count = self.import_git_remotes()?;
         let author = self.import_git_config()?;
 
+        let mapping_path = self.repo_path.join(".helix/git-commit-mapping");
+        if mapping_path.exists() {
+            fs::remove_file(&mapping_path).ok();
+        }
+
         main_pb.finish_and_clear();
 
         println!(
