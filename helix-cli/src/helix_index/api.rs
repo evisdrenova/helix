@@ -117,6 +117,30 @@ impl HelixIndexData {
         Ok(())
     }
 
+    pub fn persist_to_path(&mut self, index_path: &Path) -> Result<()> {
+        // Increment generation
+        self.data.header.generation += 1;
+
+        // Update entry count
+        self.data.header.entry_count = self.data.entries.len() as u32;
+
+        // Get the parent directory (e.g., .helix/)
+        let helix_dir = index_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("Invalid index path"))?;
+
+        // Get the repo/sandbox root (parent of .helix/)
+        let root = helix_dir
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("Invalid helix directory"))?;
+
+        // Write to disk
+        let writer = Writer::new_canonical(root);
+        writer.write(&self.data.header, &self.data.entries)?;
+
+        Ok(())
+    }
+
     /// Apply working tree changes to EntryFlags based on dirty paths from FSMonitor.
     /// dirty paths have some sort of change at the path
     ///

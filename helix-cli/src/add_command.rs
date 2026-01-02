@@ -75,7 +75,9 @@ pub fn add(repo_path: &Path, paths: &[PathBuf], options: AddOptions) -> Result<(
     }
 
     // Resolve which files need adding (parallel)
-    let files_to_add = resolve_files_to_add(repo_path, &index, paths, &options, &context)?;
+    let files_to_add = resolve_files_to_add(&index, paths, &options, &context)?;
+
+    println!("DEBUG: files_to_add = {:?}", files_to_add);
 
     if files_to_add.is_empty() {
         // Check if there are already staged files
@@ -119,10 +121,12 @@ pub fn add(repo_path: &Path, paths: &[PathBuf], options: AddOptions) -> Result<(
     }
 
     // Stage files (parallel hashing + batch blob writes)
-    stage_files(repo_path, &mut index, &files_to_add, &options, &context)?;
+    stage_files(&mut index, &files_to_add, &options, &context)?;
 
     // Persist index to disk
-    index.persist()?;
+    index.persist_to_path(&context.index_path)?;
+
+    println!("DEBUG: persisted index to {}", context.index_path.display());
 
     if options.verbose {
         println!("Staged {} files", files_to_add.len());
@@ -133,7 +137,6 @@ pub fn add(repo_path: &Path, paths: &[PathBuf], options: AddOptions) -> Result<(
 }
 
 fn resolve_files_to_add(
-    repo_path: &Path,
     index: &HelixIndexData,
     paths: &[PathBuf],
     options: &AddOptions,
@@ -167,9 +170,9 @@ fn resolve_files_to_add(
 
     // Filter to files that actually need adding - parallel
     let files_to_add: Vec<PathBuf> = candidate_files
-        .par_iter()
+        .iter()
         .filter_map(|file_path| {
-            let full_path = repo_path.join(file_path);
+            let full_path = context.workdir.join(file_path);
 
             // Must exist
             if !full_path.exists() {
@@ -215,25 +218,24 @@ fn should_add_file(
     options: &AddOptions,
     context: &RepoContext,
 ) -> Result<bool> {
-    println!("shoudl add??");
+    println!("should add?? {}", relative_path.display());
+
     // If untracked, always add
     if !tracked.contains(relative_path) {
+        println!("  -> untracked, adding");
         return Ok(true);
     }
 
-    // If force flag, always re-add
     if options.force {
         return Ok(true);
     }
 
-    // Get existing entry
     let entry = index
         .entries()
         .iter()
         .find(|e| e.path == relative_path)
         .ok_or_else(|| anyhow::anyhow!("Entry not found for {}", relative_path.display()))?;
 
-    // Get current file metadata
     let metadata = fs::metadata(full_path)?;
     let current_mtime = metadata
         .modified()?
@@ -247,9 +249,9 @@ fn should_add_file(
 
     let store = FsObjectStore::new(&context.repo_root);
 
-    // Check if file is already staged
+    println!("  staged.contains={}", staged.contains(relative_path));
+
     if staged.contains(relative_path) {
-        println!("  -> already staged");
         if current_mtime != entry.mtime_sec {
             println!("  -> staged but modified, re-staging");
             return Ok(true);
@@ -264,33 +266,29 @@ fn should_add_file(
         return Ok(false);
     }
 
-    // File is tracked but not staged
-    // Check if file has been modified since last commit
+    println!(
+        "  checking mtime: {} != {} = {}",
+        current_mtime,
+        entry.mtime_sec,
+        current_mtime != entry.mtime_sec
+    );
+
     if current_mtime != entry.mtime_sec {
-        // File modified - should be added/staged
+        println!("  -> modified (mtime differs), adding");
         return Ok(true);
     }
 
-    // File unchanged since last commit - verify blob exists anyway
     if !store.has_object(&ObjectType::Blob, &entry.oid) {
-        if options.verbose {
-            eprintln!(
-                "⚠️  Blob missing for {}, re-creating...",
-                relative_path.display()
-            );
-        }
+        println!("  -> blob missing, adding");
         return Ok(true);
     }
 
-    // File is tracked, unchanged, blob exists, but not staged
-    // Don't auto-stage unchanged files - skip
     println!("  -> unchanged, skipping");
     Ok(false)
 }
 
 /// Stage files by writing to blob storage and updating index
 fn stage_files(
-    repo_path: &Path,
     index: &mut HelixIndexData,
     files: &[PathBuf],
     options: &AddOptions,
@@ -300,9 +298,9 @@ fn stage_files(
         println!("Reading and hashing {} files...", files.len());
     }
 
-    // Read all file contents in parallel
+    // Read all file contents
     let file_data: Vec<(PathBuf, Vec<u8>, fs::Metadata)> = files
-        .par_iter()
+        .iter()
         .map(|path| {
             let full_path = context.workdir.join(path);
             let content = fs::read(&full_path)
@@ -317,16 +315,13 @@ fn stage_files(
         println!("Writing blobs to storage...");
     }
 
-    // Write all blobs
+    // Write blobs to MAIN REPO's object store (not sandbox)
+    let store = FsObjectStore::new(&context.repo_root);
 
-    let store = FsObjectStore::new(repo_path);
-
-    let contents: Vec<Vec<u8>> = file_data.iter().map(|(_, c, _)| c.clone()).collect();
-
-    let mut hashes = Vec::with_capacity(contents.len());
-    for raw in &contents {
+    let mut hashes = Vec::with_capacity(file_data.len());
+    for (_, content, _) in &file_data {
         let h = store
-            .write_object(&ObjectType::Blob, raw)
+            .write_object(&ObjectType::Blob, content)
             .context("Failed to write blob")?;
         hashes.push(h);
     }
@@ -354,12 +349,43 @@ fn stage_files(
             reserved: [0u8; 33],
         };
 
+        println!(
+            "DEBUG: creating entry for {} with flags {:?}",
+            path.display(),
+            entry.flags
+        );
+
+        println!(
+            "DEBUG stage_files: index now has {} entries",
+            index.entries().len()
+        );
+        for entry in index.entries() {
+            if entry.flags.contains(EntryFlags::STAGED) {
+                println!("  STAGED: {}", entry.path.display());
+            }
+        }
+
         // Update or insert entry
         if let Some(existing) = index.entries_mut().iter_mut().find(|e| &e.path == path) {
+            println!("DEBUG: updating existing entry for {}", path.display());
             *existing = entry;
         } else {
+            println!("DEBUG: inserting new entry for {}", path.display());
             index.entries_mut().push(entry);
         }
+    }
+
+    println!(
+        "DEBUG stage_files: index now has {} entries",
+        index.entries().len()
+    );
+    for entry in index.entries() {
+        println!(
+            "  {} -> flags: {:?}, STAGED={}",
+            entry.path.display(),
+            entry.flags,
+            entry.flags.contains(EntryFlags::STAGED)
+        );
     }
 
     Ok(())
