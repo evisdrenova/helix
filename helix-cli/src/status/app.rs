@@ -536,6 +536,9 @@ fn get_current_branch(repo_path: &Path) -> Result<String> {
         // Extract branch name from refs/heads/main
         if let Some(branch) = ref_path.strip_prefix("refs/heads/") {
             Ok(branch.to_string())
+        // Extract sandbox name from refs/sandboxes/auth -> sandboxes/auth
+        } else if let Some(sandbox) = ref_path.strip_prefix("refs/sandboxes/") {
+            Ok(format!("sandboxes/{}", sandbox))
         } else {
             Ok("(unknown)".to_string())
         }

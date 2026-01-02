@@ -606,11 +606,6 @@ impl SyncEngine {
         // i really don't like this but it handles an edge case but we should update this
         let is_first_import = current_entry_count == 0;
 
-        println!(
-            "DEBUG import_git_index: current_generation={}, is_first_import={}",
-            current_generation, is_first_import
-        );
-
         // Build entries in parallel, updating the progress bar as we go
         let entries: Vec<Entry> = index_entries
             .into_par_iter()
@@ -785,6 +780,8 @@ impl SyncEngine {
         let mut git_hash_to_helix_hash: HashMap<Vec<u8>, [u8; 32]> = HashMap::new();
         let mut collected_git_commits: Vec<(Vec<u8>, gix::Commit)> = Vec::new();
 
+        pb.set_message(format!("Importing commits and files..."));
+
         // Collect commits from all branches (including head)
         let refs = repo.references()?;
         let branch_refs: Vec<_> = refs
@@ -825,11 +822,6 @@ impl SyncEngine {
 
         // Sort oldest → newest by commit time
         collected_git_commits.sort_by_key(|(_, c)| c.time().unwrap().seconds);
-
-        pb.set_message(format!(
-            "Importing {} commits...",
-            collected_git_commits.len()
-        ));
 
         // Build Helix commits in oldest to newest order
         let mut helix_commits: Vec<Helix_Commit> = Vec::with_capacity(collected_git_commits.len());
