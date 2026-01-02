@@ -148,7 +148,7 @@ impl RepoContext {
                 repo_root: repo_root.clone(),
                 sandbox_root: Some(sandbox_root.clone()),
                 workdir: sandbox_root.join("workdir"),
-                index_path: sandbox_root.join("helix.idx"),
+                index_path: sandbox_root.join(".helix").join("helix.idx"),
             });
         }
 
@@ -184,9 +184,12 @@ fn detect_sandbox_from_path(path: &Path) -> Option<(PathBuf, PathBuf)> {
         if ancestor.file_name().and_then(|n| n.to_str()) == Some("workdir") {
             let potential_sandbox_root = ancestor.parent()?;
 
-            // Verify it's a sandbox by checking for manifest.toml AND .helix dir
+            // Verify it's a sandbox by checking for manifest.toml AND .helix dir with index
             if potential_sandbox_root.join("manifest.toml").exists()
-                && potential_sandbox_root.join(".helix").is_dir()
+                && potential_sandbox_root
+                    .join(".helix")
+                    .join("helix.idx")
+                    .exists()
             {
                 // Find repo root (go up from .helix/sandboxes/<name>)
                 let sandboxes_dir = potential_sandbox_root.parent()?;
@@ -429,7 +432,6 @@ fn build_index_entries_from_commit(
 
     Ok(entries)
 }
-
 
 fn write_sandbox_index(sandbox_root: &Path, entries: &[Entry]) -> Result<()> {
     // Create .helix subdir in sandbox (mirrors repo structure)
