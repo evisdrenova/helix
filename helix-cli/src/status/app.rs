@@ -4,8 +4,11 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use helix_cli::helix_index::{api::HelixIndexData, EntryFlags};
 use helix_cli::{fsmonitor::FSMonitor, ignore::IgnoreRules};
+use helix_cli::{
+    helix_index::{api::HelixIndexData, EntryFlags},
+    sandbox_command::RepoContext,
+};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::collections::HashSet;
 use std::fs;
@@ -75,22 +78,40 @@ pub struct App {
 
 impl App {
     pub fn new(repo_path: &Path) -> Result<Self> {
-        let repo_path = repo_path.canonicalize()?;
-        let repo_name = repo_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("repository")
-            .to_string();
+        // Use RepoContext to detect if we're in a sandbox
+        let context = RepoContext::detect(repo_path)?;
+
+        let repo_path = context.repo_root.clone();
+        let workdir = context.workdir.clone();
+
+        let repo_name = if context.is_sandbox() {
+            format!(
+                "{} (sandbox: {})",
+                repo_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("repository"),
+                context.sandbox_name().unwrap_or_default()
+            )
+        } else {
+            repo_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("repository")
+                .to_string()
+        };
+
         let current_branch = get_current_branch(&repo_path).ok();
 
-        let helix_index =
-            HelixIndexData::load_or_rebuild(&repo_path).context("Failed to load Helix index")?;
+        // Load index from the correct path (sandbox or repo)
+        let helix_index = HelixIndexData::load_from_path(&context.index_path, &context.repo_root)
+            .context("Failed to load Helix index")?;
 
-        let mut fsmonitor = FSMonitor::new(&repo_path)?;
+        // Watch the workdir (sandbox workdir or repo root)
+        let mut fsmonitor = FSMonitor::new(&workdir)?;
         fsmonitor.start_watching_repo()?;
 
         let ignore_rules = IgnoreRules::load(&repo_path);
-
         let mut app = Self {
             files: Vec::new(),
             selected_index: 0,
@@ -130,10 +151,12 @@ impl App {
 
         // If index changed on disk, reload it
         if self.fsmonitor.index_changed() {
-            self.helix_index = HelixIndexData::load_or_rebuild(&self.repo_path)?;
+            // Re-detect context to get correct index path
+            let context = RepoContext::detect(&self.repo_path)?;
+            self.helix_index =
+                HelixIndexData::load_from_path(&context.index_path, &context.repo_root)?;
             self.fsmonitor.clear_index_flag();
         }
-
         // Build tracked & staged sets from helix index entries
         let entries = self.helix_index.entries();
 
