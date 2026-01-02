@@ -51,16 +51,25 @@ pub fn add(repo_path: &Path, paths: &[PathBuf], options: AddOptions) -> Result<(
     }
 
     println!("DEBUG: Index has {} entries", index.entries().len());
-    for entry in index.entries().iter().take(10) {
+    for entry in index.entries().iter() {
+        let full_path = context.workdir.join(&entry.path);
+        let disk_mtime = full_path
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let modified = disk_mtime != entry.mtime_sec;
         println!(
-            "  {} -> flags: {:?}, STAGED={}, TRACKED={}",
+            "  {} | index_mtime={} | disk_mtime={} | modified={}",
             entry.path.display(),
-            entry.flags,
-            entry.flags.contains(EntryFlags::STAGED),
-            entry.flags.contains(EntryFlags::TRACKED)
+            entry.mtime_sec,
+            disk_mtime,
+            modified
         );
     }
-
     if options.verbose {
         println!("Loaded index (generation {})", index.generation());
     }
@@ -134,7 +143,7 @@ fn resolve_files_to_add(
     let staged = index.get_staged();
 
     // Load ignore rules
-    let ignore_rules = IgnoreRules::load(repo_path);
+    let ignore_rules = IgnoreRules::load(&context.workdir);
 
     if options.verbose {
         println!("Currently tracked: {}", tracked.len());
@@ -142,7 +151,15 @@ fn resolve_files_to_add(
     }
 
     // Expand paths (handle ".", directories, globs) - parallel
-    let candidate_files = expand_paths_parallel(repo_path, paths)?;
+    let candidate_files = expand_paths_parallel(&context.workdir, paths)?;
+
+    println!(
+        "DEBUG: expand_paths found {} candidates:",
+        candidate_files.len()
+    );
+    for f in &candidate_files {
+        println!("  candidate: {}", f.display());
+    }
 
     if options.verbose {
         println!("Found {} candidate files", candidate_files.len());
@@ -198,6 +215,7 @@ fn should_add_file(
     options: &AddOptions,
     context: &RepoContext,
 ) -> Result<bool> {
+    println!("shoudl add??");
     // If untracked, always add
     if !tracked.contains(relative_path) {
         return Ok(true);
@@ -222,29 +240,27 @@ fn should_add_file(
         .duration_since(std::time::UNIX_EPOCH)?
         .as_secs();
 
+    println!(
+        "  entry.mtime={}, current_mtime={}",
+        entry.mtime_sec, current_mtime
+    );
+
     let store = FsObjectStore::new(&context.repo_root);
 
     // Check if file is already staged
     if staged.contains(relative_path) {
-        // File is staged - check if it's been modified since staging
+        println!("  -> already staged");
         if current_mtime != entry.mtime_sec {
-            // File modified after staging - need to re-stage
+            println!("  -> staged but modified, re-staging");
             return Ok(true);
         }
-
-        // Mtime unchanged - verify blob exists
 
         if !store.has_object(&ObjectType::Blob, &entry.oid) {
-            if options.verbose {
-                eprintln!(
-                    "⚠️  Blob missing for staged file {}, re-creating...",
-                    relative_path.display()
-                );
-            }
+            println!("  -> blob missing, re-staging");
             return Ok(true);
         }
 
-        // Already staged, unchanged, and blob exists - skip
+        println!("  -> staged and unchanged, skipping");
         return Ok(false);
     }
 
@@ -268,6 +284,7 @@ fn should_add_file(
 
     // File is tracked, unchanged, blob exists, but not staged
     // Don't auto-stage unchanged files - skip
+    println!("  -> unchanged, skipping");
     Ok(false)
 }
 
@@ -424,11 +441,10 @@ fn collect_files_from_directory(dir: &Path, repo_root: &Path) -> Result<Vec<Path
         .follow_links(false)
         .into_iter()
         .filter_entry(|e| {
-            // Skip .git and .helix directories
-            !e.path().components().any(|c| {
-                let os_str = c.as_os_str();
-                os_str == ".git" || os_str == ".helix"
-            })
+            // Only skip .git and .helix if they're direct children of the directory we're walking
+            // Not if they appear in the parent path
+            let name = e.file_name().to_string_lossy();
+            name != ".git" && name != ".helix"
         })
     {
         let entry = entry?;
