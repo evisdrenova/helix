@@ -4,7 +4,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use helix_cli::{fsmonitor::FSMonitor, ignore::IgnoreRules};
+use helix_cli::{branch_command::get_current_branch, fsmonitor::FSMonitor, ignore::IgnoreRules};
 use helix_cli::{
     helix_index::{api::HelixIndexData, EntryFlags},
     sandbox_command::RepoContext,
@@ -539,33 +539,5 @@ impl App {
         }
 
         Ok(())
-    }
-}
-
-/// Get current branch name from .helix/HEAD
-fn get_current_branch(repo_path: &Path) -> Result<String> {
-    let head_path = repo_path.join(".helix").join("HEAD");
-
-    if !head_path.exists() {
-        return Ok("(no branch)".to_string());
-    }
-
-    let content = fs::read_to_string(&head_path)?;
-    let content = content.trim();
-
-    if content.starts_with("ref:") {
-        let ref_path = content.strip_prefix("ref:").unwrap().trim();
-
-        // Extract branch name from refs/heads/main
-        if let Some(branch) = ref_path.strip_prefix("refs/heads/") {
-            Ok(branch.to_string())
-        // Extract sandbox name from refs/sandboxes/auth -> sandboxes/auth
-        } else if let Some(sandbox) = ref_path.strip_prefix("refs/sandboxes/") {
-            Ok(format!("sandboxes/{}", sandbox))
-        } else {
-            Ok("(unknown)".to_string())
-        }
-    } else {
-        Ok("(detached HEAD)".to_string())
     }
 }

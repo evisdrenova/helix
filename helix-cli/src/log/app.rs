@@ -5,6 +5,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use helix_cli::{
+    branch_command::get_current_branch,
     helix_index::commit::{Commit, CommitStore},
     sandbox_command::{RepoContext, SandboxManifest},
 };
@@ -49,7 +50,7 @@ impl App {
 
         let store = FsObjectStore::new(repo_path);
         let loader = CommitStore::new(repo_path, store)?;
-        let current_branch_name = loader.get_current_branch_name()?;
+        let current_branch_name = get_current_branch(&repo_path)?;
 
         // If in sandbox, get the base commit to limit history
         let base_commit_hex: Option<String> = if let Some(ref sandbox_root) = context.sandbox_root {

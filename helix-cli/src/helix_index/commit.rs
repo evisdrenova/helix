@@ -369,31 +369,6 @@ impl CommitStore {
         Ok(commits)
     }
 
-    /// Get current branch name
-    pub fn get_current_branch_name(&self) -> Result<String> {
-        let head_path = self.repo_path.join(".helix").join("HEAD");
-
-        if !head_path.exists() {
-            return Ok("(no branch)".to_string());
-        }
-
-        let content = fs::read_to_string(&head_path)?;
-        let content = content.trim();
-
-        if content.starts_with("ref:") {
-            let ref_path = content.strip_prefix("ref:").unwrap().trim();
-
-            // Extract branch name from refs/heads/main
-            if let Some(branch) = ref_path.strip_prefix("refs/heads/") {
-                Ok(branch.to_string())
-            } else {
-                Ok("(unknown)".to_string())
-            }
-        } else {
-            Ok("(detached HEAD)".to_string())
-        }
-    }
-
     /// Get repository name from path
     pub fn get_repo_name(&self) -> String {
         self.repo_path

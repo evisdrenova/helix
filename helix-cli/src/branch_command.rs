@@ -221,32 +221,6 @@ pub fn switch_branch(repo_path: &Path, name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Get the current branch name
-pub fn get_current_branch(repo_path: &Path) -> Result<String> {
-    let head_path = repo_path.join(".helix/HEAD");
-
-    if !head_path.exists() {
-        return Ok("(no branch)".to_string());
-    }
-
-    let content = fs::read_to_string(&head_path)?;
-    let content = content.trim();
-
-    if content.starts_with("ref:") {
-        // Symbolic reference: "ref: refs/heads/main"
-        let ref_path = content.strip_prefix("ref:").unwrap().trim();
-
-        if let Some(branch_name) = ref_path.strip_prefix("refs/heads/") {
-            Ok(branch_name.to_string())
-        } else {
-            Ok("(unknown)".to_string())
-        }
-    } else {
-        // Detached HEAD
-        Ok("(detached HEAD)".to_string())
-    }
-}
-
 pub fn get_all_branches(start_path: &Path) -> Result<Vec<String>> {
     // Use RepoContext to find the actual repo root
     let context = RepoContext::detect(start_path)?;
@@ -347,6 +321,34 @@ fn validate_branch_name(name: &str) -> Result<()> {
 /// Get short hash (first 8 chars)
 fn short_hash(hash: &Hash) -> String {
     hash_to_hex(hash)[..8].to_string()
+}
+
+/// Get current branch name from .helix/HEAD
+pub fn get_current_branch(repo_path: &Path) -> Result<String> {
+    let head_path = repo_path.join(".helix").join("HEAD");
+
+    if !head_path.exists() {
+        return Ok("(no branch)".to_string());
+    }
+
+    let content = fs::read_to_string(&head_path)?;
+    let content = content.trim();
+
+    if content.starts_with("ref:") {
+        let ref_path = content.strip_prefix("ref:").unwrap().trim();
+
+        // Extract branch name from refs/heads/main
+        if let Some(branch) = ref_path.strip_prefix("refs/heads/") {
+            Ok(branch.to_string())
+        // Extract sandbox name from refs/sandboxes/auth -> sandboxes/auth
+        } else if let Some(sandbox) = ref_path.strip_prefix("refs/sandboxes/") {
+            Ok(format!("sandboxes/{}", sandbox))
+        } else {
+            Ok("(unknown)".to_string())
+        }
+    } else {
+        Ok("(detached HEAD)".to_string())
+    }
 }
 
 #[cfg(test)]
