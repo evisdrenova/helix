@@ -4,10 +4,6 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use helix_cli::merge::{
-    analyze_merge, execute_merge, generate_conflict_markers, ConflictResolution, MergeAnalysis,
-    MergeConflict, MergeResult,
-};
 
 use helix_protocol::hash::{hash_to_hex, Hash};
 use helix_protocol::message::ObjectType;
@@ -16,6 +12,10 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
+
+use crate::merge_command::{
+    analyze_merge, execute_merge, ConflictResolution, MergeAnalysis, MergeConflict, MergeResult,
+};
 
 use super::actions::Action;
 use super::ui;
