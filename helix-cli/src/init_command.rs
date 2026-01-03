@@ -102,10 +102,33 @@ pub fn detect_git(repo_path: &Path, auto: Option<String>) -> Result<()> {
     if git_path.exists() {
         detect_git_with_reader(repo_path, handle, auto)
     } else {
+        println!("\n  {}", style("Helix").bold());
         println!(
-            "Initializing Helix repository at {}...",
-            repo_path.display()
+            "  {}",
+            style("────────────────────────────────────────────").dim()
         );
+
+        println!(
+            "  {} Initialized empty Helix repository",
+            style("✓").green(),
+        );
+
+        println!("\n  {}", style("Helix repository initialized!").bold());
+
+        println!("\n  {}", style("Next steps:").underlined());
+        println!(
+            "    {}      - Check working tree state",
+            style("helix status").cyan()
+        );
+        println!(
+            "    {}   - Stage changes",
+            style("helix add <files>").cyan()
+        );
+        println!(
+            "    {}      - Record new changes",
+            style("helix commit").cyan()
+        );
+        println!("");
 
         Ok(())
     }
