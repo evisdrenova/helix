@@ -9,6 +9,7 @@ pub mod helix_index;
 pub mod ignore;
 pub mod index;
 pub mod init_command;
+pub mod merge;
 pub mod pull_command;
 pub mod push_command;
 pub mod sandbox_command;
