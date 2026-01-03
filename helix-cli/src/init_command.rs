@@ -114,8 +114,6 @@ pub fn detect_git(repo_path: &Path, auto: Option<String>) -> Result<()> {
             style("✓").green(),
         );
 
-        println!("\n  {}", style("Helix repository initialized!").bold());
-
         println!("\n  {}", style("Next steps:").underlined());
         println!(
             "    {}      - Check working tree state",

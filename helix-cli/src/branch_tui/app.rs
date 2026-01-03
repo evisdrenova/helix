@@ -122,7 +122,7 @@ impl App {
 
         let selected_index = branches.iter().position(|b| b.is_current).unwrap_or(0);
 
-        Ok(Self {
+        let mut app = Self {
             branches,
             selected_index,
             scroll_offset: 0,
@@ -138,7 +138,12 @@ impl App {
             branch_commit_lists: HashMap::new(),
             selected_commit_index: 0,
             focus: Focus::BranchList,
-        })
+        };
+
+        // Load commits for the initially selected branch
+        app.on_branch_selected()?;
+
+        Ok(app)
     }
 
     pub fn update_visible_height(&mut self, terminal_height: u16) {
