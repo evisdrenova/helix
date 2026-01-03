@@ -16,7 +16,7 @@ use crate::checkout::{checkout_tree_to_path, CheckoutOptions};
 use crate::helix_index::commit::{read_head, Commit};
 use crate::helix_index::tree::{TreeBuilder, TreeStore};
 use crate::helix_index::{Entry, EntryFlags, Header, Reader, Writer};
-use crate::sandbox_tui;
+use crate::{merge_tui, sandbox_tui};
 use helix_protocol::hash::{hash_bytes, hash_to_hex, hex_to_hash, Hash};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -775,7 +775,6 @@ pub fn merge_sandbox(repo_path: &Path, name: &str, options: MergeOptions) -> Res
     let manifest = SandboxManifest::load(&sandbox_root)?;
     let base_commit = manifest.base_commit_hash()?;
 
-    // Get the current sandbox branch HEAD
     let sandbox_branch = manifest
         .branch
         .as_ref()
@@ -788,72 +787,79 @@ pub fn merge_sandbox(repo_path: &Path, name: &str, options: MergeOptions) -> Res
         .get_ref(&ref_name)?
         .ok_or_else(|| anyhow::anyhow!("Sandbox branch not found"))?;
 
-    // Check if there are any commits beyond base
     if sandbox_head == base_commit {
         bail!(
-            "Sandbox '{}' has no commits. Make changes and commit first:\n\
-             cd {}\n\
-             helix add .\n\
-             helix commit -m \"message\"",
-            name,
-            sandbox_root.join("workdir").display()
+            "Sandbox '{}' has no commits. Make changes and commit first.",
+            name
         );
     }
 
-    // Determine target branch
     let target_branch = options.into_branch.unwrap_or_else(|| "main".to_string());
     let target_ref_name = format!("refs/heads/{}", target_branch);
 
-    if options.verbose {
-        println!("Merging sandbox '{}' into {}", name, target_branch);
+    let target_head = refs
+        .get_ref(&target_ref_name)?
+        .ok_or_else(|| anyhow::anyhow!("Target branch '{}' not found", target_branch))?;
+
+    // Check if fast-forward is possible
+    if target_head == base_commit {
+        // Fast-forward merge
+        refs.set_ref(&target_ref_name, sandbox_head)?;
+
+        // Checkout files to working directory
+        let checkout_options = CheckoutOptions {
+            verbose: options.verbose,
+            force: true,
+        };
+        checkout_tree_to_path(repo_path, &sandbox_head, repo_path, &checkout_options)?;
+
+        // Update index
+        update_index_from_commit(repo_path, &sandbox_head)?;
+
+        println!("Fast-forward merged '{}' into '{}'", name, target_branch);
+        return Ok(sandbox_head);
     }
 
-    // Get current target HEAD
-    let target_head = refs.get_ref(&target_ref_name)?;
+    // Need a real merge - launch TUI
+    let author = get_author(repo_path)?;
 
-    match target_head {
-        None => {
-            refs.set_ref(&target_ref_name, sandbox_head)?;
+    let mut app = merge_tui::app::App::new(
+        repo_path,
+        &target_branch,
+        name,
+        base_commit,
+        target_head,
+        sandbox_head,
+        &author,
+    )?;
+
+    match app.run()? {
+        Some(result) => {
+            // Update target branch ref to merge commit
+            refs.set_ref(&target_ref_name, result.commit_hash)?;
+
+            // Checkout merged tree to working directory
+            let checkout_options = CheckoutOptions {
+                verbose: options.verbose,
+                force: true,
+            };
+            checkout_tree_to_path(repo_path, &result.commit_hash, repo_path, &checkout_options)?;
+
+            // Update index
+            update_index_from_commit(repo_path, &result.commit_hash)?;
+
             println!(
-                "Created branch '{}' at {}",
-                target_branch,
-                &hash_to_hex(&sandbox_head)[..8]
+                "Merged '{}' into '{}' ({} conflicts resolved, {} files changed)",
+                name, target_branch, result.conflicts_resolved, result.files_changed
             );
+
+            Ok(result.commit_hash)
         }
-        Some(current_head) => {
-            if current_head == base_commit {
-                // Fast-forward: update the ref
-                refs.set_ref(&target_ref_name, sandbox_head)?;
-                println!("Fast-forward merged '{}' into '{}'", name, target_branch);
-            } else {
-                bail!(
-                    "Cannot fast-forward: '{}' has diverged from sandbox base.\n\
-                     Manual merge required (not yet implemented).",
-                    target_branch
-                );
-            }
+        None => {
+            println!("Merge cancelled");
+            bail!("Merge cancelled by user");
         }
     }
-
-    // Checkout the merged commit to the working directory
-    let checkout_options = CheckoutOptions {
-        verbose: options.verbose,
-        force: true,
-    };
-
-    checkout_tree_to_path(repo_path, &sandbox_head, repo_path, &checkout_options)?;
-
-    // Update the main repo's index to match the new HEAD
-    update_index_from_commit(repo_path, &sandbox_head)?;
-
-    if options.verbose {
-        println!(
-            "Updated working directory to {}",
-            &hash_to_hex(&sandbox_head)[..8]
-        );
-    }
-
-    Ok(sandbox_head)
 }
 
 fn update_index_from_commit(repo_path: &Path, commit_hash: &Hash) -> Result<()> {
