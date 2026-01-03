@@ -74,6 +74,7 @@ data, and will only create missing pieces.
 */
 
 use anyhow::{Context, Result};
+use console::style;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
