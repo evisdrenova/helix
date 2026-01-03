@@ -15,7 +15,7 @@ use crate::add_command::get_file_mode;
 use crate::checkout::{checkout_tree_to_path, CheckoutOptions};
 use crate::helix_index::commit::{read_head, Commit};
 use crate::helix_index::tree::{TreeBuilder, TreeStore};
-use crate::helix_index::{Entry, EntryFlags, Header, Writer};
+use crate::helix_index::{Entry, EntryFlags, Header, Reader, Writer};
 use crate::sandbox_tui;
 use helix_protocol::hash::{hash_bytes, hash_to_hex, hex_to_hash, Hash};
 
@@ -822,19 +822,58 @@ pub fn merge_sandbox(repo_path: &Path, name: &str, options: MergeOptions) -> Res
         }
         Some(current_head) => {
             if current_head == base_commit {
+                // Fast-forward: update the ref
                 refs.set_ref(&target_ref_name, sandbox_head)?;
                 println!("Fast-forward merged '{}' into '{}'", name, target_branch);
             } else {
                 bail!(
                     "Cannot fast-forward: '{}' has diverged from sandbox base.\n\
-                     Manual merge required (TODO:: not yet implemented).",
+                     Manual merge required (not yet implemented).",
                     target_branch
                 );
             }
         }
     }
 
+    // Checkout the merged commit to the working directory
+    let checkout_options = CheckoutOptions {
+        verbose: options.verbose,
+        force: true,
+    };
+
+    checkout_tree_to_path(repo_path, &sandbox_head, repo_path, &checkout_options)?;
+
+    // Update the main repo's index to match the new HEAD
+    update_index_from_commit(repo_path, &sandbox_head)?;
+
+    if options.verbose {
+        println!(
+            "Updated working directory to {}",
+            &hash_to_hex(&sandbox_head)[..8]
+        );
+    }
+
     Ok(sandbox_head)
+}
+
+fn update_index_from_commit(repo_path: &Path, commit_hash: &Hash) -> Result<()> {
+    let entries = build_index_entries_from_commit(repo_path, commit_hash, repo_path)?;
+
+    // Load existing index to get current generation
+    let index_path = repo_path.join(".helix").join("helix.idx");
+    let current_generation = if index_path.exists() {
+        let reader = Reader::new(repo_path);
+        reader.read().map(|idx| idx.header.generation).unwrap_or(0)
+    } else {
+        0
+    };
+
+    // Increment generation
+    let header = Header::new(current_generation + 1, entries.len() as u32);
+    let writer = Writer::new_canonical(repo_path);
+    writer.write(&header, &entries)?;
+
+    Ok(())
 }
 
 /// Build a tree from workdir files
