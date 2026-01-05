@@ -395,20 +395,6 @@ fn format_commit_details(commit: &Commit, changed_files: Option<&[ChangedFile]>)
         ]));
     }
 
-    // Initial commit indicator
-    if commit.is_initial() {
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Span::raw(" "),
-            Span::styled(
-                "✨ Initial commit",
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]));
-    }
-
     // Changed files section
     if let Some(files) = changed_files {
         let added = files
@@ -491,19 +477,6 @@ fn format_commit_details(commit: &Commit, changed_files: Option<&[ChangedFile]>)
                 "⚠ Merge commit",
                 Style::default()
                     .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]));
-    }
-
-    // Initial commit indicator
-    if commit.is_initial() {
-        lines.push(Line::from(vec![
-            Span::raw(" "),
-            Span::styled(
-                "✨ Initial commit",
-                Style::default()
-                    .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
             ),
         ]));
