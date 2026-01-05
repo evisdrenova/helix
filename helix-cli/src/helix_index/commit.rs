@@ -1,11 +1,14 @@
 use anyhow::{Context, Result};
 use chrono::DateTime;
+use console::Color;
 use helix_protocol::hash::{hash_bytes, hash_to_hex, hex_to_hash, Hash};
 use helix_protocol::message::ObjectType;
 use helix_protocol::storage::FsObjectStore;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::helix_index::tree::TreeStore;
 
 /// Commit - represents a snapshot in history
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -481,6 +484,98 @@ impl CommitStore {
         }
 
         Ok(())
+    }
+
+    pub fn get_changed_files(&self, commit: &Commit) -> Result<Vec<ChangedFile>> {
+        let tree_store = TreeStore::for_repo(&self.repo_path);
+
+        // Get files in this commit's tree
+        let current_files = tree_store.collect_all_files(&commit.tree_hash)?;
+        let current_map: std::collections::HashMap<_, _> = current_files.into_iter().collect();
+
+        // If initial commit, all files are "added"
+        if commit.is_initial() {
+            return Ok(current_map
+                .into_iter()
+                .map(|(path, _)| ChangedFile {
+                    path,
+                    change_type: ChangeType::Added,
+                })
+                .collect());
+        }
+
+        // Get parent tree
+        let parent_hash = &commit.parents[0];
+        let parent_commit = self.read_commit(parent_hash)?;
+        let parent_files = tree_store.collect_all_files(&parent_commit.tree_hash)?;
+        let parent_map: std::collections::HashMap<_, _> = parent_files.into_iter().collect();
+
+        let mut changes = Vec::new();
+
+        // Find added and modified files
+        for (path, hash) in &current_map {
+            match parent_map.get(path) {
+                None => {
+                    changes.push(ChangedFile {
+                        path: path.clone(),
+                        change_type: ChangeType::Added,
+                    });
+                }
+                Some(parent_hash) if parent_hash != hash => {
+                    changes.push(ChangedFile {
+                        path: path.clone(),
+                        change_type: ChangeType::Modified,
+                    });
+                }
+                _ => {} // Unchanged
+            }
+        }
+
+        // Find deleted files
+        for (path, _) in &parent_map {
+            if !current_map.contains_key(path) {
+                changes.push(ChangedFile {
+                    path: path.clone(),
+                    change_type: ChangeType::Deleted,
+                });
+            }
+        }
+
+        // Sort by path for consistent display
+        changes.sort_by(|a, b| a.path.cmp(&b.path));
+
+        Ok(changes)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ChangedFile {
+    pub path: PathBuf,
+    pub change_type: ChangeType,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ChangeType {
+    Added,
+    Modified,
+    Deleted,
+}
+
+impl ChangeType {
+    pub fn symbol(&self) -> &'static str {
+        match self {
+            ChangeType::Added => "+",
+            ChangeType::Modified => "~",
+            ChangeType::Deleted => "-",
+        }
+    }
+
+    pub fn color(&self) -> Color {
+        match self {
+            ChangeType::Added => Color::Green,
+            ChangeType::Modified => Color::Yellow,
+            ChangeType::Deleted => Color::Red,
+        }
     }
 }
 

@@ -1,6 +1,6 @@
 // ui command for log.rs
 
-use helix_cli::helix_index::commit::{format_timestamp, Commit};
+use helix_cli::helix_index::commit::{format_timestamp, ChangeType, ChangedFile, Commit};
 use helix_protocol::hash::hash_to_hex;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -12,7 +12,7 @@ use ratatui::{
 
 use super::app::App;
 
-pub fn draw(f: &mut Frame, app: &App) {
+pub fn draw(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -81,7 +81,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(header, area);
 }
 
-fn draw_main_content(f: &mut Frame, area: Rect, app: &App) {
+fn draw_main_content(f: &mut Frame, area: Rect, app: &mut App) {
     // calculate split ratio
     let timeline_width = (area.width as f32 * app.split_ratio) as u16;
     let details_width = area.width.saturating_sub(timeline_width);
@@ -233,9 +233,10 @@ fn create_timeline_item(commit: &Commit, is_selected: bool) -> ListItem {
     ListItem::new(Text::from(lines)).style(style)
 }
 
-fn draw_details(f: &mut Frame, area: Rect, app: &App) {
-    if let Some(commit) = app.get_selected_commit() {
-        let details_text = format_commit_details(commit);
+fn draw_details(f: &mut Frame, area: Rect, app: &mut App) {
+    if let Some(commit) = app.get_selected_commit().cloned() {
+        let changed_files = app.get_selected_changed_files();
+        let details_text = format_commit_details(&commit, changed_files.as_deref());
 
         let paragraph = Paragraph::new(details_text)
             .block(
@@ -256,7 +257,7 @@ fn draw_details(f: &mut Frame, area: Rect, app: &App) {
     }
 }
 
-fn format_commit_details(commit: &Commit) -> Text<'static> {
+fn format_commit_details(commit: &Commit, changed_files: Option<&[ChangedFile]>) -> Text<'static> {
     let mut lines = vec![];
 
     // Title (commit summary)
@@ -397,6 +398,106 @@ fn format_commit_details(commit: &Commit) -> Text<'static> {
     // Initial commit indicator
     if commit.is_initial() {
         lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                "✨ Initial commit",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+    }
+
+    // Changed files section
+    if let Some(files) = changed_files {
+        let added = files
+            .iter()
+            .filter(|f| f.change_type == ChangeType::Added)
+            .count();
+        let modified = files
+            .iter()
+            .filter(|f| f.change_type == ChangeType::Modified)
+            .count();
+        let deleted = files
+            .iter()
+            .filter(|f| f.change_type == ChangeType::Deleted)
+            .count();
+
+        lines.push(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                "Changes:",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                format!("{} files", files.len()),
+                Style::default().fg(Color::White),
+            ),
+            Span::raw(" ("),
+            Span::styled(format!("+{}", added), Style::default().fg(Color::Green)),
+            Span::raw(" "),
+            Span::styled(format!("~{}", modified), Style::default().fg(Color::Yellow)),
+            Span::raw(" "),
+            Span::styled(format!("-{}", deleted), Style::default().fg(Color::Red)),
+            Span::raw(")"),
+        ]));
+
+        lines.push(Line::from(""));
+
+        for file in files.iter().take(20) {
+            // Limit to 20 files
+            let (symbol, color) = match file.change_type {
+                ChangeType::Added => ("+", Color::Green),
+                ChangeType::Modified => ("~", Color::Yellow),
+                ChangeType::Deleted => ("-", Color::Red),
+            };
+
+            lines.push(Line::from(vec![
+                Span::raw("   "),
+                Span::styled(
+                    symbol,
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
+                Span::styled(
+                    file.path.display().to_string(),
+                    Style::default().fg(Color::White),
+                ),
+            ]));
+        }
+
+        if files.len() > 20 {
+            lines.push(Line::from(vec![
+                Span::raw("   "),
+                Span::styled(
+                    format!("... and {} more files", files.len() - 20),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]));
+        }
+    }
+
+    lines.push(Line::from(""));
+
+    // Merge commit indicator
+    if commit.is_merge() {
+        lines.push(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                "⚠ Merge commit",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+    }
+
+    // Initial commit indicator
+    if commit.is_initial() {
         lines.push(Line::from(vec![
             Span::raw(" "),
             Span::styled(

@@ -6,7 +6,7 @@ use crossterm::{
 };
 use helix_cli::{
     branch_command::get_current_branch,
-    helix_index::commit::{Commit, CommitStore},
+    helix_index::commit::{ChangedFile, Commit, CommitStore},
     sandbox_command::{RepoContext, SandboxManifest},
 };
 use helix_protocol::{
@@ -14,8 +14,8 @@ use helix_protocol::{
     storage::FsObjectStore,
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
-use std::io;
 use std::path::Path;
+use std::{collections::HashMap, io};
 
 use super::actions::Action;
 use super::ui;
@@ -41,6 +41,7 @@ pub struct App {
     pub branch_name_input: String,
     pub branch_name_mode: bool,
     pub pending_checkout_hash: Option<Hash>,
+    pub changed_files_cache: HashMap<Hash, Vec<ChangedFile>>,
 }
 
 impl App {
@@ -109,6 +110,7 @@ impl App {
             branch_name_input: String::new(),
             branch_name_mode: false,
             pending_checkout_hash: None,
+            changed_files_cache: HashMap::new(),
         })
     }
 
@@ -162,6 +164,19 @@ impl App {
 
     pub fn get_selected_commit(&self) -> Option<&Commit> {
         self.commits.get(self.selected_index)
+    }
+
+    pub fn get_selected_changed_files(&mut self) -> Option<Vec<ChangedFile>> {
+        let commit = self.get_selected_commit()?;
+        let hash = commit.commit_hash;
+
+        if !self.changed_files_cache.contains_key(&hash) {
+            if let Ok(files) = self.loader.get_changed_files(commit) {
+                self.changed_files_cache.insert(hash, files);
+            }
+        }
+
+        self.changed_files_cache.get(&hash).cloned()
     }
 
     /// Handle user actions
