@@ -541,19 +541,6 @@ fn format_commit_details(
 
     lines.push(Line::from(""));
 
-    // Merge commit indicator
-    if commit.is_merge() {
-        lines.push(Line::from(vec![
-            Span::raw(" "),
-            Span::styled(
-                "⚠ Merge commit",
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]));
-    }
-
     Text::from(lines)
 }
 
