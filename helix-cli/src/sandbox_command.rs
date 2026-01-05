@@ -584,20 +584,54 @@ fn validate_sandbox_name(name: &str) -> Result<()> {
 
     Ok(())
 }
-
 pub fn get_sandbox_changes(repo_path: &Path, name: &str) -> Result<Vec<SandboxChange>> {
     let sandbox_root = repo_path.join(".helix").join("sandboxes").join(name);
     let workdir = sandbox_root.join("workdir");
     let manifest = SandboxManifest::load(&sandbox_root)?;
-    let base_commit = manifest.base_commit_hash()?;
 
-    // Get files from base commit's tree in order to match against the workdir
-    let base_files = collect_files_from_commit(&repo_path, &base_commit)?;
+    let branch_name = manifest
+        .branch
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Sandbox has no branch"))?;
 
-    // Get files from sandbox workdir to match against the base commit tree
+    let ref_name = format!("refs/{}", branch_name);
+    let refs = FsRefStore::new(repo_path);
+
+    let current_head = refs
+        .get_ref(&ref_name)?
+        .ok_or_else(|| anyhow::anyhow!("Sandbox branch not found"))?;
+
+    println!("DEBUG: sandbox branch = {}", branch_name);
+    println!("DEBUG: current_head = {}", hash_to_hex(&current_head));
+
+    let head_files = collect_files_from_commit(repo_path, &current_head)?;
+    println!("DEBUG: head_files count = {}", head_files.len());
+    for (path, hash) in &head_files {
+        println!(
+            "DEBUG: head file: {} -> {}",
+            path.display(),
+            &hash_to_hex(hash)[..8]
+        );
+    }
+
     let workdir_files = collect_files_from_workdir(&workdir)?;
+    println!("DEBUG: workdir_files count = {}", workdir_files.len());
+    for path in &workdir_files {
+        println!("DEBUG: workdir file: {}", path.display());
+    }
 
-    compute_sandbox_diff(&base_files, &workdir_files, &workdir)
+    let changes = compute_sandbox_diff(&head_files, &workdir_files, &workdir)?;
+
+    println!("DEBUG: changes detected = {}", changes.len());
+    for change in &changes {
+        println!(
+            "DEBUG: change: {:?} - {}",
+            change.kind,
+            change.path.display()
+        );
+    }
+
+    Ok(changes)
 }
 
 /// Collect all file paths and hashes from a commit's tree
@@ -639,20 +673,20 @@ fn collect_workdir_files_recursive(
         let path = entry.path();
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
-        // Skip hidden and common large directories
-        if name.starts_with('.')
-            || name == "node_modules"
-            || name == "target"
-            || name == "__pycache__"
-            || name == ".venv"
-            || name == "venv"
-        {
-            continue;
-        }
-
         if path.is_dir() {
+            // Skip hidden directories and common large directories
+            if name.starts_with('.')
+                || name == "node_modules"
+                || name == "target"
+                || name == "__pycache__"
+                || name == ".venv"
+                || name == "venv"
+            {
+                continue;
+            }
             collect_workdir_files_recursive(root, &path, files)?;
         } else if path.is_file() {
+            // Don't skip hidden files - they can be tracked (e.g., .gitignore)
             let relative = path.strip_prefix(root)?;
             files.insert(relative.to_path_buf());
         }
