@@ -601,35 +601,11 @@ pub fn get_sandbox_changes(repo_path: &Path, name: &str) -> Result<Vec<SandboxCh
         .get_ref(&ref_name)?
         .ok_or_else(|| anyhow::anyhow!("Sandbox branch not found"))?;
 
-    println!("DEBUG: sandbox branch = {}", branch_name);
-    println!("DEBUG: current_head = {}", hash_to_hex(&current_head));
-
     let head_files = collect_files_from_commit(repo_path, &current_head)?;
-    println!("DEBUG: head_files count = {}", head_files.len());
-    for (path, hash) in &head_files {
-        println!(
-            "DEBUG: head file: {} -> {}",
-            path.display(),
-            &hash_to_hex(hash)[..8]
-        );
-    }
 
     let workdir_files = collect_files_from_workdir(&workdir)?;
-    println!("DEBUG: workdir_files count = {}", workdir_files.len());
-    for path in &workdir_files {
-        println!("DEBUG: workdir file: {}", path.display());
-    }
 
     let changes = compute_sandbox_diff(&head_files, &workdir_files, &workdir)?;
-
-    println!("DEBUG: changes detected = {}", changes.len());
-    for change in &changes {
-        println!(
-            "DEBUG: change: {:?} - {}",
-            change.kind,
-            change.path.display()
-        );
-    }
 
     Ok(changes)
 }

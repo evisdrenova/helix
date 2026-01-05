@@ -50,7 +50,6 @@ pub fn add(repo_path: &Path, paths: &[PathBuf], options: AddOptions) -> Result<(
         println!("Loaded index (generation {})", index.generation());
     }
 
-    println!("DEBUG: Index has {} entries", index.entries().len());
     for entry in index.entries().iter() {
         let full_path = context.workdir.join(&entry.path);
         let disk_mtime = full_path
@@ -76,8 +75,6 @@ pub fn add(repo_path: &Path, paths: &[PathBuf], options: AddOptions) -> Result<(
 
     // Resolve which files need adding (parallel)
     let files_to_add = resolve_files_to_add(&index, paths, &options, &context)?;
-
-    println!("DEBUG: files_to_add = {:?}", files_to_add);
 
     if files_to_add.is_empty() {
         // Check if there are already staged files
@@ -126,8 +123,6 @@ pub fn add(repo_path: &Path, paths: &[PathBuf], options: AddOptions) -> Result<(
     // Persist index to disk
     index.persist()?;
 
-    println!("DEBUG: persisted index to {}", context.index_path.display());
-
     if options.verbose {
         println!("Staged {} files", files_to_add.len());
         println!("Index generation: {}", index.generation());
@@ -155,14 +150,6 @@ fn resolve_files_to_add(
 
     // Expand paths (handle ".", directories, globs) - parallel
     let candidate_files = expand_paths_parallel(&context.workdir, paths)?;
-
-    println!(
-        "DEBUG: expand_paths found {} candidates:",
-        candidate_files.len()
-    );
-    for f in &candidate_files {
-        println!("  candidate: {}", f.display());
-    }
 
     if options.verbose {
         println!("Found {} candidate files", candidate_files.len());
@@ -349,16 +336,6 @@ fn stage_files(
             reserved: [0u8; 33],
         };
 
-        println!(
-            "DEBUG: creating entry for {} with flags {:?}",
-            path.display(),
-            entry.flags
-        );
-
-        println!(
-            "DEBUG stage_files: index now has {} entries",
-            index.entries().len()
-        );
         for entry in index.entries() {
             if entry.flags.contains(EntryFlags::STAGED) {
                 println!("  STAGED: {}", entry.path.display());
@@ -367,25 +344,10 @@ fn stage_files(
 
         // Update or insert entry
         if let Some(existing) = index.entries_mut().iter_mut().find(|e| &e.path == path) {
-            println!("DEBUG: updating existing entry for {}", path.display());
             *existing = entry;
         } else {
-            println!("DEBUG: inserting new entry for {}", path.display());
             index.entries_mut().push(entry);
         }
-    }
-
-    println!(
-        "DEBUG stage_files: index now has {} entries",
-        index.entries().len()
-    );
-    for entry in index.entries() {
-        println!(
-            "  {} -> flags: {:?}, STAGED={}",
-            entry.path.display(),
-            entry.flags,
-            entry.flags.contains(EntryFlags::STAGED)
-        );
     }
 
     Ok(())
