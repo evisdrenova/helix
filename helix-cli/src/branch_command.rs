@@ -46,7 +46,6 @@ pub fn run_branch_tui(repo_path: Option<&Path>) -> Result<()> {
 
 /// Create a new branch
 pub fn create_branch(repo_path: &Path, name: &str, options: BranchOptions) -> Result<()> {
-    // Validate branch name
     validate_branch_name(name)?;
 
     let branch_path = repo_path.join(format!(".helix/refs/heads/{}", name));
@@ -65,6 +64,7 @@ pub fn create_branch(repo_path: &Path, name: &str, options: BranchOptions) -> Re
     fs::write(&branch_path, format!("{}\n", hash_to_hex(&head_hash)))?;
 
     let current_branch = get_current_branch(repo_path)?;
+
     if current_branch != "(no branch)" && current_branch != "(detached HEAD)" {
         if let Err(e) = set_branch_upstream(repo_path, name, &current_branch) {
             eprintln!("Warning: Failed to set upstream: {}", e);
@@ -324,25 +324,24 @@ fn short_hash(hash: &Hash) -> String {
 }
 
 /// Get current branch name from .helix/HEAD
-pub fn get_current_branch(repo_path: &Path) -> Result<String> {
-    let head_path = repo_path.join(".helix").join("HEAD");
+pub fn get_current_branch(start_path: &Path) -> Result<String> {
+    let context = RepoContext::detect(start_path)?;
 
-    if !head_path.exists() {
+    if !context.head_path.exists() {
+        println!("DEBUG: head_path does not exist!");
         return Ok("(no branch)".to_string());
     }
 
-    let content = fs::read_to_string(&head_path)?;
+    let content = fs::read_to_string(&context.head_path)?;
     let content = content.trim();
 
     if content.starts_with("ref:") {
         let ref_path = content.strip_prefix("ref:").unwrap().trim();
 
-        // Extract branch name from refs/heads/main
         if let Some(branch) = ref_path.strip_prefix("refs/heads/") {
             Ok(branch.to_string())
-        // Extract sandbox name from refs/sandboxes/auth -> sandboxes/auth
         } else if let Some(sandbox) = ref_path.strip_prefix("refs/sandboxes/") {
-            Ok(format!("sandboxes/{}", sandbox))
+            Ok(sandbox.to_string())
         } else {
             Ok("(unknown)".to_string())
         }

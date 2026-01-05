@@ -136,23 +136,24 @@ pub struct RepoContext {
     pub sandbox_root: Option<PathBuf>,
     pub workdir: PathBuf,
     pub index_path: PathBuf,
+    pub head_path: PathBuf,
 }
 
 impl RepoContext {
     pub fn detect(start_path: &Path) -> Result<Self> {
         let start_path = start_path.canonicalize()?;
 
-        // check if we're inside a sandbox workdir
+        // Check if we're inside a sandbox workdir
         if let Some((sandbox_root, repo_root)) = detect_sandbox_from_path(&start_path) {
             return Ok(Self {
                 repo_root: repo_root.clone(),
                 sandbox_root: Some(sandbox_root.clone()),
                 workdir: sandbox_root.join("workdir"),
                 index_path: sandbox_root.join(".helix").join("helix.idx"),
+                head_path: sandbox_root.join("HEAD"), // Sandbox HEAD
             });
         }
 
-        // Otherwise, find the repo root by looking for .helix
         let repo_root = find_repo_root(&start_path)?;
 
         Ok(Self {
@@ -160,9 +161,9 @@ impl RepoContext {
             sandbox_root: None,
             workdir: repo_root.clone(),
             index_path: repo_root.join(".helix").join("helix.idx"),
+            head_path: repo_root.join(".helix").join("HEAD"), // Main repo HEAD
         })
     }
-
     /// Check if we're in a sandbox
     pub fn is_sandbox(&self) -> bool {
         self.sandbox_root.is_some()
@@ -302,10 +303,19 @@ pub fn create_sandbox(repo_path: &Path, name: &str, options: CreateOptions) -> R
         println!("Created sandbox index with {} entries", entries.len());
     }
 
-    // Create sandbox branch (but don't switch to it)
     let branch_name = format!("sandboxes/{}", name);
     let ref_name = format!("refs/{}", branch_name);
     let refs = FsRefStore::new(repo_path);
+
+    refs.set_ref(&ref_name, base_commit)
+        .with_context(|| format!("Failed to create branch '{}'", branch_name))?;
+
+    // Create sandbox HEAD (after branch is created successfully)
+    let sandbox_head_path = sandbox_root.join("HEAD");
+    fs::write(
+        &sandbox_head_path,
+        format!("ref: refs/sandboxes/{}\n", name),
+    )?;
 
     refs.set_ref(&ref_name, base_commit)
         .with_context(|| format!("Failed to create branch '{}'", branch_name))?;
