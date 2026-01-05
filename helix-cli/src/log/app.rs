@@ -4,15 +4,14 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use helix_cli::branch_command::get_all_branches;
 use helix_cli::{
     branch_command::get_current_branch,
     helix_index::commit::{ChangedFile, Commit, CommitStore},
     sandbox_command::{RepoContext, SandboxManifest},
 };
-use helix_protocol::{
-    hash::{hex_to_hash, Hash},
-    storage::FsObjectStore,
-};
+use helix_protocol::hash::hex_to_hash;
+use helix_protocol::{hash::Hash, storage::FsObjectStore};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::path::Path;
 use std::{collections::HashMap, io};
@@ -42,6 +41,7 @@ pub struct App {
     pub branch_name_mode: bool,
     pub pending_checkout_hash: Option<Hash>,
     pub changed_files_cache: HashMap<Hash, Vec<ChangedFile>>,
+    pub commit_branches: HashMap<Hash, Vec<String>>,
 }
 
 impl App {
@@ -85,6 +85,8 @@ impl App {
             .map(|(branch, ahead, behind)| (Some(branch), ahead, behind))
             .unwrap_or((None, 0, 0));
 
+        let commit_branches = build_commit_branch_map(repo_path)?;
+
         Ok(Self {
             commits,
             selected_index: 0,
@@ -107,6 +109,7 @@ impl App {
             branch_name_mode: false,
             pending_checkout_hash: None,
             changed_files_cache: HashMap::new(),
+            commit_branches,
         })
     }
 
@@ -475,4 +478,28 @@ impl App {
 
         Ok(())
     }
+}
+
+fn build_commit_branch_map(repo_path: &Path) -> Result<HashMap<Hash, Vec<String>>> {
+    let mut map: HashMap<Hash, Vec<String>> = HashMap::new();
+
+    let branches = get_all_branches(repo_path)?;
+
+    for branch_name in branches {
+        // Determine ref path based on branch type
+        let ref_path = if branch_name.starts_with("sandboxes/") {
+            let sandbox_name = branch_name.strip_prefix("sandboxes/").unwrap();
+            repo_path.join(".helix/refs/sandboxes").join(sandbox_name)
+        } else {
+            repo_path.join(".helix/refs/heads").join(&branch_name)
+        };
+
+        if let Ok(hash_hex) = std::fs::read_to_string(&ref_path) {
+            if let Ok(hash) = hex_to_hash(hash_hex.trim()) {
+                map.entry(hash).or_insert_with(Vec::new).push(branch_name);
+            }
+        }
+    }
+
+    Ok(map)
 }

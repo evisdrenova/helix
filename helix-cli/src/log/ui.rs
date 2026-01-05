@@ -152,7 +152,8 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
         .iter()
         .map(|(actual_idx, commit)| {
             let is_selected = *actual_idx == app.selected_index;
-            create_timeline_item(commit, is_selected)
+            let branches = app.commit_branches.get(&commit.commit_hash);
+            create_timeline_item(commit, is_selected, branches)
         })
         .collect();
 
@@ -166,7 +167,11 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(list, area);
 }
 
-fn create_timeline_item(commit: &Commit, is_selected: bool) -> ListItem {
+fn create_timeline_item(
+    commit: &Commit,
+    is_selected: bool,
+    branches: Option<&Vec<String>>,
+) -> ListItem<'static> {
     let current_user_email = std::env::var("USER").unwrap_or_default();
     let is_current_user = commit.author.contains(&current_user_email)
         || commit
@@ -194,12 +199,34 @@ fn create_timeline_item(commit: &Commit, is_selected: bool) -> ListItem {
         Span::styled(time_str, Style::default().fg(Color::White)),
     ]);
 
-    let line2 = Line::from(vec![
+    // Line 2: author, hash, and branch tags
+    let mut line2_spans = vec![
         Span::raw("   "),
-        Span::styled(&commit.author, Style::default().fg(author_color)),
+        Span::styled(commit.author.clone(), Style::default().fg(author_color)),
         Span::raw(" · "),
         Span::styled(commit.get_short_hash(), Style::default().fg(Color::Green)),
-    ]);
+    ];
+
+    // Add branch tags
+    if let Some(branch_list) = branches {
+        for branch in branch_list {
+            line2_spans.push(Span::raw(" "));
+
+            // Different colors for sandbox vs regular branches
+            let (tag_color, prefix) = if branch.starts_with("sandboxes/") {
+                (Color::Magenta, "⎇ ")
+            } else {
+                (Color::Cyan, "")
+            };
+
+            line2_spans.push(Span::styled(
+                format!("[{}{}]", prefix, branch),
+                Style::default().fg(tag_color).add_modifier(Modifier::BOLD),
+            ));
+        }
+    }
+
+    let line2 = Line::from(line2_spans);
 
     let max_len = 45;
     let summary = commit.summary();
@@ -236,7 +263,9 @@ fn create_timeline_item(commit: &Commit, is_selected: bool) -> ListItem {
 fn draw_details(f: &mut Frame, area: Rect, app: &mut App) {
     if let Some(commit) = app.get_selected_commit().cloned() {
         let changed_files = app.get_selected_changed_files();
-        let details_text = format_commit_details(&commit, changed_files.as_deref());
+        let branches = app.commit_branches.get(&commit.commit_hash).cloned();
+        let details_text =
+            format_commit_details(&commit, changed_files.as_deref(), branches.as_ref());
 
         let paragraph = Paragraph::new(details_text)
             .block(
@@ -257,7 +286,11 @@ fn draw_details(f: &mut Frame, area: Rect, app: &mut App) {
     }
 }
 
-fn format_commit_details(commit: &Commit, changed_files: Option<&[ChangedFile]>) -> Text<'static> {
+fn format_commit_details(
+    commit: &Commit,
+    changed_files: Option<&[ChangedFile]>,
+    branches: Option<&Vec<String>>,
+) -> Text<'static> {
     let mut lines = vec![];
 
     // Title (commit summary)
@@ -271,6 +304,37 @@ fn format_commit_details(commit: &Commit, changed_files: Option<&[ChangedFile]>)
         ),
     ]));
     lines.push(Line::from(""));
+
+    if let Some(branch_list) = branches {
+        if !branch_list.is_empty() {
+            lines.push(Line::from(vec![
+                Span::raw(" "),
+                Span::styled(
+                    "Branches:",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
+            ]));
+
+            for branch in branch_list {
+                let (color, icon) = if branch.starts_with("sandboxes/") {
+                    (Color::Magenta, "⎇")
+                } else {
+                    (Color::Cyan, "●")
+                };
+
+                lines.push(Line::from(vec![
+                    Span::raw("   "),
+                    Span::styled(icon, Style::default().fg(color)),
+                    Span::raw(" "),
+                    Span::styled(branch.clone(), Style::default().fg(color)),
+                ]));
+            }
+            lines.push(Line::from(""));
+        }
+    }
 
     // Message body (if exists)
     let message_body = commit
