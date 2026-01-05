@@ -100,7 +100,14 @@ impl App {
                 };
 
             let remote_tracking = get_remote_tracking(repo_path, &branch_name);
-            let upstream = get_branch_upstream(repo_path, &branch_name);
+
+            // For sandboxes, show base branch; for regular branches, show upstream
+            let upstream = if branch_name.starts_with("sandboxes/") {
+                let sandbox_name = branch_name.strip_prefix("sandboxes/").unwrap();
+                get_sandbox_base_branch(repo_path, sandbox_name)
+            } else {
+                get_branch_upstream(repo_path, &branch_name)
+            };
 
             branches.push(BranchInfo {
                 name: branch_name,
@@ -612,4 +619,17 @@ fn get_remote_tracking(repo_path: &Path, branch_name: &str) -> Option<String> {
     }
 
     None
+}
+
+pub fn get_sandbox_base_branch(repo_path: &Path, sandbox_name: &str) -> Option<String> {
+    use crate::sandbox_command::SandboxManifest;
+
+    let sandbox_root = repo_path
+        .join(".helix")
+        .join("sandboxes")
+        .join(sandbox_name);
+
+    let manifest = SandboxManifest::load(&sandbox_root).ok()?;
+
+    manifest.base_branch.map(|b| format!("{} (base)", b))
 }

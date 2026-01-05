@@ -12,6 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 use crate::add_command::get_file_mode;
+use crate::branch_command::get_current_branch;
 use crate::checkout::{checkout_tree_to_path, CheckoutOptions};
 use crate::helix_index::commit::{read_head, Commit};
 use crate::helix_index::tree::{TreeBuilder, TreeStore};
@@ -24,6 +25,7 @@ pub struct SandboxManifest {
     pub id: String,
     pub name: String,
     pub base_commit: String,
+    pub base_branch: Option<String>,
     pub created_at: u64,
     pub description: Option<String>,
     pub branch: Option<String>,
@@ -107,6 +109,7 @@ impl SandboxManifest {
             created_at: now,
             description: None,
             branch: None,
+            base_branch: None,
         }
     }
 
@@ -323,6 +326,8 @@ pub fn create_sandbox(repo_path: &Path, name: &str, options: CreateOptions) -> R
     // Save manifest
     let mut manifest = SandboxManifest::new(name, base_commit);
     manifest.branch = Some(branch_name.clone());
+    manifest.base_branch =
+        Some(get_current_branch(repo_path).unwrap_or_else(|_| "main".to_string()));
     manifest.save(&sandbox_root)?;
 
     // Print success (no activation, just info)
