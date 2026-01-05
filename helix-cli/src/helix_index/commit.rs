@@ -493,11 +493,6 @@ impl CommitStore {
         let current_files = tree_store.collect_all_files(&commit.tree_hash)?;
         let current_map: std::collections::HashMap<_, _> = current_files.into_iter().collect();
 
-        println!("DEBUG: Current commit tree has {} files", current_map.len());
-        for (path, _) in &current_map {
-            println!("  current: {}", path.display());
-        }
-
         // If initial commit, all files are "added"
         if commit.is_initial() {
             return Ok(current_map
@@ -514,11 +509,6 @@ impl CommitStore {
         let parent_commit = self.read_commit(parent_hash)?;
         let parent_files = tree_store.collect_all_files(&parent_commit.tree_hash)?;
         let parent_map: std::collections::HashMap<_, _> = parent_files.into_iter().collect();
-
-        // println!("DEBUG: Parent commit tree has {} files", parent_map.len());
-        // for (path, _) in &parent_map {
-        //     println!("  parent: {}", path.display());
-        // }
 
         let mut changes = Vec::new();
 
