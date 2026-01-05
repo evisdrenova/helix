@@ -69,6 +69,7 @@ pub fn commit(repo_path: &Path, options: CommitOptions) -> Result<Hash> {
         println!("Loaded index (generation {})", index.generation());
     }
 
+    // get the staged entries
     let staged_entries: Vec<_> = index
         .entries()
         .iter()
@@ -87,6 +88,13 @@ pub fn commit(repo_path: &Path, options: CommitOptions) -> Result<Hash> {
         }
     }
 
+    let all_tracked_entries: Vec<_> = index
+        .entries()
+        .iter()
+        .filter(|e| e.flags.contains(EntryFlags::TRACKED))
+        .cloned()
+        .collect();
+
     // Get current HEAD (if exists)
     let head_commit_hash = read_head(&context.repo_root).ok();
 
@@ -96,12 +104,14 @@ pub fn commit(repo_path: &Path, options: CommitOptions) -> Result<Hash> {
 
     // Build tree from staged entries
     if options.verbose {
-        println!("Building tree from {} entries...", staged_entries.len());
+        println!(
+            "Building tree from {} entries...",
+            all_tracked_entries.len()
+        );
     }
-
     let tree_builder = TreeBuilder::new(&context.repo_root);
     let tree_hash = tree_builder
-        .build_from_entries(&staged_entries)
+        .build_from_entries(&all_tracked_entries)
         .context("Failed to build tree")?;
 
     if options.verbose {

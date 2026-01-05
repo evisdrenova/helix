@@ -318,7 +318,7 @@ impl TreeStore {
         self.objects.has_objects_batch(&ObjectType::Tree, hashes)
     }
 
-    // Recursively collect all file paths in a HashMap with it's correspnding hash.
+    /// Recursively collect all file paths in the tree.
     pub fn collect_all_files(&self, tree_hash: &Hash) -> Result<HashMap<PathBuf, Hash>> {
         let mut files = HashMap::new();
         self.collect_files_recursive(tree_hash, Path::new(""), &mut files)?;
