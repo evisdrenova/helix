@@ -267,11 +267,15 @@ pub fn create_sandbox(repo_path: &Path, name: &str, options: CreateOptions) -> R
     }
 
     // Get base commit (default to HEAD)
+    // Get base commit (default to HEAD)
     let base_commit = match options.base_commit {
         Some(hash) => hash,
-        None => read_head(repo_path).context("No HEAD found. Create a commit first.")?,
+        None => read_head(repo_path).with_context(|| {
+            "No commits yet. Create your first commit before creating a sandbox:\n\n\
+             helix add <files>\n\
+             helix commit -m \"Initial commit\""
+        })?,
     };
-
     if options.verbose {
         println!(
             "Creating sandbox '{}' from commit {}",
