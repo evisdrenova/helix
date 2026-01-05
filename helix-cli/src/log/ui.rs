@@ -199,35 +199,41 @@ fn create_timeline_item(
         Span::styled(time_str, Style::default().fg(Color::White)),
     ]);
 
-    // Line 2: author, hash, and branch tags
-    let mut line2_spans = vec![
+    // Line 2: author and hash only
+    let line2 = Line::from(vec![
         Span::raw("   "),
         Span::styled(commit.author.clone(), Style::default().fg(author_color)),
         Span::raw(" · "),
         Span::styled(commit.get_short_hash(), Style::default().fg(Color::Green)),
-    ];
+    ]);
 
-    // Add branch tags
-    if let Some(branch_list) = branches {
-        for branch in branch_list {
-            line2_spans.push(Span::raw(" "));
+    // Line 3: branch tags (if any)
+    let line3 = if let Some(branch_list) = branches {
+        let mut spans = vec![Span::raw("   ")];
 
-            // Different colors for sandbox vs regular branches
+        for (i, branch) in branch_list.iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::raw(" "));
+            }
+
             let (tag_color, prefix) = if branch.starts_with("sandboxes/") {
                 (Color::Magenta, "⎇ ")
             } else {
                 (Color::Cyan, "")
             };
 
-            line2_spans.push(Span::styled(
+            spans.push(Span::styled(
                 format!("[{}{}]", prefix, branch),
                 Style::default().fg(tag_color).add_modifier(Modifier::BOLD),
             ));
         }
-    }
 
-    let line2 = Line::from(line2_spans);
+        Line::from(spans)
+    } else {
+        Line::from(vec![Span::raw("")])
+    };
 
+    // Line 4: commit message
     let max_len = 45;
     let summary = commit.summary();
     let summary_display = if summary.len() > max_len {
@@ -244,12 +250,14 @@ fn create_timeline_item(
         Style::default().fg(Color::White)
     };
 
-    let line3 = Line::from(vec![
+    let line4 = Line::from(vec![
         Span::raw("   "),
         Span::styled(summary_display, summary_style),
     ]);
-    let line4 = Line::from(vec![Span::raw("")]);
-    let lines = vec![line1, line2, line3, line4];
+
+    let line5 = Line::from(vec![Span::raw("")]);
+
+    let lines = vec![line1, line2, line3, line4, line5];
 
     let style = if is_selected {
         Style::default().bg(Color::DarkGray)
