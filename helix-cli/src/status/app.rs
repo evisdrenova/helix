@@ -79,30 +79,16 @@ pub struct App {
 impl App {
     pub fn new(start_path: &Path) -> Result<Self> {
         let context = RepoContext::detect(start_path)?;
-
-        // Use workdir for file operations (correct for both sandbox and main repo)
         let workdir = context.workdir.clone();
 
-        let repo_name = if context.is_sandbox() {
-            format!(
-                "{} (sandbox: {})",
-                context
-                    .repo_root
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("repository"),
-                context.sandbox_name().unwrap_or_default()
-            )
-        } else {
-            context
-                .repo_root
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("repository")
-                .to_string()
-        };
+        let repo_name = context
+            .repo_root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
 
-        let current_branch = get_current_branch(&context.repo_root).ok();
+        let current_branch = get_current_branch(start_path).ok();
 
         // Load index from the correct path (sandbox or repo)
         let helix_index = HelixIndexData::load_from_path(&context.index_path, &context.repo_root)

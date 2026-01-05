@@ -96,7 +96,7 @@ pub fn commit(repo_path: &Path, options: CommitOptions) -> Result<Hash> {
         .collect();
 
     // Get current HEAD (if exists)
-    let head_commit_hash = read_head(&context.repo_root).ok();
+    let head_commit_hash = read_head(&context).ok();
 
     if options.amend && head_commit_hash.is_none() {
         anyhow::bail!("Cannot amend - no previous commit exists");
@@ -176,7 +176,7 @@ pub fn commit(repo_path: &Path, options: CommitOptions) -> Result<Hash> {
     }
 
     // Update HEAD
-    write_head(&context.repo_root, commit_hash)?;
+    write_head(&context, commit_hash)?;
 
     if options.verbose {
         println!("Updated HEAD");
@@ -205,32 +205,24 @@ pub fn commit(repo_path: &Path, options: CommitOptions) -> Result<Hash> {
 }
 
 /// Read current HEAD commit hash
-fn read_head(repo_path: &Path) -> Result<Hash> {
-    let head_path = repo_path.join(".helix").join("HEAD");
-
-    if !head_path.exists() {
+fn read_head(context: &RepoContext) -> Result<Hash> {
+    if !context.head_path.exists() {
         anyhow::bail!("HEAD not found");
     }
 
-    let content = fs::read_to_string(&head_path).context("Failed to read HEAD")?;
-
-    // HEAD can be:
-    // 1. Direct hash: "a1b2c3d4..."
-    // 2. Symbolic ref: "ref: refs/heads/main"
-
+    let content = fs::read_to_string(&context.head_path).context("Failed to read HEAD")?;
     let content = content.trim();
 
     if content.starts_with("ref:") {
-        // Symbolic reference
+        // Symbolic reference - resolve from repo root
         let ref_path = content.strip_prefix("ref:").unwrap().trim();
-        let full_ref_path = repo_path.join(".helix").join(ref_path);
+        let full_ref_path = context.repo_root.join(".helix").join(ref_path);
 
         if !full_ref_path.exists() {
             anyhow::bail!("Reference {} not found", ref_path);
         }
 
         let ref_content = fs::read_to_string(&full_ref_path).context("Failed to read reference")?;
-
         hex_to_hash(ref_content.trim()).context("Invalid hash in reference")
     } else {
         // Direct hash
@@ -239,33 +231,34 @@ fn read_head(repo_path: &Path) -> Result<Hash> {
 }
 
 /// Write new HEAD commit hash
-fn write_head(repo_path: &Path, commit_hash: Hash) -> Result<()> {
-    let head_path = repo_path.join(".helix").join("HEAD");
-
-    // Read current HEAD to check if it's a symbolic reference
-    if head_path.exists() {
-        let content = fs::read_to_string(&head_path)?;
-        let content = content.trim();
-
-        if content.starts_with("ref:") {
-            // Update the branch it points to
-            let ref_path = content.strip_prefix("ref:").unwrap().trim();
-            let full_ref_path = repo_path.join(".helix").join(ref_path);
-
-            // Ensure parent directory exists
-            if let Some(parent) = full_ref_path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-
-            let hash_hex = hash_to_hex(&commit_hash);
-            fs::write(&full_ref_path, hash_hex)?;
-            return Ok(());
-        }
+fn write_head(context: &RepoContext, commit_hash: Hash) -> Result<()> {
+    if !context.head_path.exists() {
+        // If no HEAD exists, write directly (shouldn't happen normally)
+        let hash_hex = hash_to_hex(&commit_hash);
+        fs::write(&context.head_path, hash_hex)?;
+        return Ok(());
     }
 
-    // Direct HEAD update (detached HEAD)
-    let hash_hex = hash_to_hex(&commit_hash);
-    fs::write(&head_path, hash_hex)?;
+    let content = fs::read_to_string(&context.head_path)?;
+    let content = content.trim();
+
+    if content.starts_with("ref:") {
+        // Update the branch it points to
+        let ref_path = content.strip_prefix("ref:").unwrap().trim();
+        let full_ref_path = context.repo_root.join(".helix").join(ref_path);
+
+        // Ensure parent directory exists
+        if let Some(parent) = full_ref_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let hash_hex = hash_to_hex(&commit_hash);
+        fs::write(&full_ref_path, hash_hex)?;
+    } else {
+        // Direct HEAD update (detached HEAD)
+        let hash_hex = hash_to_hex(&commit_hash);
+        fs::write(&context.head_path, hash_hex)?;
+    }
 
     Ok(())
 }
@@ -450,7 +443,7 @@ mod tests {
     fn test_initial_commit() -> Result<()> {
         let temp_dir = TempDir::new()?;
         let repo_path = temp_dir.path();
-
+        let repo_context = RepoContext::detect(repo_path)?;
         init_test_repo(repo_path)?;
 
         // Stage a file
@@ -475,7 +468,7 @@ mod tests {
         assert_eq!(commit_obj.get_hash(), commit_hash);
 
         // Verify HEAD points to commit
-        let head_hash = read_head(repo_path)?;
+        let head_hash = read_head(&repo_context)?;
         assert_eq!(head_hash, commit_hash);
 
         Ok(())

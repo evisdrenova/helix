@@ -59,10 +59,10 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         .count();
 
     let repo_text = format!("Repo: {} ", app.repo_name);
-    let branch_text = format!(
-        "Branch: {} ",
-        app.current_branch.as_deref().unwrap_or("main")
-    );
+    let branch_text = match &app.current_branch {
+        Some(a) => a.clone(),
+        None => "None".to_string(),
+    };
 
     let stats_line_1 = Line::from(vec![
         Span::raw(repo_text),

@@ -45,13 +45,13 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(repo_path: &Path) -> Result<Self> {
-        let context = RepoContext::detect(repo_path)?;
+    pub fn new(start_path: &Path) -> Result<Self> {
+        let context = RepoContext::detect(start_path)?;
         let repo_path = &context.repo_root;
 
         let store = FsObjectStore::new(repo_path);
         let loader = CommitStore::new(repo_path, store)?;
-        let current_branch_name = get_current_branch(&repo_path)?;
+        let current_branch_name = get_current_branch(&start_path)?;
 
         // If in sandbox, get the base commit to limit history
         let base_commit_hex: Option<String> = if let Some(ref sandbox_root) = context.sandbox_root {
@@ -74,15 +74,11 @@ impl App {
 
         let total_loaded = commits.len();
 
-        let repo_name = if context.is_sandbox() {
-            format!(
-                "{} (sandbox: {})",
-                loader.get_repo_name(),
-                context.sandbox_name().unwrap_or_default()
-            )
-        } else {
-            loader.get_repo_name()
-        };
+        let repo_name = repo_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
 
         let (remote_branch, ahead, behind) = loader
             .remote_tracking_info()
