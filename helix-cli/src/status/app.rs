@@ -207,47 +207,17 @@ impl App {
                 let mtime_matches = current_mtime == entry.mtime_sec;
                 let size_matches = metadata.len() == entry.size;
 
-                println!(
-                    "DEBUG: {} - mtime_match={}, size_match={}, index_size={}, disk_size={}",
-                    path.display(),
-                    mtime_matches,
-                    size_matches,
-                    entry.size,
-                    metadata.len()
-                );
-
-                // Fast path: mtime AND size match, assume unchanged
                 if mtime_matches && size_matches {
-                    println!("DEBUG: {} - fast path: unchanged", path.display());
                     false
                 } else {
-                    // Slow path: check actual content
-                    if let Ok(content) = fs::read(&full_path) {
-                        let current_hash = helix_protocol::hash::hash_bytes(&content);
-                        let hash_matches = current_hash == entry.oid;
-                        println!(
-                            "DEBUG: {} - slow path: hash_match={}, index_oid={}, disk_hash={}",
-                            path.display(),
-                            hash_matches,
-                            &helix_protocol::hash::hash_to_hex(&entry.oid)[..8],
-                            &helix_protocol::hash::hash_to_hex(&current_hash)[..8]
-                        );
-                        !hash_matches // Modified if hashes DON'T match
-                    } else {
-                        println!("DEBUG: {} - failed to read file", path.display());
-                        false
-                    }
+                    fs::read(&full_path)
+                        .map(|content| helix_protocol::hash::hash_bytes(&content) != entry.oid)
+                        .unwrap_or(false)
                 }
             } else {
-                println!("DEBUG: {} - failed to get metadata", path.display());
                 false
             };
 
-            println!(
-                "DEBUG: {} - is_modified_on_disk={}",
-                path.display(),
-                is_modified_on_disk
-            );
             // Determine file status
             if flags.contains(EntryFlags::STAGED) {
                 if is_modified_on_disk {
