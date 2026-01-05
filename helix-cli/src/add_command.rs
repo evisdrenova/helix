@@ -50,25 +50,6 @@ pub fn add(repo_path: &Path, paths: &[PathBuf], options: AddOptions) -> Result<(
         println!("Loaded index (generation {})", index.generation());
     }
 
-    for entry in index.entries().iter() {
-        let full_path = context.workdir.join(&entry.path);
-        let disk_mtime = full_path
-            .metadata()
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-
-        let modified = disk_mtime != entry.mtime_sec;
-        println!(
-            "  {} | index_mtime={} | disk_mtime={} | modified={}",
-            entry.path.display(),
-            entry.mtime_sec,
-            disk_mtime,
-            modified
-        );
-    }
     if options.verbose {
         println!("Loaded index (generation {})", index.generation());
     }
@@ -193,6 +174,8 @@ fn resolve_files_to_add(
         })
         .collect();
 
+    println!("Adding {:?} files", files_to_add.len());
+
     Ok(files_to_add)
 }
 
@@ -205,11 +188,8 @@ fn should_add_file(
     options: &AddOptions,
     context: &RepoContext,
 ) -> Result<bool> {
-    println!("should add?? {}", relative_path.display());
-
     // If untracked, always add
     if !tracked.contains(relative_path) {
-        println!("  -> untracked, adding");
         return Ok(true);
     }
 
@@ -229,48 +209,27 @@ fn should_add_file(
         .duration_since(std::time::UNIX_EPOCH)?
         .as_secs();
 
-    println!(
-        "  entry.mtime={}, current_mtime={}",
-        entry.mtime_sec, current_mtime
-    );
-
     let store = FsObjectStore::new(&context.repo_root);
-
-    println!("  staged.contains={}", staged.contains(relative_path));
 
     if staged.contains(relative_path) {
         if current_mtime != entry.mtime_sec {
-            println!("  -> staged but modified, re-staging");
             return Ok(true);
         }
 
         if !store.has_object(&ObjectType::Blob, &entry.oid) {
-            println!("  -> blob missing, re-staging");
             return Ok(true);
         }
-
-        println!("  -> staged and unchanged, skipping");
         return Ok(false);
     }
 
-    println!(
-        "  checking mtime: {} != {} = {}",
-        current_mtime,
-        entry.mtime_sec,
-        current_mtime != entry.mtime_sec
-    );
-
     if current_mtime != entry.mtime_sec {
-        println!("  -> modified (mtime differs), adding");
         return Ok(true);
     }
 
     if !store.has_object(&ObjectType::Blob, &entry.oid) {
-        println!("  -> blob missing, adding");
         return Ok(true);
     }
 
-    println!("  -> unchanged, skipping");
     Ok(false)
 }
 
@@ -335,12 +294,6 @@ fn stage_files(
             merge_conflict_stage: 0,
             reserved: [0u8; 33],
         };
-
-        for entry in index.entries() {
-            if entry.flags.contains(EntryFlags::STAGED) {
-                println!("  STAGED: {}", entry.path.display());
-            }
-        }
 
         // Update or insert entry
         if let Some(existing) = index.entries_mut().iter_mut().find(|e| &e.path == path) {

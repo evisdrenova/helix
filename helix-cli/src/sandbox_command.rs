@@ -266,8 +266,6 @@ pub fn create_sandbox(repo_path: &Path, name: &str, options: CreateOptions) -> R
         bail!("Sandbox '{}' already exists", name);
     }
 
-    // Get base commit (default to HEAD)
-    // Get base commit (default to HEAD)
     let base_commit = match options.base_commit {
         Some(hash) => hash,
         None => read_head(repo_path).with_context(|| {
@@ -276,6 +274,7 @@ pub fn create_sandbox(repo_path: &Path, name: &str, options: CreateOptions) -> R
              helix commit -m \"Initial commit\""
         })?,
     };
+
     if options.verbose {
         println!(
             "Creating sandbox '{}' from commit {}",
@@ -295,7 +294,7 @@ pub fn create_sandbox(repo_path: &Path, name: &str, options: CreateOptions) -> R
 
     let files_count = checkout_tree_to_path(repo_path, &base_commit, &workdir, &checkout_options)?;
 
-    // use helix index methods
+    // Build sandbox index
     let entries = build_index_entries_from_commit(repo_path, &base_commit, &workdir)?;
     write_sandbox_index(&sandbox_root, &entries)?;
 
@@ -303,7 +302,7 @@ pub fn create_sandbox(repo_path: &Path, name: &str, options: CreateOptions) -> R
         println!("Created sandbox index with {} entries", entries.len());
     }
 
-    // create a branch for the sandbox with the name as the branch_name
+    // Create sandbox branch (but don't switch to it)
     let branch_name = format!("sandboxes/{}", name);
     let ref_name = format!("refs/{}", branch_name);
     let refs = FsRefStore::new(repo_path);
@@ -311,18 +310,13 @@ pub fn create_sandbox(repo_path: &Path, name: &str, options: CreateOptions) -> R
     refs.set_ref(&ref_name, base_commit)
         .with_context(|| format!("Failed to create branch '{}'", branch_name))?;
 
+    // Save manifest
     let mut manifest = SandboxManifest::new(name, base_commit);
     manifest.branch = Some(branch_name.clone());
     manifest.save(&sandbox_root)?;
 
-    activate_sandbox(
-        repo_path,
-        name,
-        &manifest,
-        &workdir,
-        true,
-        Some(files_count),
-    )?;
+    // Print success (no activation, just info)
+    print_sandbox_created(name, &workdir, &branch_name, files_count);
 
     Ok(Sandbox {
         manifest,
@@ -331,26 +325,7 @@ pub fn create_sandbox(repo_path: &Path, name: &str, options: CreateOptions) -> R
     })
 }
 
-fn activate_sandbox(
-    repo_path: &Path,
-    name: &str,
-    manifest: &SandboxManifest,
-    workdir: &Path,
-    created: bool,
-    files_count: Option<u64>,
-) -> Result<()> {
-    // Update HEAD to point to sandbox branch
-
-    let head_path = repo_path.join(".helix").join("HEAD");
-    fs::write(&head_path, format!("ref: refs/sandboxes/{}\n", name))?;
-
-    // Optional: record the currently active sandbox (handy for other commands)
-    let active_path = repo_path.join(".helix").join("ACTIVE_SANDBOX");
-    let _ = fs::write(
-        &active_path,
-        format!("name={}\nworkdir={}\n", name, workdir.display()),
-    );
-
+fn print_sandbox_created(name: &str, workdir: &Path, branch_name: &str, files_count: u64) {
     println!();
     println!("  {}", style("Sandbox").bold());
     println!(
@@ -358,29 +333,16 @@ fn activate_sandbox(
         style("────────────────────────────────────────────").dim()
     );
 
-    if created {
-        let files_suffix = files_count
-            .map(|n| format!(" ({} files)", n))
-            .unwrap_or_default();
-
-        println!(
-            "  {} Created and switched to sandbox {}{}",
-            style("✓").green(),
-            style(name).yellow().bold(),
-            style(files_suffix).dim()
-        );
-    } else {
-        println!(
-            "  {} Switched to sandbox {}",
-            style("✓").green(),
-            style(name).yellow().bold()
-        );
-    }
-
+    println!(
+        "  {} Created sandbox {} ({} files)",
+        style("✓").green(),
+        style(name).yellow().bold(),
+        files_count
+    );
     println!(
         "  {} Branch:  {}",
         style("•").cyan(),
-        style(manifest.branch.as_deref().unwrap_or("(none)")).dim()
+        style(branch_name).dim()
     );
     println!(
         "  {} Workdir: {}",
@@ -390,21 +352,13 @@ fn activate_sandbox(
 
     println!();
     println!("  {}", style("Next steps:").underlined());
+    println!("    {}", style(format!("cd {}", workdir.display())).cyan());
+    println!("    {}", style("helix status").cyan());
     println!(
-        "    {}      - open the sandbox workdir",
-        style(format!("cd {}", workdir.display())).cyan()
-    );
-    println!(
-        "    {}      - run helix commands inside the sandbox",
-        style("helix status / helix commit").cyan()
-    );
-    println!(
-        "    {}      - record changes from the sandbox",
-        style("helix commit -m \"message\"").cyan()
+        "    {}",
+        style("helix add . && helix commit -m \"message\"").cyan()
     );
     println!();
-
-    Ok(())
 }
 
 /// builds the index entries from commit
@@ -545,6 +499,9 @@ pub fn destroy_sandbox(start_path: &Path, name: &str, options: DestroyOptions) -
 
 /// Switch to a different sandbox (checkout)
 pub fn switch_sandbox(repo_path: &Path, name: &str) -> Result<()> {
+    let context = RepoContext::detect(repo_path)?;
+    let repo_path = &context.repo_root;
+
     let sandbox_root = repo_path.join(".helix").join("sandboxes").join(name);
 
     if !sandbox_root.exists() {
@@ -557,9 +514,38 @@ pub fn switch_sandbox(repo_path: &Path, name: &str) -> Result<()> {
 
     let manifest = SandboxManifest::load(&sandbox_root)?;
     let workdir = sandbox_root.join("workdir");
+    let branch_name = manifest.branch.as_deref().unwrap_or("(none)");
 
-    // Just activate it (update HEAD + UI)
-    activate_sandbox(repo_path, name, &manifest, &workdir, false, None)
+    println!();
+    println!("  {}", style("Sandbox").bold());
+    println!(
+        "  {}",
+        style("────────────────────────────────────────────").dim()
+    );
+    println!(
+        "  {} To work in sandbox {}:",
+        style("→").cyan(),
+        style(name).yellow().bold()
+    );
+    println!();
+    println!(
+        "    {}",
+        style(format!("cd {}", workdir.display())).cyan().bold()
+    );
+    println!();
+    println!(
+        "  {} Branch:  {}",
+        style("•").dim(),
+        style(branch_name).dim()
+    );
+    println!(
+        "  {} Workdir: {}",
+        style("•").dim(),
+        style(workdir.display()).dim()
+    );
+    println!();
+
+    Ok(())
 }
 
 /// Validate sandbox name (no special characters, slashes, etc.), (alphanumeric, hyphens, underscores only)
