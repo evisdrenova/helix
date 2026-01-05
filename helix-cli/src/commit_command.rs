@@ -102,7 +102,8 @@ pub fn commit(repo_path: &Path, options: CommitOptions) -> Result<Hash> {
         anyhow::bail!("Cannot amend - no previous commit exists");
     }
 
-    // Build tree from staged entries
+    // Build tree from all tracked entries
+    // this gives us a snapshot of the tree for every commit which makes it really fast to check out commits and compare them
     if options.verbose {
         println!(
             "Building tree from {} entries...",

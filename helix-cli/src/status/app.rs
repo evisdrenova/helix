@@ -77,31 +77,32 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(repo_path: &Path) -> Result<Self> {
-        // Use RepoContext to detect if we're in a sandbox
-        let context = RepoContext::detect(repo_path)?;
+    pub fn new(start_path: &Path) -> Result<Self> {
+        let context = RepoContext::detect(start_path)?;
 
-        let repo_path = context.repo_root.clone();
+        // Use workdir for file operations (correct for both sandbox and main repo)
         let workdir = context.workdir.clone();
 
         let repo_name = if context.is_sandbox() {
             format!(
                 "{} (sandbox: {})",
-                repo_path
+                context
+                    .repo_root
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("repository"),
                 context.sandbox_name().unwrap_or_default()
             )
         } else {
-            repo_path
+            context
+                .repo_root
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("repository")
                 .to_string()
         };
 
-        let current_branch = get_current_branch(&repo_path).ok();
+        let current_branch = get_current_branch(&context.repo_root).ok();
 
         // Load index from the correct path (sandbox or repo)
         let helix_index = HelixIndexData::load_from_path(&context.index_path, &context.repo_root)
@@ -111,7 +112,8 @@ impl App {
         let mut fsmonitor = FSMonitor::new(&workdir)?;
         fsmonitor.start_watching_repo()?;
 
-        let ignore_rules = IgnoreRules::load(&repo_path);
+        let ignore_rules = IgnoreRules::load(&workdir);
+
         let mut app = Self {
             files: Vec::new(),
             selected_index: 0,
@@ -120,7 +122,7 @@ impl App {
             should_quit: false,
             show_untracked: true,
             visible_height: 20,
-            repo_path,
+            repo_path: workdir, // ← Use workdir here!
             repo_name,
             auto_refresh: true,
             last_refresh: std::time::Instant::now(),
@@ -145,19 +147,18 @@ impl App {
     }
 
     pub fn refresh_status(&mut self) -> Result<()> {
+        println!("DEBUG: repo_path = {}", self.repo_path.display());
         self.files.clear();
         self.tracked_files.clear();
         self.staged_files.clear();
 
-        // If index changed on disk, reload it
         if self.fsmonitor.index_changed() {
-            // Re-detect context to get correct index path
             let context = RepoContext::detect(&self.repo_path)?;
             self.helix_index =
                 HelixIndexData::load_from_path(&context.index_path, &context.repo_root)?;
             self.fsmonitor.clear_index_flag();
         }
-        // Build tracked & staged sets from helix index entries
+
         let entries = self.helix_index.entries();
 
         for entry in entries {
@@ -173,10 +174,9 @@ impl App {
             }
         }
 
-        // Build FileStatus from flags (FileStatus is a simple wrapper over the flags)
         let mut seen = std::collections::HashSet::new();
 
-        // tracked entries with changes (staged and/or modified/deleted)
+        // Check each tracked entry for working tree changes
         for entry in entries {
             let path = entry.path.clone();
             let flags = entry.flags;
@@ -185,17 +185,89 @@ impl App {
                 continue;
             }
 
-            // Clean file → no status entry
-            if !flags.intersects(EntryFlags::STAGED | EntryFlags::MODIFIED | EntryFlags::DELETED) {
+            let full_path = self.repo_path.join(&path);
+
+            // Check if file was deleted from disk
+            if !full_path.exists() {
+                if seen.insert(path.clone()) {
+                    self.files.push(FileStatus::Deleted(path));
+                }
                 continue;
             }
 
-            // Partially staged case:
-            // TRACKED | STAGED | MODIFIED
-            // We represent it as "Modified" in FileStatus and let the UI
-            // also show it in the STAGED section via self.staged_files.
+            //Check if file was modified on disk (compare mtime)
+            let is_modified_on_disk = if let Ok(metadata) = fs::metadata(&full_path) {
+                let current_mtime = metadata
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
 
-            if flags.contains(EntryFlags::MODIFIED) {
+                let mtime_matches = current_mtime == entry.mtime_sec;
+                let size_matches = metadata.len() == entry.size;
+
+                println!(
+                    "DEBUG: {} - mtime_match={}, size_match={}, index_size={}, disk_size={}",
+                    path.display(),
+                    mtime_matches,
+                    size_matches,
+                    entry.size,
+                    metadata.len()
+                );
+
+                // Fast path: mtime AND size match, assume unchanged
+                if mtime_matches && size_matches {
+                    println!("DEBUG: {} - fast path: unchanged", path.display());
+                    false
+                } else {
+                    // Slow path: check actual content
+                    if let Ok(content) = fs::read(&full_path) {
+                        let current_hash = helix_protocol::hash::hash_bytes(&content);
+                        let hash_matches = current_hash == entry.oid;
+                        println!(
+                            "DEBUG: {} - slow path: hash_match={}, index_oid={}, disk_hash={}",
+                            path.display(),
+                            hash_matches,
+                            &helix_protocol::hash::hash_to_hex(&entry.oid)[..8],
+                            &helix_protocol::hash::hash_to_hex(&current_hash)[..8]
+                        );
+                        !hash_matches // Modified if hashes DON'T match
+                    } else {
+                        println!("DEBUG: {} - failed to read file", path.display());
+                        false
+                    }
+                }
+            } else {
+                println!("DEBUG: {} - failed to get metadata", path.display());
+                false
+            };
+
+            println!(
+                "DEBUG: {} - is_modified_on_disk={}",
+                path.display(),
+                is_modified_on_disk
+            );
+            // Determine file status
+            if flags.contains(EntryFlags::STAGED) {
+                if is_modified_on_disk {
+                    // Staged but modified again in working tree
+                    if seen.insert(path.clone()) {
+                        self.files.push(FileStatus::Modified(path));
+                    }
+                } else {
+                    // Staged and unchanged in working tree - show as Added/Staged
+                    if seen.insert(path.clone()) {
+                        self.files.push(FileStatus::Added(path));
+                    }
+                }
+            } else if is_modified_on_disk {
+                // Not staged but modified on disk
+                if seen.insert(path.clone()) {
+                    self.files.push(FileStatus::Modified(path));
+                }
+            } else if flags.contains(EntryFlags::MODIFIED) {
+                // Flag set but mtime matches (edge case)
                 if seen.insert(path.clone()) {
                     self.files.push(FileStatus::Modified(path));
                 }
@@ -203,15 +275,11 @@ impl App {
                 if seen.insert(path.clone()) {
                     self.files.push(FileStatus::Deleted(path));
                 }
-            } else if flags.contains(EntryFlags::STAGED) {
-                // Staged, no extra working-tree changes -> treat as "Added"/"Staged change"
-                if seen.insert(path.clone()) {
-                    self.files.push(FileStatus::Added(path));
-                }
             }
+            // If not staged, not modified on disk, no flags - it's clean, skip
         }
 
-        // Untracked files (not in helix index)
+        // Untracked files
         if self.show_untracked {
             let untracked_paths = self.scan_for_untracked_files()?;
             for path in untracked_paths {
@@ -221,7 +289,6 @@ impl App {
             }
         }
 
-        //  Sort for stable display
         self.files.sort_by(|a, b| a.path().cmp(b.path()));
 
         Ok(())
