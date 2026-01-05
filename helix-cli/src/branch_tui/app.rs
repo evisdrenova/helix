@@ -57,22 +57,11 @@ impl App {
         let context = RepoContext::detect(start_path)?;
         let repo_path = &context.repo_root;
 
-        let repo_name = if context.is_sandbox() {
-            format!(
-                "{} (sandbox: {})",
-                repo_path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("unknown"),
-                context.sandbox_name().unwrap_or_default()
-            )
-        } else {
-            repo_path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown")
-                .to_string()
-        };
+        let repo_name = repo_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
 
         let store = FsObjectStore::new(repo_path);
         let commit_storage = CommitStore::new(repo_path, store)?;

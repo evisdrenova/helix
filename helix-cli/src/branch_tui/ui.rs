@@ -32,10 +32,9 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         _ => format!(" {} branches ", app.branches.len()),
     };
 
-    let current_branch_text = if let Some(branch) = app.branches.iter().find(|b| b.is_current) {
-        format!(" ● {} ", branch.name)
-    } else {
-        " No branch ".to_string()
+    let cur_branch = match app.selected_branch() {
+        Some(a) => a.name.clone(),
+        None => "None".to_string(),
     };
 
     let header = Paragraph::new(Line::from(vec![
@@ -47,7 +46,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         ),
         Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
         Span::styled(
-            current_branch_text,
+            cur_branch,
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),

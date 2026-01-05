@@ -323,12 +323,11 @@ fn short_hash(hash: &Hash) -> String {
     hash_to_hex(hash)[..8].to_string()
 }
 
-/// Get current branch name from .helix/HEAD
+/// Get current branch name. Takes in the start path (or the cwd) and tries to resolve the branch if it's in a sandbox or in the main repo.
 pub fn get_current_branch(start_path: &Path) -> Result<String> {
     let context = RepoContext::detect(start_path)?;
 
     if !context.head_path.exists() {
-        println!("DEBUG: head_path does not exist!");
         return Ok("(no branch)".to_string());
     }
 
@@ -341,7 +340,7 @@ pub fn get_current_branch(start_path: &Path) -> Result<String> {
         if let Some(branch) = ref_path.strip_prefix("refs/heads/") {
             Ok(branch.to_string())
         } else if let Some(sandbox) = ref_path.strip_prefix("refs/sandboxes/") {
-            Ok(sandbox.to_string())
+            Ok(format!("sandboxes/{}", sandbox))
         } else {
             Ok("(unknown)".to_string())
         }
