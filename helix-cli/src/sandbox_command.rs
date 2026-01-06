@@ -436,6 +436,20 @@ pub fn destroy_sandbox(start_path: &Path, name: &str, options: DestroyOptions) -
         bail!("Sandbox '{}' does not exist", name);
     }
 
+    if context.is_sandbox() {
+        if let Some(current_sandbox) = context.sandbox_name() {
+            if current_sandbox == name {
+                bail!(
+                    "Cannot destroy sandbox '{}' while inside its workdir.\n\
+                     First, cd out of the sandbox:\n\
+                       cd {}",
+                    name,
+                    repo_path.display()
+                );
+            }
+        }
+    }
+
     if !options.force {
         let changes = get_sandbox_changes(repo_path, name)?;
 
