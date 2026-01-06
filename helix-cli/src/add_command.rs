@@ -50,11 +50,7 @@ pub fn add(repo_path: &Path, paths: &[PathBuf], options: AddOptions) -> Result<(
         println!("Loaded index (generation {})", index.generation());
     }
 
-    if options.verbose {
-        println!("Loaded index (generation {})", index.generation());
-    }
-
-    // Resolve which files need adding (parallel)
+    // Resolve which files need adding
     let files_to_add = resolve_files_to_add(&index, paths, &options, &context)?;
 
     if files_to_add.is_empty() {
