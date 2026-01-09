@@ -92,9 +92,9 @@ pub fn commit(repo_path: &Path, options: CommitOptions) -> Result<Hash> {
         .entries()
         .iter()
         .filter(|e| e.flags.contains(EntryFlags::TRACKED))
+        .filter(|e| !e.flags.contains(EntryFlags::DELETED))
         .cloned()
         .collect();
-
     // Get current HEAD (if exists)
     let head_commit_hash = read_head(&context).ok();
 
@@ -309,7 +309,12 @@ fn get_author(repo_path: &Path) -> Result<String> {
 fn clear_staged_flags(context: &RepoContext) -> Result<()> {
     let mut index = HelixIndexData::load_from_path(&context.index_path, &context.repo_root)?;
 
-    // Remove STAGED flag from all entries
+    // Remove entries that were staged for deletion
+    index
+        .entries_mut()
+        .retain(|entry| !entry.flags.contains(EntryFlags::DELETED));
+
+    // Remove STAGED flag from remaining entries
     for entry in index.entries_mut() {
         entry.flags.remove(EntryFlags::STAGED);
     }

@@ -125,6 +125,9 @@ fn resolve_files_to_add(
         println!("Currently staged: {}", staged.len());
     }
 
+    // Check if we're adding all files ("." or empty effectively means all)
+    let add_all = paths.iter().any(|p| p.as_os_str() == ".");
+
     // Expand paths (handle ".", directories, globs) - parallel
     let candidate_files = expand_paths_parallel(&context.workdir, paths)?;
 
@@ -133,7 +136,7 @@ fn resolve_files_to_add(
     }
 
     // Filter to files that actually need adding - parallel
-    let files_to_add: Vec<PathBuf> = candidate_files
+    let mut files_to_add: Vec<PathBuf> = candidate_files
         .iter()
         .filter_map(|file_path| {
             let full_path = context.workdir.join(file_path);
@@ -170,7 +173,30 @@ fn resolve_files_to_add(
         })
         .collect();
 
-    println!("Adding {:?} files", files_to_add.len());
+    // Also check for deleted files (tracked but no longer exist on disk)
+    if add_all {
+        for tracked_path in &tracked {
+            let full_path = context.workdir.join(tracked_path);
+
+            // If file is tracked but doesn't exist on disk, it's been deleted
+            if !full_path.exists() {
+                // Check if already staged for deletion
+                if let Some(entry) = index.entries().iter().find(|e| &e.path == tracked_path) {
+                    // Only add if not already staged
+                    if !entry.flags.contains(EntryFlags::STAGED) {
+                        if options.verbose {
+                            println!("  deleted: {}", tracked_path.display());
+                        }
+                        files_to_add.push(tracked_path.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    if options.verbose {
+        println!("Adding {} files", files_to_add.len());
+    }
 
     Ok(files_to_add)
 }
@@ -230,6 +256,7 @@ fn should_add_file(
 }
 
 /// Stage files by writing to blob storage and updating index
+/// Stage files by writing to blob storage and updating index
 fn stage_files(
     index: &mut HelixIndexData,
     files: &[PathBuf],
@@ -237,11 +264,36 @@ fn stage_files(
     context: &RepoContext,
 ) -> Result<()> {
     if options.verbose {
-        println!("Reading and hashing {} files...", files.len());
+        println!("Processing {} files...", files.len());
     }
 
-    // Read all file contents
-    let file_data: Vec<(PathBuf, Vec<u8>, fs::Metadata)> = files
+    // Separate existing files from deleted files
+    let (existing_files, deleted_files): (Vec<_>, Vec<_>) = files
+        .iter()
+        .partition(|path| context.workdir.join(path).exists());
+
+    // Handle deleted files first
+    for path in &deleted_files {
+        if let Some(entry) = index.entries_mut().iter_mut().find(|e| &e.path == *path) {
+            entry.flags.insert(EntryFlags::STAGED);
+            entry.flags.insert(EntryFlags::DELETED);
+
+            if options.verbose {
+                println!("  staged deletion: {}", path.display());
+            }
+        }
+    }
+
+    if existing_files.is_empty() {
+        return Ok(());
+    }
+
+    if options.verbose {
+        println!("Reading and hashing {} files...", existing_files.len());
+    }
+
+    // Read all file contents for existing files
+    let file_data: Vec<(PathBuf, Vec<u8>, fs::Metadata)> = existing_files
         .iter()
         .map(|path| {
             let full_path = context.workdir.join(path);
@@ -249,7 +301,7 @@ fn stage_files(
                 .with_context(|| format!("Failed to read {}", path.display()))?;
             let metadata = fs::metadata(&full_path)
                 .with_context(|| format!("Failed to get metadata for {}", path.display()))?;
-            Ok::<_, anyhow::Error>((path.clone(), content, metadata))
+            Ok::<_, anyhow::Error>(((*path).clone(), content, metadata))
         })
         .collect::<Result<Vec<_>>>()?;
 
@@ -272,7 +324,7 @@ fn stage_files(
         println!("Updating index entries...");
     }
 
-    // Update index entries
+    // Update index entries for existing files
     for (i, (path, _, metadata)) in file_data.iter().enumerate() {
         let hash = hashes[i];
 
