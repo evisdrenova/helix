@@ -296,7 +296,8 @@ pub fn create_sandbox(repo_path: &Path, name: &str, options: CreateOptions) -> R
         force: true,
     };
 
-    let files_count = checkout_tree_to_path(repo_path, &base_commit, &workdir, &checkout_options)?;
+    let files_count =
+        checkout_tree_to_path(repo_path, &base_commit, None, &workdir, &checkout_options)?;
 
     // Build sandbox index
     let entries = build_index_entries_from_commit(repo_path, &base_commit, &workdir)?;
@@ -835,12 +836,18 @@ pub fn merge_sandbox(repo_path: &Path, name: &str, options: MergeOptions) -> Res
         // Fast-forward merge
         refs.set_ref(&target_ref_name, sandbox_head)?;
 
-        // Checkout files to working directory
+        // Checkout files to working directory, passing target_head as "before" to detect deletions
         let checkout_options = CheckoutOptions {
             verbose: options.verbose,
             force: true,
         };
-        checkout_tree_to_path(repo_path, &sandbox_head, repo_path, &checkout_options)?;
+        checkout_tree_to_path(
+            repo_path,
+            &sandbox_head,
+            Some(&target_head), // Pass the previous commit to detect deleted files
+            repo_path,
+            &checkout_options,
+        )?;
 
         // Update index
         update_index_from_commit(repo_path, &sandbox_head)?;
@@ -867,12 +874,18 @@ pub fn merge_sandbox(repo_path: &Path, name: &str, options: MergeOptions) -> Res
             // Update target branch ref to merge commit
             refs.set_ref(&target_ref_name, result.commit_hash)?;
 
-            // Checkout merged tree to working directory
+            // Checkout merged tree to working directory, passing target_head as "before"
             let checkout_options = CheckoutOptions {
                 verbose: options.verbose,
                 force: true,
             };
-            checkout_tree_to_path(repo_path, &result.commit_hash, repo_path, &checkout_options)?;
+            checkout_tree_to_path(
+                repo_path,
+                &result.commit_hash,
+                Some(&target_head), // Pass the previous commit to detect deleted files
+                repo_path,
+                &checkout_options,
+            )?;
 
             // Update index
             update_index_from_commit(repo_path, &result.commit_hash)?;
@@ -964,4 +977,18 @@ fn get_author(repo_path: &Path) -> Result<String> {
     }
 
     bail!("Author not configured. Add [user] section to helix.toml")
+}
+
+fn remove_empty_parents(dir: &Path, stop_at: &Path) {
+    let mut current = dir;
+    while current != stop_at {
+        if fs::remove_dir(current).is_err() {
+            // Directory not empty or other error, stop
+            break;
+        }
+        current = match current.parent() {
+            Some(p) => p,
+            None => break,
+        };
+    }
 }

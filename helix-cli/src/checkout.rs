@@ -2,9 +2,12 @@ use anyhow::{bail, Context, Result};
 use helix_protocol::hash::{hash_to_hex, Hash};
 use helix_protocol::message::ObjectType;
 use helix_protocol::storage::FsObjectStore;
+use std::collections::HashSet;
 use std::fs;
+use std::path::{Path, PathBuf};
+
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
 
 use crate::helix_index::tree::{EntryType, Tree};
 
@@ -23,28 +26,25 @@ impl Default for CheckoutOptions {
 }
 
 /// Checkout a commit's tree to the repo's working directory
-///
-/// This is a convenience wrapper around `checkout_tree_to_path` that uses
-/// repo_path as both the object store location and the destination.
 pub fn checkout_tree(
     repo_path: &Path,
     commit_hash: &Hash,
     options: &CheckoutOptions,
 ) -> Result<u64> {
-    checkout_tree_to_path(repo_path, commit_hash, repo_path, options)
+    checkout_tree_to_path(repo_path, commit_hash, None, repo_path, options)
 }
 
 /// Checkout a commit's tree to a specific destination path
 ///
 /// - `repo_path`: Where the object store lives (.helix/objects/)
 /// - `commit_hash`: The commit to checkout
+/// - `before_commit`: Optional previous commit (to detect deleted files)
 /// - `dest_path`: Where to write the files (can be different from repo_path)
 /// - `options`: Checkout options (verbose, force)
-///
-/// This is the core checkout function used by both normal checkout and sandboxes.
 pub fn checkout_tree_to_path(
     repo_path: &Path,
     commit_hash: &Hash,
+    before_commit: Option<&Hash>,
     dest_path: &Path,
     options: &CheckoutOptions,
 ) -> Result<u64> {
@@ -75,8 +75,85 @@ pub fn checkout_tree_to_path(
             .with_context(|| format!("Failed to create destination {}", dest_path.display()))?;
     }
 
+    // Collect all files in the new tree
+    let new_files = collect_tree_files(&store, &tree_hash, Path::new(""))?;
+    let new_file_set: HashSet<PathBuf> = new_files.keys().cloned().collect();
+
+    // If we have a before commit, delete files that no longer exist
+    if let Some(before) = before_commit {
+        let before_bytes = store
+            .read_object(&ObjectType::Commit, before)
+            .with_context(|| format!("Failed to read before commit {}", hash_to_hex(before)))?;
+
+        let before_tree_hash = parse_tree_hash_from_commit(&before_bytes)?;
+        let before_files = collect_tree_files(&store, &before_tree_hash, Path::new(""))?;
+
+        // Delete files that were in before but not in new
+        for (path, _) in &before_files {
+            if !new_file_set.contains(path) {
+                let full_path = dest_path.join(path);
+                if full_path.exists() {
+                    fs::remove_file(&full_path).ok();
+                    if options.verbose {
+                        println!("  deleted: {}", path.display());
+                    }
+
+                    // Remove empty parent directories
+                    remove_empty_parents(full_path.parent(), dest_path);
+                }
+            }
+        }
+    }
+
     // Recursively checkout the tree
     checkout_tree_recursive(&store, dest_path, &tree_hash, Path::new(""), options)
+}
+
+/// Collect all files in a tree recursively (path -> blob hash)
+fn collect_tree_files(
+    store: &FsObjectStore,
+    tree_hash: &Hash,
+    prefix: &Path,
+) -> Result<std::collections::HashMap<PathBuf, Hash>> {
+    let mut files = std::collections::HashMap::new();
+
+    let tree_bytes = store
+        .read_object(&ObjectType::Tree, tree_hash)
+        .with_context(|| format!("Failed to read tree {}", hash_to_hex(tree_hash)))?;
+
+    let tree = Tree::from_bytes(&tree_bytes)?;
+
+    for entry in tree.entries {
+        let entry_path = prefix.join(&entry.name);
+
+        match entry.entry_type {
+            EntryType::Tree => {
+                let sub_files = collect_tree_files(store, &entry.oid, &entry_path)?;
+                files.extend(sub_files);
+            }
+            EntryType::File | EntryType::FileExecutable | EntryType::Symlink => {
+                files.insert(entry_path, entry.oid);
+            }
+        }
+    }
+
+    Ok(files)
+}
+
+/// Remove empty parent directories up to (but not including) stop_at
+fn remove_empty_parents(dir: Option<&Path>, stop_at: &Path) {
+    let Some(mut current) = dir else { return };
+
+    while current != stop_at && current.starts_with(stop_at) {
+        if fs::remove_dir(current).is_err() {
+            // Directory not empty or other error, stop
+            break;
+        }
+        current = match current.parent() {
+            Some(p) => p,
+            None => break,
+        };
+    }
 }
 
 /// Recursively checkout a tree to a directory
@@ -126,6 +203,7 @@ fn checkout_tree_recursive(
                 fs::write(&full_path, &blob_bytes)
                     .with_context(|| format!("Failed to write file {}", full_path.display()))?;
 
+                #[cfg(unix)]
                 if entry.entry_type == EntryType::FileExecutable {
                     let mut perms = fs::metadata(&full_path)?.permissions();
                     perms.set_mode(0o755);
