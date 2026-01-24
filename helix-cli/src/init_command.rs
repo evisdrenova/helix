@@ -316,7 +316,7 @@ mod tests {
     fn init_test_repo(path: &Path) -> Result<()> {
         fs::create_dir_all(path.join(".git"))?;
         Command::new("git")
-            .args(&["init"])
+            .args(&["init", "-b", "main"])
             .current_dir(path)
             .output()?;
         Command::new("git")
