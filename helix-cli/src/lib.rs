@@ -3,6 +3,7 @@ pub mod branch_command;
 pub mod branch_tui;
 pub mod checkout;
 pub mod commit_command;
+pub mod diff_command;
 pub mod fsmonitor;
 pub mod handshake;
 pub mod helix_index;
