@@ -5,6 +5,7 @@ use helix_cli::{
     pull_command::{self, pull},
     push_command::{self, push},
     sandbox_command::{self, CreateOptions},
+    unstage_command,
 };
 use std::path::{Path, PathBuf};
 
@@ -112,6 +113,19 @@ enum Commands {
         dry_run: bool,
         #[arg(short, long)]
         force: bool,
+    },
+    /// Unstage files from the staging area
+    Unstage {
+        /// Files to unstage (use '.' for all staged files)
+        #[arg(required = false)]
+        paths: Vec<PathBuf>,
+        /// Unstage all staged files
+        #[arg(short, long)]
+        all: bool,
+        #[arg(short, long)]
+        verbose: bool,
+        #[arg(short = 'n', long)]
+        dry_run: bool,
     },
     Branch {
         name: Option<String>,
@@ -253,6 +267,22 @@ async fn main() -> Result<()> {
             };
 
             add_command::add(&repo_path, &paths, options)?;
+        }
+        Some(Commands::Unstage {
+            paths,
+            all,
+            verbose,
+            dry_run,
+        }) => {
+            let repo_path = resolve_repo_path(None)?;
+
+            let options = unstage_command::UnstageOptions { verbose, dry_run };
+
+            if all || paths.is_empty() {
+                unstage_command::unstage_all(&repo_path, options)?;
+            } else {
+                unstage_command::unstage(&repo_path, &paths, options)?;
+            }
         }
         Some(Commands::Commit {
             message,
