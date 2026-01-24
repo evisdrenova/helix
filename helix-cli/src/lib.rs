@@ -15,6 +15,7 @@ pub mod pull_command;
 pub mod push_command;
 pub mod sandbox_command;
 pub mod sandbox_tui;
+pub mod unstage_command;
 
 use std::result;
 
