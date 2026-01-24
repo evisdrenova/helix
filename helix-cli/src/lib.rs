@@ -13,6 +13,7 @@ pub mod merge_command;
 pub mod merge_tui;
 pub mod pull_command;
 pub mod push_command;
+pub mod diff_command;
 pub mod sandbox_command;
 pub mod sandbox_tui;
 

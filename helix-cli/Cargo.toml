@@ -55,6 +55,7 @@ zstd = "0.13.3"
 rust-ini = "0.21.3"
 console = "0.16.2"
 regex = "1.12.2"
+similar = "2.6"
 uuid = { version = "1", features = ["v4"] }
 
 
