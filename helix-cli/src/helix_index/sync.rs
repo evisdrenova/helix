@@ -655,7 +655,7 @@ impl SyncEngine {
         head_tree: &HashMap<PathBuf, Vec<u8>>,
         repo: &Repository,
         store: &FsObjectStore,
-        is_first_import: bool,
+        _is_first_import: bool,
     ) -> Result<Entry> {
         let entry_path = PathBuf::from(&git_index_entry.path);
         let full_entry_path = self.repo_path.join(&PathBuf::from(&git_index_entry.path));
@@ -679,18 +679,14 @@ impl SyncEngine {
             }
         };
 
-        // STAGED logic: on first import, stage everything
-        // On re-import, only stage if changed from HEAD
-        if is_first_import {
+        // STAGED logic: only stage if git index differs from HEAD
+        // Files matching HEAD are already committed, so not staged
+        let is_staged = head_tree
+            .get(&entry_path)
+            .map(|head_git_oid| head_git_oid.as_slice() != git_index_entry_oid)
+            .unwrap_or(true); // New files (not in HEAD) are staged
+        if is_staged {
             flags |= EntryFlags::STAGED;
-        } else {
-            let is_staged = head_tree
-                .get(&entry_path)
-                .map(|head_git_oid| head_git_oid.as_slice() != git_index_entry_oid)
-                .unwrap_or(true);
-            if is_staged {
-                flags |= EntryFlags::STAGED;
-            }
         }
 
         let helix_oid: [u8; 32] = store.write_object(&ObjectType::Blob, &blob_content)?;
@@ -1082,7 +1078,7 @@ mod tests {
     fn init_test_repo(path: &Path) -> Result<()> {
         fs::create_dir_all(path.join(".git"))?;
         Command::new("git")
-            .args(&["init"])
+            .args(&["init", "-b", "main"])
             .current_dir(path)
             .output()?;
 
