@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use helix_cli::{
-    add_command, branch_command, commit_command,
+    add_command, branch_command, commit_command, diff_command,
     init_command::init_helix_repo,
     pull_command::{self, pull},
     push_command::{self, push},
@@ -112,6 +112,23 @@ enum Commands {
         dry_run: bool,
         #[arg(short, long)]
         force: bool,
+    },
+    /// Show changes between working tree and index
+    Diff {
+        /// Files to diff (defaults to all changed files)
+        #[arg(required = false)]
+        paths: Vec<PathBuf>,
+        /// Show diffstat summary instead of full diff
+        #[arg(long)]
+        stat: bool,
+        /// Compare staged changes (vs last commit)
+        #[arg(long)]
+        staged: bool,
+        /// Disable colored output
+        #[arg(long)]
+        no_color: bool,
+        #[arg(short, long)]
+        verbose: bool,
     },
     Branch {
         name: Option<String>,
@@ -253,6 +270,28 @@ async fn main() -> Result<()> {
             };
 
             add_command::add(&repo_path, &paths, options)?;
+        }
+        Some(Commands::Diff {
+            paths,
+            stat,
+            staged,
+            no_color,
+            verbose,
+        }) => {
+            let repo_path = resolve_repo_path(None)?;
+
+            let options = diff_command::DiffOptions {
+                staged,
+                verbose,
+                no_color,
+                stat,
+            };
+
+            if stat {
+                diff_command::diff_stat(&repo_path, &paths, options)?;
+            } else {
+                diff_command::diff(&repo_path, &paths, options)?;
+            }
         }
         Some(Commands::Commit {
             message,
