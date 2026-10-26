@@ -46,6 +46,8 @@ api_key = "your-openai-api-key-here"
 message_level = "normal"  # quiet, normal, or verbose
 ```
 
+For OpenAI model compatibility, requests use `max_completion_tokens` and each model's default temperature. This supports both older models such as `gpt-4.1-mini` and newer models that reject `max_tokens` or custom temperature values. Existing `model`, `api_key`, and `message_level` settings do not need to change.
+
 ## Usage
 
 ### Basic Commands
