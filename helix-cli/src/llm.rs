@@ -12,8 +12,8 @@ struct ChatMessage {
 struct ChatRequest {
     model: String,
     messages: Vec<ChatMessage>,
-    max_tokens: u32,
-    temperature: f32,
+    // Newer OpenAI models reject the legacy `max_tokens` field.
+    max_completion_tokens: u32,
 }
 
 #[derive(Deserialize)]
@@ -74,8 +74,7 @@ impl LLM {
                     content: user_prompt.to_string(),
                 },
             ],
-            max_tokens: 200,
-            temperature: 0.3,
+            max_completion_tokens: 200,
         };
 
         let api_url = format!(
@@ -136,6 +135,35 @@ impl LLM {
         } else {
             let subject = trimmed.lines().next().unwrap_or(trimmed).to_string();
             Ok((subject, None))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_uses_compatible_parameters_for_older_and_newer_models() {
+        for model in ["gpt-4.1-mini", "gpt-6-luna"] {
+            let request = ChatRequest {
+                model: model.to_string(),
+                messages: vec![ChatMessage {
+                    role: "user".to_string(),
+                    content: "Write a commit message.".to_string(),
+                }],
+                max_completion_tokens: 200,
+            };
+
+            let body = serde_json::to_value(&request).expect("request should serialize");
+
+            assert_eq!(body["model"].as_str(), Some(model));
+            assert_eq!(body["max_completion_tokens"].as_u64(), Some(200));
+            assert!(body.get("max_tokens").is_none());
+            assert!(
+                body.get("temperature").is_none(),
+                "temperature must use the model default for {model}"
+            );
         }
     }
 }
